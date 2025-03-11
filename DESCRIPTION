@@ -1,0 +1,12 @@
+Package: montest
+Type: Package
+Title: Tests for instrument validity and monotonicity
+Version: 0.1.1
+Author: Martin Huber, Martin Eckhoff Andresen
+Maintainer: Martin Eckhoff Andresen <martin.eckhoff.andresen@gmail.com>
+Description: Testing of LATE assumptions and monotonicity using causal forests.
+License: What license is it under? 
+Encoding: UTF-8
+LazyData: true
+Depends: data.table, rpart, policytree, grf, fixest, treeClust
+RoxygenNote: 7.2.2
