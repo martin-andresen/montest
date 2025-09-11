@@ -29,6 +29,7 @@
 *.zip
 *.ini
 .DS_Store
+.pper
 # but have those folders in the structure
 !.keep
 *.smcl
