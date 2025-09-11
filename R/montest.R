@@ -47,8 +47,8 @@
     }
 
     if (sum(sum(grepl("Z.hat",colnames(data))))) stop("Variable name beginning with Z.hat discovered, reserved for internal use. Please rename.")
-    if (sum(sum(grepl("D.hat",colnames(data))))) stop("Variable name beginning with D.hat discovered, reserved for internal use.. Please rename.")
-    if (sum(sum(grepl("Q.hat",colnames(data))))) stop("Variable name beginning with Q.hat discovered, reserved for internal use.. Please rename.")
+    if (sum(sum(grepl("D.hat",colnames(data))))) stop("Variable name beginning with D.hat discovered, reserved for internal use. Please rename.")
+    if (sum(sum(grepl("Q.hat",colnames(data))))) stop("Variable name beginning with Q.hat discovered, reserved for internal use. Please rename.")
     if ("Q" %in% colnames(data)) stop("Data contains variable named Q, which is reserved for internal use. Please rename.")
 
     treetype=match.arg(treetype,c("forest","CART"))
@@ -538,7 +538,7 @@
 
             if (is.null(cluster)==FALSE) clust=as.formula(paste0("~",cluster)) else clust=NULL
 
-            browser()
+
             if (nrow(data[(Z==z|Z==z-1)&sample==2&taupred<=res[1,tau],env=list(Z=Z)])>1) {
               if (sd(data[(Z==z|Z==z-1)&sample==2&taupred<=res[1,tau],scores,env=list(Z=Z)])>0) {
                 fe=feols(scores~1,data=data[(Z==z|Z==z-1)&sample==2&taupred<=res[sample==1,tau],env=list(Z=Z)],cluster=clust)
