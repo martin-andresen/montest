@@ -43,7 +43,7 @@ data=data.table(read_dta("Gregg2020_data.dta")) ## NO WORK
 data=data[,c("Form","RelRevCPMinus","Industry","PIHerfIndex")]
 data[,Industry:=as.numeric(as.factor(Industry))]
 data=na.omit(data)
-montests[["Gregg2020"]]=montest(data=data,D="Form",Z="RelRevCPMinus",X=c("Industry","PIHerfIndex"),test="simple")
+#montests[["Gregg2020"]]=montest(data=data,D="Form",Z="RelRevCPMinus",X=c("Industry","PIHerfIndex"),test="simple")
 #xi: ivregress 2sls logRevperWorker (Form = RelRevCPMinus) i.Industry PIHerfIndex, r first
 
 data=data.table(read_dta("Guryan2010_data_1.dta")) ##REJECT, but because of minsize bug

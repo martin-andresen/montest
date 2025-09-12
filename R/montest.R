@@ -2,8 +2,8 @@
   #' @return A matrix of the infile
   #' @export
 
-  montest=function(data,D,Z,X=NULL,Y=NULL,treefraction=0.5,control="forest",test=NULL,
-                   normalize=TRUE,stack="all",treetype="forest",se=FALSE,saveforest=F,
+  montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,weight=NULL,cluster=NULL,test=NULL,
+                   normalize=TRUE,stack="all",treetype="forest",saveforeforest=F,
                    gridtypeY="equidistant",gridtypeD="equidistant",gridtypeZ="equidistant",
                    Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,
                    weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
@@ -95,12 +95,12 @@
     if (test=="simple"&is.null(Y)==FALSE) Y=NULL
 
     ##Prepare data
-    W=colnames(data)[!colnames(data) %in% c(Y,X,Z,D,weight,cluster)]
     XW=c(X,W)
 
     if (sum(c("MW","AHS") %in% test)>0) {XWY=c(X,W,Y)} else {XWY=XW}
 
     data=data.table(data)
+    data=data[,c(X,W,Y,D,Z,weight,cluster)]
     data=data[complete.cases(data)]
     n=nrow(data)
     data[,id:=(1:n)]
@@ -269,7 +269,7 @@
         XZ=c(X,Z)
         data[,Z.hat:=do.call(regression_forest,append(list(X=.SD[,..X],Y=as.numeric(.SD[,Z]),
             num.trees=max(50,num.trees/4),tune.parameters=tune.Zparameters,tune.num.trees=tune.num.trees,
-            tune.num.reps=tune.num.reps),Zparameters))$prediction,by=c("sample",tmpmargins),.SDcols=XZ,env=list(Z=Z)]
+            tune.num.reps=tune.num.reps),Zparameters,sample.weights=weight,clusters=cluster))$prediction,by=c("sample",tmpmargins),.SDcols=XZ,env=list(Z=Z)]
         if (normalize==TRUE) { #Normalize propensity scores
           data[,Z.hat:=.N*Z.hat/sum(Z/Z.hat),by=c("sample",tmpmargins),env=list(Z=Z)]
         }
@@ -292,7 +292,7 @@
       XY=c(X,Y)
       data[,Y.res:=Y-do.call(regression_forest,append(list(X=.SD[,..XW],as.numeric(.SD[,Y]),
            num.trees=max(50,num.trees/4),tune.parameters=tune.Yparameters,tune.num.trees=tune.num.trees,
-           tune.num.reps=tune.num.reps),Yparameters))$prediction,by=c("sample",tmpmargins),env=list(Y=Y)]
+           tune.num.reps=tune.num.reps),Yparameters,sample.weights=weight,clusters=cluster))$prediction,by=c("sample",tmpmargins),env=list(Y=Y)]
     }
 
     ##STACK MARGINS OF D
@@ -309,7 +309,7 @@
       data[,D.hat:=do.call(regression_forest,append(list(X=.SD[,..XW],
           Y=.SD[,D],num.trees=max(num.trees/4,50),
           tune.parameters=tune.Dparameters,tune.num.trees=tune.num.trees,
-          tune.num.reps=tune.num.reps),Dparameters))$prediction,
+          tune.num.reps=tune.num.reps),Dparameters,sample.weights=weight,clusters=cluster))$prediction,
           by=c("sample",tmpmargins),.SDcols=XWD,env=list(D=D)]
       }
     }
@@ -380,7 +380,7 @@
         SDcols=c(XW,"Q","id")
         data[condition %in% c("simple","BPK","BP","K"),Q.hat:=do.call(regression_forest,append(list(X=.SD[,..XW],Y=.SD[,Q],
             num.trees=max(num.trees/4,50),tune.parameters=tune.Qparameters,
-            tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters))$prediction,
+            tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters,sample.weights=weight,clusters=cluster))$prediction,
             by=c("sample",tmpmargins),.SDcols=SDcols]
       }
         if ("AHS" %in% test) {
@@ -388,7 +388,7 @@
         XWY=c(X,W,Y)
         data[condition=="AHS",Q.hat:=do.call(regression_forest,append(list(X=.SD[,..XWY],Y=.SD[,Q],
            num.trees=max(num.trees/4,50),tune.parameters=tune.Qparameters,
-           tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters))$prediction,
+           tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters,sample.weights=weight,clusters=cluster))$prediction,
       by=c("sample",tmpmargins),.SDcols=SDcols]
         }
 
@@ -444,7 +444,7 @@
           data[use==1,D.hat:=do.call(regression_forest,append(list(X=.SD[,..XW],
             Y=.SD[,D],num.trees=max(num.trees/4,50),
             tune.parameters=tune.Dparameters,tune.num.trees=tune.num.trees,
-            tune.num.reps=tune.num.reps),Dparameters))$prediction,
+            tune.num.reps=tune.num.reps),Dparameters,sample.weights=weight,clusters=cluster))$prediction,
              by="sample",.SDcols=XWD,env=list(D=D)]
         }
 
@@ -455,7 +455,7 @@
         if (novar==FALSE) {
           data[use==1,Q.hat:=do.call(regression_forest,append(list(X=.SD[,..vars],Y=.SD[,Q],
           num.trees=max(num.trees/4,50),tune.parameters=tune.Qparameters,
-          tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters))$prediction,
+          tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters,sample.weights=weight,clusters=cluster))$prediction,
           by=c("sample")]
         }
 
@@ -474,18 +474,21 @@
                 Z=data[use==1&sample==i,Z==z,env=list(Z=Z)],Z.hat=data[use==1&sample==i,Z.hat],
                 W=data[use==1&sample==i,D>=d,env=list(D=D)],W.hat=data[use==1&sample==i,D.hat],
                 compute.oob.predictions=compute.oob.predictions,num.trees=max(num.trees,50),
-                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Cparameters))
+                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Cparameters,
+                ,sample.weights=weight,clusters=cluster))
           } else if (cond=="MW") {
             forest=do.call(regression_forest,append(list(X=data[use==1&sample==i,vars,with=F],
                 Y=data[use==1&sample==i,Q],
                 compute.oob.predictions=compute.oob.predictions,num.trees=max(num.trees,50),
-                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Cparameters))
+                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),
+                Cparameters,sample.weights=weight,clusters=cluster))
           } else  {
             forest=do.call(causal_forest,append(list(X=data[use==1&sample==i,vars,with=F],
                 Y=data[use==1&sample==i,Q],Y.hat=data[use==1&sample==i,Q.hat],
                 W=data[use==1&sample==i,Z==z,env=list(Z=Z)],W.hat=data[use==1&sample==i,Z.hat],
                 compute.oob.predictions=compute.oob.predictions,num.trees=max(num.trees,50),
-                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Cparameters))
+                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),
+                Cparameters,sample.weights=weight,clusters=cluster))
           }
           if (saveforest==T) forests=append(forests,list(forest))
 
@@ -541,13 +544,13 @@
 
             if (nrow(data[(Z==z|Z==z-1)&sample==2&taupred<=res[1,tau],env=list(Z=Z)])>1) {
               if (sd(data[(Z==z|Z==z-1)&sample==2&taupred<=res[1,tau],scores,env=list(Z=Z)])>0) {
-                fe=feols(scores~1,data=data[(Z==z|Z==z-1)&sample==2&taupred<=res[sample==1,tau],env=list(Z=Z)],cluster=clust)
+                fe=feols(scores~1,data=data[(Z==z|Z==z-1)&sample==2&taupred<=res[sample==1,tau],env=list(Z=Z)],cluster=clust,weights=weight)
                 test1=c(length(unique(data[(Z==z|Z==z-1)&sample==2&taupred<=res[sample==1,tau],G,env=list(Z=Z)])),fe$nobs,coeftable(fe)[1:3])
                 } else test1=rep(NA,5)
               } else test1 = rep(NA,5)
             if (nrow(data[(Z==z|Z==z-1)&sample==1&taupred<=res[2,tau],env=list(Z=Z)])>1) {
               if (sd(data[(Z==z|Z==z-1)&sample==1&taupred<=res[2,tau],scores,env=list(Z=Z)])>0) {
-                fe=feols(scores~1,data=data[(Z==z|Z==z-1)&sample==1&taupred<=res[sample==2,tau],env=list(Z=Z)],cluster=clust)
+                fe=feols(scores~1,data=data[(Z==z|Z==z-1)&sample==1&taupred<=res[sample==2,tau],env=list(Z=Z)],cluster=clust,weights=weight)
                 test2=c(length(unique(data[(Z==z|Z==z-1)&sample==1&taupred<=res[sample==2,tau],G,env=list(Z=Z)])),fe$nobs,coeftable(fe)[1:3])
               } else test2 = rep(NA,5)
             } else test2 = rep(NA,5)
@@ -603,7 +606,7 @@
 
 ##HELPER FUNCTIONS
  esttree=function(data,testsample,cp,maxrankcp,alpha,prune,minsize,preselect,cluster=NULL){
-    tree=rpart(scores~.,data=as.data.frame(data[sample==testsample,!c("id","sample")]),method="anova",cp=cp,minbucket=minsize) # run tree with transformed outcome
+    tree=rpart(scores~.,data=as.data.frame(data[sample==testsample,!c("id","sample")]),method="anova",cp=cp,minbucket=minsize,weights=weight) # run tree with transformed outcome
 
     maxrankcp=min(maxrankcp, length(tree$cp[, 4]))
     maxcp=tree$cp[maxrankcp, 1]
@@ -628,7 +631,7 @@
       data[,G:=.N,by=.(leaf,sample)]
     }
 
-    res=data[is.na(leaf)==FALSE,data.table(cbind(G=max(G),N=.N,feols(scores~1,data=.SD,vcov=clust)$coeftable)),by=.(leaf,sample)]
+    res=data[is.na(leaf)==FALSE,data.table(cbind(G=max(G),N=.N,feols(scores~1,data=.SD,vcov=clust,weights=weight)$coeftable)),by=.(leaf,sample)]
     colnames(res)=c("leaf","sample","G","N","coef","stderr","t","p")
     res=res[,p:=NULL]
     res=dcast(res,leaf~sample,value.var=c("G","N","coef","stderr","t"))
