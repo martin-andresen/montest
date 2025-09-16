@@ -2,10 +2,10 @@
   #' @return A matrix of the infile
   #' @export
 
-  montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,weight=NULL,cluster=NULL,test=NULL,
-                   normalize=TRUE,stack="all",treetype="forest",saveforeforest=F,
+  montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,test=NULL,
+                   normalize=TRUE,stack=NULL,treetype="forest",
                    gridtypeY="equidistant",gridtypeD="equidistant",gridtypeZ="equidistant",
-                   Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,
+                   Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,
                    weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                    maxrankcp=5,prune=TRUE,cp=0,alpha=0.05,preselect="nonpositive", ##CART options
                    Zparameters=NULL,Yparameters=NULL,Qparameters=NULL,Dparameters=NULL,Cparameters=NULL,
@@ -16,14 +16,15 @@
     time=proc.time()
     set.seed(seed)
 
-    ##check input
+
+    ################### 1 CHECK INPUT #####################
     if (is.null(test)==TRUE) {
       if (is.null(Y)==TRUE) {
         test="simple"
       } else test="all"
     }
 
-    test=match.arg(test,c("simple","BP","K","MW","AHS","all"),several.ok=TRUE)
+    test=match.arg(test,c("simple","BP","MW","AHS","all"),several.ok=TRUE) ##took out support for Kitagawa
     if ("all" %in% test) {
       test=c("simple","BP","MW","AHS")
     }
@@ -36,15 +37,12 @@
 
     if ((Ysubsets<=1)|(Dsubsets<=1)|(Zsubsets<=1)) stop("Ysubsets, Dsubsets and Zsubsets must be integers larger than 1")
 
-    if (is.null(stack)==FALSE) stack=match.arg(stack,c("all","Z","D","Y","Ybin","above","condition","none"),several.ok=TRUE)
-    if (("all" %in% stack)&("none" %in% stack)) stop("Do not specify both all and none in stack")
-    if ("all" %in% stack) stack=c("Z","D","Y","Ybin","above","condition")
-    if ("none" %in% stack) stack=NULL
-    if (("Ybin" %in% stack)&(!"Y" %in% stack)) stop("Cannot stack across bins of Y (stack includes Ybin) if not also stacking across outcomes (stack includes Y)")
+    if (is.null(stack)==TRUE&treetype=="forest") stack=TRUE
+    if (is.null(stack)==TRUE&treetype=="CART") stack=FALSE
+    if (is.logical(stack)==FALSE) stop("stack must be a logical (TRUE/FALSE)")
 
-    if (("condition" %in% stack)&(sum(c("MW","AHS") %in% test)>0)&(sum(c("simple","BP","K") %in% test)>0)&treetype=="CART") {
-      stop("Cannot stack conditions when testing MW or AHS together with simple, BP or K conditions using the CART approach - right hand side variables differ!")
-    }
+    if (treetype=="CART"&stack==TRUE) stop("Cannot stack margins with the CART algorithm because it doesn't support clustering.")
+    if (treetype=="CART"&is.null(cluster)==FALSE) stop("Cannot combine the CART algorithm with clustering.")
 
     if (sum(sum(grepl("Z.hat",colnames(data))))) stop("Variable name beginning with Z.hat discovered, reserved for internal use. Please rename.")
     if (sum(sum(grepl("D.hat",colnames(data))))) stop("Variable name beginning with D.hat discovered, reserved for internal use. Please rename.")
@@ -74,10 +72,23 @@
     gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
     gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
 
+    if ((gridtypeZ=="equisized"|gridtypeY=="equisized"|gridtypeD=="equisized")&is.null(weight)==FALSE) stop("Cannot combine weights and quantile-based splits of Y, D or Z.")
+
     if ((length(D)!=1)|(!(D %in% colnames(data)))) {
       stop("Argument D must be the name of a single column in data")
     }
 
+    if (is.null(weight)==FALSE) {
+      if ((length(weight)!=1)|(!(weight %in% colnames(data)))) {
+        stop("Argument weight must be the name of a single column in data")
+      }
+    }
+
+    if (is.null(cluster)==FALSE) {
+      if ((length(cluster)!=1)|(!(cluster %in% colnames(data)))) {
+        stop("Argument cluster must be the name of a single column in data")
+      }
+    }
     if ((length(Z)!=1)|(!(Z %in% colnames(data)))) {
       stop("Argument Z must be the name of a single column in data")
     }
@@ -92,17 +103,18 @@
       }
     }
 
-    if (test=="simple"&is.null(Y)==FALSE) Y=NULL
+    if (sum(test %in% c("AHS","MW"))==0&is.null(Y)==FALSE) Y=NULL
 
-    ##Prepare data
+    ###################### 2 Prepare data #########################3
     XW=c(X,W)
-
     if (sum(c("MW","AHS") %in% test)>0) {XWY=c(X,W,Y)} else {XWY=XW}
 
     data=data.table(data)
-    data=data[,c(X,W,Y,D,Z,weight,cluster)]
+    allvars=c(X,W,Y,D,Z,weight,cluster)
+    data=data[,..allvars]
     data=data[complete.cases(data)]
     n=nrow(data)
+
     data[,id:=(1:n)]
     if (is.null(cluster)==TRUE) {
       data[,sample:=1+1*(id %in% sample(n,size=floor(treefraction*n), replace = FALSE))]
@@ -113,12 +125,12 @@
     }
     if ((is.null(cluster)==TRUE)&(is.null(stack)==FALSE)) cluster="id"
 
-    ##Discretize Z, D and Y into subsets
-
-    ##NB: SHOULD APPLY WEIGHTS WHEN CALCULATING QUANTILES
+    ############### 3 Discretize Z, D and Y into subsets ###############33
+    ##TODO: ALLOW FOR WEIGHTED QUANTILES
 
     if (is.null(Dsubsets)==FALSE) { ##bin treatment
-      if (nrow(unique(data[,D,with=F]))>Dsubsets){
+      unique(data[,D,env=list(D=D)])
+      if (length(unique(data[,D,env=list(D=D)]))>Dsubsets){
         if (gridtypeD=="equidistant") {
           data[,D:=as.numeric(cut(D, breaks = seq(from = min(D) - 0.001, to = max(D) + 0.001, length.out = Dsubsets + 1)))-1,env=list(D=D)]
         }
@@ -129,7 +141,7 @@
     }
 
     if (is.null(Zsubsets)==FALSE) { ##bin instrument
-      if (nrow(unique(data[,Z,with=F]))>Zsubsets){
+      if (length(unique(data[,Z,env=list(Z=Z)]))>Zsubsets){
         if (gridtypeZ=="equidistant") {
           data[,Z:=as.numeric(cut(Z, breaks = seq(from = min(Z) - 0.001, to = max(Z) + 0.001, length.out = Zsubsets + 1)))-1,env=list(Z=Z)]
         }
@@ -142,7 +154,7 @@
     if (sum(test %in% c("BP","K"))>0) { ##bin outcome(s)
       maxlevs=c();Ybin=c()
       for (Yno in Y) {
-      if (nrow(unique(data[,Yno,with=F]))>Ysubsets) {
+      if (length(unique(data[,Yno,env=list(Yno=Yno)]))>Ysubsets) {
         if (gridtypeY=="equidistant") {
           data[,name:=as.numeric(cut(Yno, breaks = seq(from = min(Yno) - 0.001, to = max(Yno) + 0.001, length.out = Ysubsets + 1))),env=list(Yno=Yno,name=paste0(Yno,".bin"))]
         }
@@ -158,7 +170,6 @@
     }
 
     n=nrow(data); J=dim(unique(data[,D,with=F]))[1]-1; K=dim(unique(data[,Z,with=F]))[1]-1;L=length(Y)
-    if (("Z" %in% stack)&(!"Y" %in% stack)&K>1) stop("Cannot stack across outcomes (stack includes Y) if not also stacking margins of Z (stack includes Z) and Z is multivalued")
 
     results=c();tunable.Cparams=c()
 
@@ -168,449 +179,330 @@
       stop("Nothing to test with a binary treatment, a binary instrument and no other variables in data.")
     }
 
-    ######################## DETERMINE MARGINS OF D,Z,Y,Ybin,condition,above for stacking or looping ######################
+    ############ GROUP COMMON FOREST OPTIONS #############
 
-    stackmargins=nostackmargins=c();list=list();index=data.frame()
-    if (K>1) { ##margins of Z
-      if ("Z" %in% stack) stackmargins=c(stackmargins,"zmargin") else nostackmargins=c(nostackmargins,"Z")
-      list=append(list,list(zmargin=1:K))
-    }
+    ##group common tree argments
+    forest_opts=list(num.trees=max(50,num.trees/4),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps,sample.weights_name=weight,clusters_name=cluster)
 
-    if (J>1) { ##margins of D
-      if ("D" %in% stack) stackmargins=c(stackmargins,"dmargin") else nostackmargins=c(nostackmargins,"D")
-      list=append(list,list(dmargin=1:J))
-    }
+    ######################## 6 STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
+    if (stack==TRUE) {
+      margins=c()
 
-    if (L>1) { ##Outcomes
-      if ("Y" %in% stack) stackmargins=c(stackmargins,"outcome") else nostackmargins=c(nostackmargins,"outcome")
-      list=append(list,list(outcome=Y))
-    }
-
-    if (length(test)>1) { ##testable conditions
-      if ("condition" %in% stack) stackmargins=c(stackmargins,"condition") else nostackmargins=c(nostackmargins,"condition")
-      list=append(list,list(condition=test))
-    }
-
-    if (length(list)>0) index=do.call(CJ,list)
-
-    if (sum(test %in% c("K","BP"))>0) { ##bins of Y
-      if (length(list)==0) {
-        index=data.table(ybin=0:(maxlevs-1))
-      } else {
-        index=index[rep(seq(.N),ifelse(condition %in% c("K","BP"),rep(maxlevs,each=length(Y)),1))]
-        index[condition %in% c("K","BP"),ybin:=sequence(maxlevs),by=c(stackmargins[!stackmargins %in% "outcome"],nostackmargins[!nostackmargins %in% "outcome"])]
-        #index[!condition %in% c("K","BP"),ybin:=0]
-      }
-      if ("Ybin" %in% stack) stackmargins=c(stackmargins,"ybin") else nostackmargins=c(nostackmargins,"ybin")
-    }
-
-     if (sum(test %in% c("MW","K","BP"))>0) { ##above/below for two-eq. conditions
-         if (nrow(index)==0) {
-           index=data.table(above=0:1)
-        } else {
-            if (length(test)>1) {
-              index=index[rep(seq(.N),1+(condition %in% c("MW","BP","K")))]
-              index[condition %in% c("MW","BP","K"),above:=seq(.N)-1*(condition %in% c("MW","BP","K")),by=c(stackmargins,nostackmargins)]
-              #index[!condition %in% c("MW","BP","K"),above:=1,by=c(stackmargins,nostackmargins)]
-            } else {
-              index=index[rep(seq(.N),2)]
-              index[,above:=seq(.N)-1,by=c(stackmargins,nostackmargins)]
-            }
-        }
-          if ("above" %in% stack) stackmargins=c(stackmargins,"above") else nostackmargins=c(nostackmargins,"above")
-        }
-
-      if (is.null(c(stackmargins,nostackmargins))==FALSE) {
-        setorderv(index,cols=c(nostackmargins,stackmargins))
-        setcolorder(index,c(nostackmargins,stackmargins))
-        index[,dotest:=seq_len(.N)==.N,by=eval(nostackmargins)]
-        loopmax=max(nrow(index),1)
-        } else loopmax=1
-
-
-    ######################## Estimate Z.hat, D.hat and residualize Y (if not stacking) #########
-
-       if (("zmargin" %in% nostackmargins)|length(stackmargins)==0) {  ##estimate Z.hat for all margins
-        for (z in 1:K) {
-          data[Z==z|Z==z-1,paste0("Z.hat",z):=do.call(regression_forest,append(list(X=.SD[,..X],Y=as.numeric(.SD[,Z]==z),
-             num.trees=max(50,num.trees/4),tune.parameters=tune.Zparameters,tune.num.trees=tune.num.trees,
-             tune.num.reps=tune.num.reps),Zparameters))$prediction,by=sample,env=list(Z=Z)]
-          if (normalize==TRUE) { #Normalize propensity scores
-            data[Z==z|Z==z-1,paste0("Z.hat",z):=.N*get(paste0("Z.hat",z))/sum((Z==z)/get(paste0("Z.hat",z))),by=sample,env=list(Z=Z)]
-          }
-        }
-       }
-
-          ##RESIDUALIZE Y separately in each sample of Z=z|Z=z-1 if testing MW or AHS and using Y.res=TRUE
-          if ((sum(test %in% c("MW","AHS"))>0)&("outcome" %in% nostackmargins))  {
-            for (z in 1:K) {
-            for (Yno in Y) {
-              data[Z==z|Z==z-1,paste0(eval(Yno),".res",z):=Yvar-do.call(regression_forest,append(list(X=.SD[,..XW],Y=as.numeric(.SD[,Yvar]),
-                  num.trees=max(50,num.trees/4),tune.parameters=tune.Yparameters,tune.num.trees=tune.num.trees,
-                  tune.num.reps=tune.num.reps),Yparameters))$prediction,by=sample,env=list(Yvar=Yno,Z=Z)]
-            }
-         }
-      }
-
-    ######################## STACK DATA ############################
-    if (length(stackmargins)>0) {
-    tmpmargins=c()
-
-    ##HANDLE Z LOOPS OR STACKS
-      if (! "zmargin" %in% nostackmargins) {
-        if ("zmargin" %in% stackmargins) { ##Expand to all margins of Z
+      ##HANDLE Z STACKS
+        if (K>1) { ##Expand to all margins of Z
           data=data[rep(seq(.N),1+1*(Z>0&Z<K)),env=list(Z=Z)]
           data[,zmargin:=seq(.N)+Z-1*(Z>0),by=id,env=list(Z=Z)]
           data[,Z:=Z>=zmargin,env=list(Z=Z)]
-          tmpmargins=c(tmpmargins,"zmargin")
+          margins=c(margins,"zmargin")
         }
-      ##estimate Z.hat for each margin in stacked data
+
+        ##estimate Z.hat for each margin in stacked data (also if K==1!)
         if (is.null(X)==FALSE) {
-        XZ=c(X,Z)
-        data[,Z.hat:=do.call(regression_forest,append(list(X=.SD[,..X],Y=as.numeric(.SD[,Z]),
-            num.trees=max(50,num.trees/4),tune.parameters=tune.Zparameters,tune.num.trees=tune.num.trees,
-            tune.num.reps=tune.num.reps),Zparameters,sample.weights=weight,clusters=cluster))$prediction,by=c("sample",tmpmargins),.SDcols=XZ,env=list(Z=Z)]
+        data[,Z.hat:=do.call(regression_forest, materialize_args(.SD,
+            y_name=Z, x_names=c(X,W),forest_opts=list(forest_opts,Zparameters),
+            weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
         if (normalize==TRUE) { #Normalize propensity scores
-          data[,Z.hat:=.N*Z.hat/sum(Z/Z.hat),by=c("sample",tmpmargins),env=list(Z=Z)]
+          data[,Z.hat:=.N*Z.hat/sum(Z/Z.hat),by=c("sample",margins),env=list(Z=Z)]
         }
       } else {
-        data[,Z.hat:=(mean(Z)*.N-Z)/(.N-1),by=c("sample",tmpmargins),env=list(Z=Z)] ##leave one out mean
+      data[,Z.hat:=(mean(Z)*.N-Z)/(.N-1),by=c("sample",margins),env=list(Z=Z)] ##leave one out mean
       }
-    }
 
-    ##STACK MULTIPLE OUTCOMES
-    if (("outcome" %in% stackmargins)) {
-      data=melt(data, measure = list(paste0(Y,rep(".bin",length(Y))),Y),value.name = c("Ystack.bin", "Ystack"),variable.name="outcome")
-      data[,outcome:=Y,by=c("id",tmpmargins)]
-      data[,maxlevsY:=maxlevs,by=c("id",tmpmargins)]
-      tmpmargins=c(tmpmargins,"outcome")
-      Y="Ystack"
-    }
 
-    ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
-    if ((sum(test %in% c("MW","AHS"))>0)&Y.res==TRUE)  {
-      XY=c(X,Y)
-      data[,Y.res:=Y-do.call(regression_forest,append(list(X=.SD[,..XW],as.numeric(.SD[,Y]),
-           num.trees=max(50,num.trees/4),tune.parameters=tune.Yparameters,tune.num.trees=tune.num.trees,
-           tune.num.reps=tune.num.reps),Yparameters,sample.weights=weight,clusters=cluster))$prediction,by=c("sample",tmpmargins),env=list(Y=Y)]
-    }
+      ##STACK MULTIPLE OUTCOMES
+      if (L>1) {
+        data=melt(data, measure = list(paste0(Y,rep(".bin",length(Y))),Y),value.name = c("Ystack.bin", "Ystack"),variable.name="outcome")
+        data[,outcome:=Y,by=c("id",margins)]
+        data[,maxlevsY:=maxlevs,by=c("id",margins)]
+        margins=c(margins,"outcome")
+        Y="Ystack"
+      }
 
-    ##STACK MARGINS OF D
-    if ("dmargin" %in% stackmargins) { ##Stack data for all margins of D
-          data=cbind(CJ(dmargin=(1:J),id=data$id),data[,!"id"])
-          data[,D:=D>=dmargin,env=list(D=D)]
-          tmpmargins=c(tmpmargins,"dmargin")
+      ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
+      if ((sum(test %in% c("MW","AHS"))>0)&Y.res==TRUE)  {
+        data[,Y.res:=Y-do.call(regression_forest, materialize_args(.SD,
+           y_name=Y, x_names=c(X,W),forest_opts=list(forest_opts,Yparameters),
+           weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
         }
 
-    ##Estimate D.hat if test includes "K"
-    if ("K" %in% test) {
-      XWD=c(X,W,D)
-      if (J==1|"D" %in% stackmargins) {
-      data[,D.hat:=do.call(regression_forest,append(list(X=.SD[,..XW],
-          Y=.SD[,D],num.trees=max(num.trees/4,50),
-          tune.parameters=tune.Dparameters,tune.num.trees=tune.num.trees,
-          tune.num.reps=tune.num.reps),Dparameters,sample.weights=weight,clusters=cluster))$prediction,
-          by=c("sample",tmpmargins),.SDcols=XWD,env=list(D=D)]
-      }
-    }
-
-      ##Expand multiple conditions for testing (except K + BP, which has same def of Q - expand later)
-        if (length(test)>1) {
-          if ("condition" %in% stackmargins) {
-            if (sum(test %in% c("BP","K"))==2) testexpand=c(test[!test %in% c("BP","K")],"BPK")
-            else testexpand=test
-            if (length(testexpand)>1) {
-              data=data[rep(seq(.N),length(testexpand))]
-              data[,condition:=testexpand,by=c("id",tmpmargins)]
-            } else {
-              data[,condition:=ifelse(length(test)==2,"BPK",test)]
-            }
-          tmpmargins=c(tmpmargins,"condition")
-            }
-        } else {condition=test}
-
-      ##Expand to a=0,1 for BP, K and MW conditions
-        if (sum(test %in% c("MW","BP","K"))>0) {
-          if (!"above" %in% nostackmargins) {
-            if (!"condition" %in% nostackmargins) {
-              data=data[rep(seq(.N),1+condition %in% c("BPK","MW","BP","K"))]
-              data[condition %in% c("BPK","MW","BP","K"),above:=seq(.N)-1*(condition %in% c("BPK","MW","BP","K")),by=c("id",tmpmargins)]
-            } else {
-              data=data[rep(seq(.N),2)]
-              data[,above:=0:1,by=c("id",tmpmargins)]
-            }
-            tmpmargins=c(tmpmargins,"above")
+      ##STACK MARGINS OF D
+      if (J>1) { ##Stack data for all margins of D
+            data=cbind(CJ(dmargin=(1:J),id=data$id),data[,!"id"])
+            data[,D:=D>=dmargin,env=list(D=D)]
+            margins=c(margins,"dmargin")
           }
-        }
 
-
-      ##Expand to all groups of Ybin for BP, K conditions
-         if (sum(test %in% c("BP","K"))>0) {
-           if (!"outcome" %in% nostackmargins) {
-            if (!"condition" %in% nostackmargins) {
-              data=data[rep(seq(.N), 1+(maxlevsY-1)*(condition %in% c("BPK","K","BP")))]
-              data[condition %in% c("BP","K","BPK"),ybin:=(1:maxlevsY),by=c("id",tmpmargins)]
-            } else {
-              data=data[rep(seq(.N), length(levsY))]
-              data[,ybin:=levsY,by=c("id",tmpmargins)]
-            }
-            tmpmargins=c(tmpmargins,"ybin")
-           }
-         }
-
-      ##Create outcome variable Q in stacked data
-
-      if (is.null(nostackmargins)==TRUE) {
-      if (sum(test %in% c("simple","AHS"))>0) data[condition %in% c("simple","AHS"),Q:=D,env=list(D=D)]
-      if (sum(test %in% c("BPK","K","BP"))>0) data[condition %in% c("BPK","BP","K"),Q:=above*(D*(name==ybin))-(1-above)*(1-D)*(name==ybin),env=list(D=D,name=paste0(Y,".bin"))]
-      if ("MW" %in% test) data[condition=="MW",Q:=above*((1-Z.hat)*D*Z-Z.hat*D*(1-Z))+(1-above)*(Z.hat*(1-D)*(1-Z)-(1-Z.hat)*(1-D)*Z),env=list(Z=Z,D=D)]
+      ##Estimate D.hat if test includes "K"
       if ("K" %in% test) {
-          data[condition %in% c("BPK","K"),D.hat:=D.hat*above+(1-D.hat)*(1-above)]
-          data[condition %in% c("BPK","K"),D:=D*above+(1-D)*(1-above),env=list(D=D)]
-          ##reverse treatment indicator for above==0 and condition=="K"
-      }
 
-      ##drop groups/margins/conditions/outcomes with constant Q
-      data[,rQ:=max(Q)-min(Q),by=c("sample",tmpmargins)]
-      data=data[,rQ:=min(rQ),by=tmpmargins]
-      data[,rQ:=NULL]
-
-      ##Estimate Q.hat in stacked data
-      if (sum(test %in% c("simple","BP","K"))>0) {
-        SDcols=c(XW,"Q","id")
-        data[condition %in% c("simple","BPK","BP","K"),Q.hat:=do.call(regression_forest,append(list(X=.SD[,..XW],Y=.SD[,Q],
-            num.trees=max(num.trees/4,50),tune.parameters=tune.Qparameters,
-            tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters,sample.weights=weight,clusters=cluster))$prediction,
-            by=c("sample",tmpmargins),.SDcols=SDcols]
-      }
-        if ("AHS" %in% test) {
-        SDcols=c(X,W,Y,"Q","id")
-        XWY=c(X,W,Y)
-        data[condition=="AHS",Q.hat:=do.call(regression_forest,append(list(X=.SD[,..XWY],Y=.SD[,Q],
-           num.trees=max(num.trees/4,50),tune.parameters=tune.Qparameters,
-           tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters,sample.weights=weight,clusters=cluster))$prediction,
-      by=c("sample",tmpmargins),.SDcols=SDcols]
+        ##DT[, X := X[which.max(!is.na(X))], by = G]
+        data[,D.hat:=do.call(regression_forest, materialize_args(.SD,
+           y_name=D, x_names=c(X,W),forest_opts=list(forest_opts,Dparameters),
+            weight_col=weight,cluster=cluster_col))$prediction,by=c("sample",margins)]
         }
 
-      ##Split BP and K conditions if doing both
-      if ((sum(test %in% c("BP","K"))>0)&("condition" %in% stack)) {
-          if (sum(test %in% c("BP","K"))==2) data=data[rep(seq(.N),1+1*(condition=="BPK"))]
-          data[condition=="BPK",condition:=test[test %in% c("BP","K")],by=c("id",tmpmargins)]
-      }
-      }
+        ##Expand multiple conditions for testing (except K + BP, which has same def of Q - expand later)
+          if (length(test)>1) {
+            if ("condition" %in% stackmargins) {
+              if (sum(test %in% c("BP","K"))==2) testexpand=c(test[!test %in% c("BP","K")],"BPK")
+              else testexpand=test
+              if (length(testexpand)>1) {
+                data=data[rep(seq(.N),length(testexpand))]
+                data[,condition:=testexpand,by=c("id",margins)]
+              } else {
+                data[,condition:=ifelse(length(test)==2,"BPK",test)]
+              }
+            margins=c(margins,"condition")
+              }
+          } else {condition=test}
 
+        ##Expand to a=0,1 for BP, K and MW conditions
+          if (sum(test %in% c("MW","BP","K"))>0) {
+            data=data[rep(seq(.N),1+condition %in% c("BPK","MW","BP","K"))]
+            data[condition %in% c("BPK","MW","BP","K"),above:=seq(.N)-1*(condition %in% c("BPK","MW","BP","K")),by=c("id",margins)]
+            margins=c(margins,"above")
+            }
+
+        ##Expand to all groups of Ybin for BP, K conditions
+           if (sum(test %in% c("BP","K"))>0) {
+              data=data[rep(seq(.N), 1+(maxlevsY-1)*(condition %in% c("BPK","K","BP")))]
+              data[condition %in% c("BP","K","BPK"),ybin:=(1:maxlevsY),by=c("id",margins)]
+              margins=c(margins,"ybin")
+           }
+
+        ##Create outcome variable Q in stacked data
+        if (sum(test %in% c("simple","AHS"))>0) data[condition %in% c("simple","AHS"),Q:=D,env=list(D=D)]
+        if (sum(test %in% c("BPK","K","BP"))>0) data[condition %in% c("BPK","BP","K"),Q:=above*(D*(name==ybin))-(1-above)*(1-D)*(name==ybin),env=list(D=D,name=paste0(Y,".bin"))]
+        if ("MW" %in% test) data[condition=="MW",Q:=above*((1-Z.hat)*D*Z-Z.hat*D*(1-Z))+(1-above)*(Z.hat*(1-D)*(1-Z)-(1-Z.hat)*(1-D)*Z),env=list(Z=Z,D=D)]
+        if ("K" %in% test) {
+            data[condition %in% c("BPK","K"),D.hat:=D.hat*above+(1-D.hat)*(1-above)]
+            data[condition %in% c("BPK","K"),D:=D*above+(1-D)*(1-above),env=list(D=D)]
+            ##reverse treatment indicator for above==0 and condition=="K"
+        }
+
+        ##drop groups/margins/conditions/outcomes with constant Q
+        data[,rQ:=max(Q)-min(Q),by=c("sample",margins)]
+        data=data[,rQ:=min(rQ),by=margins]
+        data[,rQ:=NULL]
+
+        ##Estimate Q.hat in stacked data
+        if (sum(test %in% c("simple","BP","K"))>0) {
+          data[condition %in% c("simple","BPK","BP","K"),Q.hat:=do.call(regression_forest, materialize_args(.SD,
+              y_name="Q", x_names=c(X,W),forest_opts=list(forest_opts,Qparameters),
+              weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
+        }
+        if ("AHS" %in% test) {
+          data[condition=="AHS",Q.hat:=do.call(regression_forest, materialize_args(.SD,
+                y_name="Q", x_names=c(X,W,Y),forest_opts=list(forest_opts,Qparameters),
+                weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
+          }
+
+        ##Split BP and K conditions if doing both
+        if ((sum(test %in% c("BP","K"))>0)) {
+            if (sum(test %in% c("BP","K"))==2) data=data[rep(seq(.N),1+1*(condition=="BPK"))]
+            data[condition=="BPK",condition:=test[test %in% c("BP","K")],by=c("id",margins)]
+        }
+
+    ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
+
+      ##ESTIMATE CAUSAL/REGRESSION/IV FOREST
+
+        ############NEW CODE FOR CAUSAL FORESTS!! ########################
+        driver_name <- "condition"
+
+        model_spec <- list(
+          "simple" = list(model = "cf", xvars = c(X,W)),
+          "MW" = list(model = "rf", xvars = c(X,W,Y)),
+          "BP" = list(model = "cf", xvars = c(X,W)),
+          "AHS" = list(model= "cf", xvars= c(X,W,Y)),
+          "K" = list(model="iv",xvars=c(X,W))
+        )
+
+        # ---------- Prep ----------
+        if (!"..idx__" %in% names(data)) data[, idx__ := .I]
+        for (nm in c("pred","scores","pred_o")) if (!nm %in% names(data)) data[, (data) := NA_real_]
+        data[, grp_id := .GRP, by = margins]
+
+        get_spec <- function(key) {
+          sp <- model_spec[[as.character(key)]]
+          if (is.null(sp)) stop(sprintf("No model_spec entry for '%s'", key))
+          miss <- setdiff(sp$xvars, names(data))
+          if (length(miss)) stop(sprintf("Missing X columns for '%s': %s", key, paste(miss, collapse=", ")))
+          if (sp$model %in% c("cf","iv")) stopifnot("Z" %in% names(data))
+          if (sp$model == "cf") stopifnot(all(c("Q.hat","Z.hat") %in% names(data)))
+          if (sp$model == "iv") {
+            stopifnot(all(c("Q.hat","D.hat","Z.hat") %in% names(data)))
+          }
+          sp
+        }
+
+
+
+        # ---------- Single pass ----------
+        data[, {
+          key   <- get(driver_name)[1]
+          sp    <- get_spec(key)
+          idx   <- idx__
+          gid   <- grp_id[1]
+          s0    <- S[1]
+
+          Y_sub <- Y
+          X_sub <- as.matrix(.SD[, ..sp$xvars])
+
+          if (sp$model == "cf") {
+
+            fit <- do.call(
+              causal_forest,
+              c(list(X = X_sub, Y = Y_sub, W = W,
+                     Y.hat = .SD$Y.hat, W.hat = .SD$W.hat),
+                forest_opts)
+            )
+            pred_in   <- as.numeric(predict(fit)$predictions)
+            scores_in <- as.numeric(get_scores(fit))
+
+          } else if (sp$model == "iv") {
+            fit <- do.call(
+              instrumental_forest,
+              c(list(X = X_sub, Y = Y_sub, W = W, Z = .SD[[sp$zvar]],
+                     Y.hat = .SD$Y.hat, W.hat = .SD$W.hat, Z.hat = .SD$Z.hat),
+                forest_opts)
+            )
+            pred_in   <- as.numeric(predict(fit)$predictions)
+            scores_in <- as.numeric(get_scores(fit))
+
+          } else if (sp$model == "rf") {
+            fit <- do.call(
+              regression_forest,
+              c(list(X = X_sub, Y = Y_sub), forest_opts)
+            )
+            pred_in   <- as.numeric(predict(fit)$predictions)
+            scores_in <- Y_sub
+
+          } else stop(sprintf("Unknown model '%s'", sp$model))
+
+          # Write back
+          set(data, i = idx, j = "pred",   value = pred_in)
+          set(data, i = idx, j = "scores", value = scores_in)
+
+          # Cross-sample predictions
+          other_idx <- data[grp_id == gid & S != s0, which = TRUE]
+          if (length(other_idx)) {
+            X_other   <- as.matrix(data[other_idx, ..sp$xvars])
+            pred_other <- as.numeric(predict(fit, X_other)$predictions)
+            set(data, i = other_idx, j = "pred_o", value = pred_other)
+          }
+
+          NULL
+        }, by = .(grp_id, S)]
+
+        data[, c("idx__","grp_id") := NULL]
+
+        ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
+
+        setorderv(data,cols=c("sample","pred"))
+
+        data[, `:=`(a = weights * Y, b = weight), env=list(weight=weight)] ## Per-row basics
+
+        ## Within-cluster running totals (in current order)
+        data[, `:=`(WgY = cumsum(a),Wg  = cumsum(b)), by = c("sample",cluster), env=list(cluster=cluster)]
+
+        ## Global running totals
+        data[, `:=`(SW  = cumsum(b),SWY = cumsum(a),m = SWY / SW), by=sample]
+
+        ## Per-row deltas for the three cross-cluster aggregates
+        ## Using (x_new^2 - x_old^2) and (x_new*y_new - x_old*y_old) to avoid shifts
+        data[, `:=`(dTA2 =  WgY^2 - (WgY - a)^2,dTB2 =  Wg^2  - (Wg  - b)^2,dTAB =  WgY*Wg - (WgY - a)*(Wg - b))]
+
+        ## Cumulative (global) aggregates across rows
+        data[, `:=`(TA2 = cumsum(dTA2),TB2 = cumsum(dTB2),TAB = cumsum(dTAB)),by=sample]
+
+        ## Number of unique clusters seen so far
+        data[, G := cumsum(!duplicated(cluster)),by=sample]
+
+        ## Cluster-robust SE for the weighted mean (CRV1 with small-sample adj.)
+        ## sumS2 = (TA2 - 2*m*TAB + m^2*TB2)/SW^2
+        data[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
+        data[, se := sqrt( (G / pmax.int(G - 1L, 1L)) * sumS2 )]
+        data[G < 2, se := NA_real_]
+
+        ## t-stat for H0: mean = 0
+        data[, t := m / se]
+
+        data[, c("a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB","sumS2") := NULL]
+
+        ##FIND DUAL-constraint TAU CUTOFF that ensures minsize clusters in both samples
+        tau <- data[G == minsize,
+          {  f <- function(v) {
+           m <- suppressWarnings(min(v, na.rm = TRUE))
+          if (is.finite(m)) m else NA_real_   # handles no-match / all-NA
+           }
+        out <- lapply(.SD, f)
+        setNames(out, c("tau_in", "tau_out"))
+        }, by = .(sample, margins), .SDcols = c("pred", "pred_out")]
+
+        tau <- tau[
+          tau[, .(margins, sample = 3L - sample, pred_out_other = pred_out)],
+          on = .(margins, sample),
+          nomatch = NA
+        ][
+          , pred_out := i.pred_out_other
+        ][
+          , i.pred_out_other := NULL][]   # drop helper col
+
+        tau[,tau:=pmax(pred_in,pred_out, na.rm = TRUE)]
+        data[tau[, .(sample, margins, tau = med)],
+             on = .(sample, margins),
+             tau := i.tau]
+
+        ###TRAIN SAMPLE RESULTS
+        res=data[pred<=tau, .SD[which.min(t)], by = sample,.SDcols=c("G","N","m","se","t","pred")] ##FIND OPTIMAL CUTOFF
+
+        #####PERFORM TEST IN TRAIN SAMPE- CR1 cluster robust inference ############
+        res=cbind(res,data[pred_out<=tau, { ##PERFORM TEST
+          # drop NAs in the target within this group
+          n <- length(scores)
+          ybar <- mean(scores)
+
+          # cluster summaries
+          clsum <- data.table(cluster = cluster, scores = scores)[, .(ng = .N, ybar_g = mean(scores)), by = cluster]
+          G <- nrow(clsum)
+
+          # Liang–Zeger CR0 meat for the sample mean:
+          # Var_hat = (1/n^2) * sum_g [ (sum_{i in g} (y_i - ybar))^2 ]
+          # which equals (1/n^2) * sum_g [ (ng * (ybar_g - ybar))^2 ]
+          meat <- sum((clsum$ng * (clsum$ybar_g - ybar))^2)
+
+          # small-sample CR1 correction by clusters
+          se <- if (G > 1) sqrt((G/(G - 1)) * meat / (n^2)) else NA_real_
+
+          .(G=G,N=n,m=ybar,se=se,pred=max(pred))
+        },by=sample])
+
+        colnames(res)=c("sample","G.train","N.train","coef.train","stderr.train","t.train","tau cutoff","G.est","N.est","coef.est","stderr.est","t.est")
     }
 
-
-    ########## LOOP OVER INDEX OF MARGINS TO ESTIMATE #####################
-    if (saveforest==T) forests=list()
-    for (l in 1:loopmax) {
-      if (K>1) z=index[l,zmargin] else z=1
-      if (J>1) d=index[l,dmargin] else d=1
-      if (sum(c("BP","K","MW") %in% test)>0) a=index[l,above] else a=NA
-      if (sum(c("BP","K") %in% test)>0) y=index[l,ybin] else y=NA
-      if (length(test)>1) cond=index[l,condition] else cond=test
-      if (L>1) outcome=index[l,outcome] else outcome=Y
-
-      if (cond %in% c("AHS","MW")) vars=XWY
-      else vars=XW
-
-      data[,use:=0]
-      if (is.null(stackmargins)==FALSE) data[index[l],use:=1,on=stackmargins] else data[,use:=1]
-      if ("zmargin" %in% nostackmargins) data[!(Z==z|Z==z-1),use:=0,env=list(Z=Z)]
-
-
-      if (("Z" %in% nostackmargins)|length(stackmargins)==0) { ##Fix Z.hat
-        data[use==1,Z.hat:=get(paste0("Z.hat",z))]
-        }
-
-      if ((cond %in% c("MW","AHS"))&(("outcome" %in% nostackmargins))) { #fix Y.res
-        data[use==1,Y.res:=get(paste0(outcome,".res",z))]
-      }
-
-      if (is.null(nostackmargins)==FALSE|(is.null(c(nostackmargins,stackmargins))==TRUE)) { # define Q and estimate Q.hat, estimate D.hat if relevant
-        ####NEEED TO ESTIMATE D.hat if using KITAGAWA + no stacking!!!
-
-        ##define Q if not stacking
-        if (cond=="MW") {
-          data[use==1,Q:=a*((1-Z.hat)*(D>=d)*(Z==z)-Z.hat*D*(1-(Z==z)))+(1-a)*(Z.hat*(1-(D>=d))*(1-(Z==z))-(1-Z.hat)*(1-(D>=d))*(Z==z)),env=list(Z=Z,D=D)]
-           } else if (cond %in% c("BP","K")) {
-          data[use==1,Q:=a*(D>=d)*(name==y)-(1-a)*(1-(D>=d))*(name==y),env=list(D=D,name=paste0(outcome,".bin"))]
-        } else {
-          data[use==1,Q:=1*(D>=d),env=list(D=D)]
-        }
-
-        if (cond=="K") {
-          data[use==1,D.hat:=do.call(regression_forest,append(list(X=.SD[,..XW],
-            Y=.SD[,D],num.trees=max(num.trees/4,50),
-            tune.parameters=tune.Dparameters,tune.num.trees=tune.num.trees,
-            tune.num.reps=tune.num.reps),Dparameters,sample.weights=weight,clusters=cluster))$prediction,
-             by="sample",.SDcols=XWD,env=list(D=D)]
-        }
-
-        ##Determine if no variation in Q in either sample
-        if (sd(data[sample==1&use==1,Q])==0|sd(data[sample==2&use==1,Q])==0) novar=TRUE else novar=FALSE
-
-        ##estimate Q.hat
-        if (novar==FALSE) {
-          data[use==1,Q.hat:=do.call(regression_forest,append(list(X=.SD[,..vars],Y=.SD[,Q],
-          num.trees=max(num.trees/4,50),tune.parameters=tune.Qparameters,
-          tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Qparameters,sample.weights=weight,clusters=cluster))$prediction,
-          by=c("sample")]
-        }
-
-      } else {
-        novar=FALSE
-      }
-
-      ##estimate causal/instrumental/regression forests
-
-      if ("zmargin" %in% stackmargins) z=1; if ("dmargin" %in% stackmargins) d=1
-      if (novar==FALSE) {
-        for (i in 1:2) {
-            if (cond=="K") {
-            forest=do.call(instrumental_forest,append(list(X=data[use==1&sample==i,vars,with=F],
-                Y=data[use==1&sample==i,Q],Y.hat=data[use==1&sample==i,Q.hat],
-                Z=data[use==1&sample==i,Z==z,env=list(Z=Z)],Z.hat=data[use==1&sample==i,Z.hat],
-                W=data[use==1&sample==i,D>=d,env=list(D=D)],W.hat=data[use==1&sample==i,D.hat],
-                compute.oob.predictions=compute.oob.predictions,num.trees=max(num.trees,50),
-                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),Cparameters,
-                ,sample.weights=weight,clusters=cluster))
-          } else if (cond=="MW") {
-            forest=do.call(regression_forest,append(list(X=data[use==1&sample==i,vars,with=F],
-                Y=data[use==1&sample==i,Q],
-                compute.oob.predictions=compute.oob.predictions,num.trees=max(num.trees,50),
-                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),
-                Cparameters,sample.weights=weight,clusters=cluster))
-          } else  {
-            forest=do.call(causal_forest,append(list(X=data[use==1&sample==i,vars,with=F],
-                Y=data[use==1&sample==i,Q],Y.hat=data[use==1&sample==i,Q.hat],
-                W=data[use==1&sample==i,Z==z,env=list(Z=Z)],W.hat=data[use==1&sample==i,Z.hat],
-                compute.oob.predictions=compute.oob.predictions,num.trees=max(num.trees,50),
-                tune.parameters=tune.Cparameters,tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps),
-                Cparameters,sample.weights=weight,clusters=cluster))
-          }
-          if (saveforest==T) forests=append(forests,list(forest))
-
-          if (cond!="MW") data[use==1&sample==i,scores:=get_scores(forest)]
-          else data[use==1&sample==i,scores:=Q]
-          if (treetype=="forest") {
-            if (se==FALSE) {
-              data[use==1&sample==i,tau:=forest$predictions]
-              data[use==1&sample!=i,taupred := predict(forest,newdata=data[use==1&sample!=i,vars,with=F])$prediction]
-            } else {
-              data[use==1&sample==i,c("tau","var_tau"):=predict(forest,estimate.variance=T)[,1:2]]
-              data[use==1&sample!=i,c("taupred","var_taupred") := predict(forest,newdata=data[use==1&sample!=i,vars,with=F],estimate.variance=T)[1:2]]
-            }
-          }
-          if (tune.Cparameters!="none"&((tunetype=="all")|tunetype=="one"&is.null(tunable.Cparams)==T)) {
-            tunable.Cparams=rbind(tunable.Cparams,c(dmargin=d,ybin=y,above=a,zmargin=z,condition=cond,sample=i,unlist(forest$tunable.params)))
-            if (tunetype=="one") {
-              Cparameters=forest$tunable.params
-            }
-            } else Cparameters=forest$tunable.params
-         } ##end i loop
-      }
-
-      if (nrow(index)>0) dotest=index[l,dotest] else dotest=TRUE
-      if (dotest==TRUE) { ##TEST HERE!
-        if (treetype=="forest") { ##test using forest approach
-          if (se==TRUE) {
-            data[,tau:=tau/sqrt(var_tau)]
-            data[,taupred:=taupred/sqrt(var_taupred)]
-          }
-          setorderv(data,cols=c("sample","tau"))
-
-          data[(Z==z|Z==z-1),N:=seq_len(.N),by=sample,env=list(Z=Z)]
-          data[(Z==z|Z==z-1),m:=cumsum(scores)/N,by=sample,env=list(Z=Z)]
-            if (is.null(cluster)==TRUE) {
-              data[(Z==z|Z==z-1),m2:=cumsum(scores^2)/seq_len(.N),by=sample,env=list(Z=Z)]
-              data[(Z==z|Z==z-1),G:=N,env=list(Z=Z)]
-              data[(Z==z|Z==z-1),se:=sqrt((m2-m^2)/(N-1)),by=sample,env=list(Z=Z)]
-            } else {
-              data[(Z==z|Z==z-1),dyiyj:=2*cumsum(scores)*scores-scores^2,by=c(cluster,"sample"),env=list(Z=Z)]
-              data[(Z==z|Z==z-1),Ng:=seq_len(.N),by=c(cluster,"sample"),env=list(Z=Z)]
-              data[(Z==z|Z==z-1),G:=cumsum(!duplicated(get(cluster))),by=sample,env=list(Z=Z)]
-              data[(Z==z|Z==z-1),dmy:=cumsum(scores)+scores*(Ng-1),by=c(cluster,"sample"),env=list(Z=Z)]
-              data[(Z==z|Z==z-1),se:=sqrt((G/(G-1))*(cumsum(dyiyj)-2*m*cumsum(dmy)+m^2*cumsum(2*Ng-1)))/seq_len(.N),by=sample,env=list(Z=Z)]
-            }
-
-            data[(Z==z|Z==z-1),t:=m/se,env=list(Z=Z)]
-
-            res=data[G>=minsize&(Z==z|Z==z-1), .SD[which.min(t)], by = sample,.SDcols=c("G","N","m","se","t","tau"),env=list(Z=Z)]
-
-            if (is.null(cluster)==FALSE) clust=as.formula(paste0("~",cluster)) else clust=NULL
-
-
-            if (nrow(data[(Z==z|Z==z-1)&sample==2&taupred<=res[1,tau],env=list(Z=Z)])>1) {
-              if (sd(data[(Z==z|Z==z-1)&sample==2&taupred<=res[1,tau],scores,env=list(Z=Z)])>0) {
-                fe=feols(scores~1,data=data[(Z==z|Z==z-1)&sample==2&taupred<=res[sample==1,tau],env=list(Z=Z)],cluster=clust,weights=weight)
-                test1=c(length(unique(data[(Z==z|Z==z-1)&sample==2&taupred<=res[sample==1,tau],G,env=list(Z=Z)])),fe$nobs,coeftable(fe)[1:3])
-                } else test1=rep(NA,5)
-              } else test1 = rep(NA,5)
-            if (nrow(data[(Z==z|Z==z-1)&sample==1&taupred<=res[2,tau],env=list(Z=Z)])>1) {
-              if (sd(data[(Z==z|Z==z-1)&sample==1&taupred<=res[2,tau],scores,env=list(Z=Z)])>0) {
-                fe=feols(scores~1,data=data[(Z==z|Z==z-1)&sample==1&taupred<=res[sample==2,tau],env=list(Z=Z)],cluster=clust,weights=weight)
-                test2=c(length(unique(data[(Z==z|Z==z-1)&sample==1&taupred<=res[sample==2,tau],G,env=list(Z=Z)])),fe$nobs,coeftable(fe)[1:3])
-              } else test2 = rep(NA,5)
-            } else test2 = rep(NA,5)
-
-            res=cbind(res,rbind(test1,test2))
-            if (length(nostackmargins)>0) results=rbind(results,cbind(index[l,..nostackmargins],res)) else results=rbind(results,res)
-
-        } else { ##test using CART approach
-          for (i in 1:2) {
-            treevec=c(XWY,stackmargins,"sample","id","scores")
-            esttree=esttree(data=data[(Z==z|Z==z-1),..treevec,env=list(Z=Z)],testsample=i,cp=cp,maxrankcp=maxrankcp,alpha=alpha,prune=prune,minsize=minsize,preselect=preselect,cluster=cluster)
-
-            if (length(nostackmargins)>0) {
-              results=rbind(results,cbind(index[l,..nostackmargins],sample=rep(i,nrow(esttree$res)),esttree$res))
-            } else {
-              results=rbind(results,cbind(sample=rep(i,nrow(esttree$res)),esttree$res))
-            }
-            ##trees[[i]]=esttree$tree
-
-        } ##end i loop
-      } ##end CART loop
-    } ##end test loop
-    } ##end margins loop
-
-
-      ##NAMING and postprocessing of results
-
-      if (treetype=="forest") {
-                taunames="tau cutoff";leafnames=NULL
-                } else {
-                  taunames="relevant";leafnames="leaf"
-                }
-      colnames(results)=c(nostackmargins,"sample",leafnames,"G.train","N.train","coef.train","stderr.train","t.train",taunames,"G.est","N.est","coef.est","stderr.est","t.est")
-
-      results[is.na(t.est)==FALSE,p.raw:=pnorm(t.est)]
+    ################ END: Multiple hypothesis testing and output #####################
+      res[is.na(t.est)==FALSE,p.raw:=pnorm(t.est)]
       for (m in c("holm","hochberg","BH","BY")) {
-        results[is.na(t.est)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
+        res[is.na(t.est)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
 
-      minp=apply(results[is.na(t.est)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
-      return=list(results=results,minp=minp)
-      #if (treetype=="CART"){return=append(return,list(trees=trees))}
-
+      minp=apply(res[is.na(t.est)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
       time=proc.time()-time
-      if (nrow(index)>0) return=append(return,list(margins=index[,1:(ncol(index)-1)]))
-      if (tune.Cparameters=="none") {
-        Cout=unlist(Cparameters)
-      } else Cout=tunable.Cparams
-      return=append(return,list(time=time,Cparameters=Cout))
-      if (saveforest==T) return=append(return,list(forests=forests))
+      return=list(results=res,minp=minp,time=time)
       return(return)
   }
 
-##HELPER FUNCTIONS
- esttree=function(data,testsample,cp,maxrankcp,alpha,prune,minsize,preselect,cluster=NULL){
+
+##################################################### HELPER FUNCTIONS ######################################
+
+# THIS FUNCTION ESTIMATES A TREE USING CART, TEST IN EACH NODE AND DETERMINE relevance
+ esttree=function(data,testsample,cp,maxrankcp,alpha,prune,minsize,preselect){
     tree=rpart(scores~.,data=as.data.frame(data[sample==testsample,!c("id","sample")]),method="anova",cp=cp,minbucket=minsize,weights=weight) # run tree with transformed outcome
 
     maxrankcp=min(maxrankcp, length(tree$cp[, 4]))
     maxcp=tree$cp[maxrankcp, 1]
-    if (is.null(cluster)==FALSE) clust=as.formula(paste0("~",cluster)) else clust=NULL
+
     if (prune==TRUE){ #prune the tree based on cross-validation
       opcpid=which.min(tree$cp[, 4])
       opcp=tree$cp[opcpid, 1]
@@ -643,4 +535,114 @@
     res[relevant==0,c("coef_est","stderr_est","t_est"):=NA]
     setcolorder(res, c("leaf","G_train","N_train","coef_train","stderr_train","t_train","relevant","G_est","N_est","coef_est","stderr_est","t_est"))
     return(list(tree=tree,res=res))
-  }
+ }
+
+ weighted_quantile <- function(x, w, probs = c(0.25, 0.5, 0.75),
+                  na.rm = TRUE,
+                  interpolation = c("linear", "left", "right", "midpoint")) {
+   interpolation <- match.arg(interpolation)
+
+   # basic checks
+   if (length(x) != length(w)) stop("x and w must have the same length.")
+   if (na.rm) {
+     keep <- is.finite(x) & is.finite(w)
+     x <- x[keep]; w <- w[keep]
+   }
+   if (any(w < 0)) stop("weights must be nonnegative.")
+   if (!length(x)) return(rep(NA_real_, length(probs)))
+   s <- sum(w)
+   if (s == 0) return(rep(NA_real_, length(probs)))
+
+   # sort by x
+   o <- order(x, na.last = NA)
+   x <- x[o]; w <- w[o]
+
+   # cumulative weight share in [0,1]
+   cw <- cumsum(w) / s
+
+   # helper to get quantile for a single p
+   get_q <- function(p) {
+     if (p <= 0) return(x[1L])
+     if (p >= 1) return(x[length(x)])
+
+     # first index where cw >= p
+     k <- which.max(cw >= p)  # same as min(which(cw >= p)) but faster
+     if (cw[k] == p) {
+       # exact hit: handle by interpolation rule
+       if (interpolation == "left")      return(x[k])
+       if (interpolation == "right")     return(x[k])
+       if (interpolation == "midpoint") {
+         # average of the "mass at p": include any ties on x with same cw threshold
+         j <- k
+         while (j > 1L && cw[j - 1L] == cw[k]) j <- j - 1L
+         i <- k
+         while (i < length(x) && cw[i + 1L] == cw[k]) i <- i + 1L
+         return((x[j] + x[i]) / 2)
+       }
+       # "linear" with exact hit returns x[k]
+       return(x[k])
+     } else {
+       # cw[k-1] < p < cw[k]  (k >= 1)
+       if (k == 1L) {
+         # all mass at the first point
+         return(x[1L])
+       }
+       if (interpolation == "left")  return(x[k - 1L])
+       if (interpolation == "right") return(x[k])
+       if (interpolation == "midpoint") return((x[k - 1L] + x[k]) / 2)
+
+       # linear interpolation in cumulative weight space
+       w_below <- cw[k - 1L]
+       w_above <- cw[k]
+       t <- (p - w_below) / (w_above - w_below)  # in (0,1)
+       return(x[k - 1L] + t * (x[k] - x[k - 1L]))
+     }
+   }
+
+   # vectorize over probs
+   res <- vapply(probs, get_q, numeric(1))
+   names(res) <- paste0(probs)
+   res
+ }
+
+ materialize_opts <- function(.sd, opts) {
+   out <- opts
+   wname <- out$sample.weights_name
+   cname <- out$clusters_name
+   out$sample.weights_name <- NULL
+   out$clusters_name <- NULL
+   if (!is.null(wname)) out$sample.weights <- .sd[[wname]]
+   if (!is.null(cname)) out$clusters       <- .sd[[cname]]
+   out
+ }
+
+ ######### MAIN FOREST HELPERS ###############
+
+ # ========= Helper: turn names -> GRF args (subset-aligned) =========
+ materialize_args <- function(.sd, y_name=NULL, x_names=NULL, w_name=NULL, z_name=NULL,
+                              forest_opts=list(), weight_col=NULL, cluster_col=NULL) {
+   args <- list()
+   if (!is.null(x_names)) {
+     miss <- setdiff(x_names, names(.sd)); if (length(miss)) stop("Missing X: ", paste(miss, collapse=", "))
+     args$X <- as.matrix(.sd[, ..x_names])
+   }
+   if (!is.null(y_name)) {
+     if (!y_name %in% names(.sd)) stop("Missing Y: ", y_name)
+     args$Y <- .sd[[y_name]]
+     yhat <- paste0(y_name, ".hat"); if (yhat %in% names(.sd)) args$Y.hat <- .sd[[yhat]]
+   }
+   if (!is.null(w_name)) {
+     if (!w_name %in% names(.sd)) stop("Missing W: ", w_name)
+     args$W <- .sd[[w_name]]
+     what <- paste0(w_name, ".hat"); if (what %in% names(.sd)) args$W.hat <- .sd[[what]]
+   }
+   if (!is.null(z_name)) {
+     if (!z_name %in% names(.sd)) stop("Missing Z: ", z_name)
+     args$Z <- .sd[[z_name]]
+     zhat <- paste0(z_name, ".hat"); if (zhat %in% names(.sd)) args$Z.hat <- .sd[[zhat]]
+   }
+   if (!is.null(weight_col))  { if (!weight_col  %in% names(.sd)) stop("Missing weight: ",  weight_col);  args$sample.weights <- .sd[[weight_col]] }
+   if (!is.null(cluster_col)) { if (!cluster_col %in% names(.sd)) stop("Missing cluster: ", cluster_col); args$clusters       <- .sd[[cluster_col]] }
+   c(args, forest_opts)
+ }
+
