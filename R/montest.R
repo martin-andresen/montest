@@ -179,10 +179,13 @@
       stop("Nothing to test with a binary treatment, a binary instrument and no other variables in data.")
     }
 
+    XW=c(X,W)
+    XWY=c(X,W,Y)
+
     ############ GROUP COMMON FOREST OPTIONS #############
 
     ##group common tree argments
-    forest_opts=list(num.trees=max(50,num.trees/4),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps,sample.weights_name=weight,clusters_name=cluster)
+    forest_opts=list(num.trees=max(50,num.trees/4),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
 
     ######################## 6 STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
     if (stack==TRUE) {
@@ -198,9 +201,11 @@
 
         ##estimate Z.hat for each margin in stacked data (also if K==1!)
         if (is.null(X)==FALSE) {
-        data[,Z.hat:=do.call(regression_forest, materialize_args(.SD,
-            y_name=Z, x_names=c(X,W),forest_opts=list(forest_opts,Zparameters),
-            weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
+        data[,paste0(Z,".hat"):=do.call(regression_forest, materialize_args(.SD,model="rf",
+            y_name=..Z, x_names=..XW,forest_opts=c(forest_opts,Zparameters),
+            weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+            cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
+            $prediction,by=c("sample",margins),env=list(Z=Z)]
         if (normalize==TRUE) { #Normalize propensity scores
           data[,Z.hat:=.N*Z.hat/sum(Z/Z.hat),by=c("sample",margins),env=list(Z=Z)]
         }
@@ -216,13 +221,15 @@
         data[,maxlevsY:=maxlevs,by=c("id",margins)]
         margins=c(margins,"outcome")
         Y="Ystack"
-      }
+      } else maxlevsY=maxlevs
 
       ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
       if ((sum(test %in% c("MW","AHS"))>0)&Y.res==TRUE)  {
-        data[,Y.res:=Y-do.call(regression_forest, materialize_args(.SD,
-           y_name=Y, x_names=c(X,W),forest_opts=list(forest_opts,Yparameters),
-           weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
+        data[,paste0(Y,".res"):=Y-do.call(regression_forest, materialize_args(.SD,model="rf",
+             y_name=..Y, x_names=..XW,forest_opts=c(forest_opts,Zparameters),
+              weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+             cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
+             $prediction,by=c("sample",margins),env=list(Y=Y)]
         }
 
       ##STACK MARGINS OF D
@@ -234,16 +241,15 @@
 
       ##Estimate D.hat if test includes "K"
       if ("K" %in% test) {
-
-        ##DT[, X := X[which.max(!is.na(X))], by = G]
-        data[,D.hat:=do.call(regression_forest, materialize_args(.SD,
-           y_name=D, x_names=c(X,W),forest_opts=list(forest_opts,Dparameters),
-            weight_col=weight,cluster=cluster_col))$prediction,by=c("sample",margins)]
+        data[,paste0(D,".hat"):=do.call(regression_forest, materialize_args(.SD,model="rf",
+            y_name=..D, x_names=..XW,forest_opts=c(forest_opts,Zparameters),
+             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+            cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
+             $prediction,by=c("sample",margins),env=list(D=D)]
         }
 
         ##Expand multiple conditions for testing (except K + BP, which has same def of Q - expand later)
           if (length(test)>1) {
-            if ("condition" %in% stackmargins) {
               if (sum(test %in% c("BP","K"))==2) testexpand=c(test[!test %in% c("BP","K")],"BPK")
               else testexpand=test
               if (length(testexpand)>1) {
@@ -253,7 +259,6 @@
                 data[,condition:=ifelse(length(test)==2,"BPK",test)]
               }
             margins=c(margins,"condition")
-              }
           } else {condition=test}
 
         ##Expand to a=0,1 for BP, K and MW conditions
@@ -286,15 +291,17 @@
         data[,rQ:=NULL]
 
         ##Estimate Q.hat in stacked data
-        if (sum(test %in% c("simple","BP","K"))>0) {
-          data[condition %in% c("simple","BPK","BP","K"),Q.hat:=do.call(regression_forest, materialize_args(.SD,
-              y_name="Q", x_names=c(X,W),forest_opts=list(forest_opts,Qparameters),
-              weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
+        if (sum(test %in% c("simple","BP","K","BPK"))>0) {
+          data[condition %in% c("simple","BPK","BP","K"),Q.hat:=do.call(regression_forest, materialize_args(.SD,model="rf",
+               y_name="Q", x_names=..XW,forest_opts=c(forest_opts,Zparameters),
+               weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+               cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))$prediction,by=c("sample",margins)]
         }
         if ("AHS" %in% test) {
-          data[condition=="AHS",Q.hat:=do.call(regression_forest, materialize_args(.SD,
-                y_name="Q", x_names=c(X,W,Y),forest_opts=list(forest_opts,Qparameters),
-                weight_col=weight,cluster_col=cluster))$prediction,by=c("sample",margins)]
+          data[condition=="AHS",Q.hat:=do.call(regression_forest, materialize_args(.SD,model="rf",
+             y_name="Q", x_names=..XWY,forest_opts=c(forest_opts,Zparameters),
+             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+             cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))$prediction,by=c("sample",margins)]
           }
 
         ##Split BP and K conditions if doing both
@@ -305,109 +312,133 @@
 
     ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
 
-      ##ESTIMATE CAUSAL/REGRESSION/IV FOREST
-
-        ############NEW CODE FOR CAUSAL FORESTS!! ########################
         driver_name <- "condition"
 
         model_spec <- list(
-          "simple" = list(model = "cf", xvars = c(X,W)),
-          "MW" = list(model = "rf", xvars = c(X,W,Y)),
-          "BP" = list(model = "cf", xvars = c(X,W)),
-          "AHS" = list(model= "cf", xvars= c(X,W,Y)),
-          "K" = list(model="iv",xvars=c(X,W))
+          "simple" = list(model = "cf", xvars = c(X, W)),          # CF: Q ~ Z ; cov: X,W
+          "MW"     = list(model = "rf", xvars = c(X, W, Y)),        # RF: Q ~ X,W,Y
+          "BP"     = list(model = "cf", xvars = c(X, W)),           # CF: Q ~ Z ; cov: X,W
+          "AHS"    = list(model = "cf", xvars = c(X, W, Y)),        # CF: Q ~ Z ; cov: X,W,Y
+          "K"      = list(model = "iv", xvars = c(X, W))            # IV: Q ~ D (Z) ; cov: X,W
         )
 
-        # ---------- Prep ----------
-        if (!"..idx__" %in% names(data)) data[, idx__ := .I]
-        for (nm in c("pred","scores","pred_o")) if (!nm %in% names(data)) data[, (data) := NA_real_]
+        # Housekeeping cols
+        data[, idx__ := .I]
         data[, grp_id := .GRP, by = margins]
 
+        # Helper: fetch model spec per key and validate X columns
         get_spec <- function(key) {
           sp <- model_spec[[as.character(key)]]
           if (is.null(sp)) stop(sprintf("No model_spec entry for '%s'", key))
           miss <- setdiff(sp$xvars, names(data))
-          if (length(miss)) stop(sprintf("Missing X columns for '%s': %s", key, paste(miss, collapse=", ")))
-          if (sp$model %in% c("cf","iv")) stopifnot("Z" %in% names(data))
-          if (sp$model == "cf") stopifnot(all(c("Q.hat","Z.hat") %in% names(data)))
-          if (sp$model == "iv") {
-            stopifnot(all(c("Q.hat","D.hat","Z.hat") %in% names(data)))
-          }
+          if (length(miss)) stop(sprintf("Missing X columns for '%s': %s", key, paste(miss, collapse = ", ")))
           sp
         }
 
+        # Optional: column names for weights/clusters if present in parent frame
+        wcol <- get0("weight",  inherits = TRUE, ifnotfound = NULL)   # e.g. "w"
+        ccol <- get0("cluster", inherits = TRUE, ifnotfound = NULL)   # e.g. "id"
 
-
-        # ---------- Single pass ----------
+        # ---------- Single pass (fit CF/RF/IVF + write back) ----------
         data[, {
-          key   <- get(driver_name)[1]
-          sp    <- get_spec(key)
-          idx   <- idx__
-          gid   <- grp_id[1]
-          s0    <- S[1]
+          # determine condition for this group
+          key <- if (is.character(condition) && length(condition) == 1L) {
+            condition
+          } else {
+            get(driver_name)[1L]
+          }
+          sp  <- get_spec(key)
 
-          Y_sub <- Y
-          X_sub <- as.matrix(.SD[, ..sp$xvars])
+          idx <- idx__                # row indices in the original data
+          gid <- grp_id[1L]
+          s0  <- sample[1L]           # this group's sample (e.g., 1 or 2)
 
-          if (sp$model == "cf") {
-
-            fit <- do.call(
-              causal_forest,
-              c(list(X = X_sub, Y = Y_sub, W = W,
-                     Y.hat = .SD$Y.hat, W.hat = .SD$W.hat),
-                forest_opts)
+          # build args with your helper (adds hats for cf/iv if present)
+          if (sp$model == "rf") {
+            args <- materialize_args(
+              .sd        = .SD,
+              model      = "rf",
+              y_name     = "Q",
+              x_names    = sp$xvars,
+              forest_opts= c(get0("forest_opts", inherits = TRUE, ifnotfound = list()),
+                             get0("Zparameters", inherits = TRUE, ifnotfound = list())),
+              weight_col = wcol,
+              cluster_col= ccol
             )
+            fit <- do.call(grf::regression_forest, args)
+            pred_in   <- as.numeric(predict(fit)$predictions)
+            scores_in <- .SD[,Q]   # MW: scores = Q
+
+          } else if (sp$model == "cf") {
+            args <- materialize_args(
+              .sd        = .SD,
+              model      = "cf",
+              y_name     = "Q",
+              w_name     = ..Z,                   # treatment = Z
+              x_names    = sp$xvars,              # covariates
+              forest_opts= c(get0("forest_opts", inherits = TRUE, ifnotfound = list()),
+                             get0("Zparameters", inherits = TRUE, ifnotfound = list())),
+              weight_col = wcol,
+              cluster_col= ccol
+            )
+            fit <- do.call(grf::causal_forest, args)
             pred_in   <- as.numeric(predict(fit)$predictions)
             scores_in <- as.numeric(get_scores(fit))
 
           } else if (sp$model == "iv") {
-            fit <- do.call(
-              instrumental_forest,
-              c(list(X = X_sub, Y = Y_sub, W = W, Z = .SD[[sp$zvar]],
-                     Y.hat = .SD$Y.hat, W.hat = .SD$W.hat, Z.hat = .SD$Z.hat),
-                forest_opts)
+            args <- materialize_args(
+              .sd        = .SD,
+              model      = "iv",
+              y_name     = "Q",
+              w_name     = ..D,                   # treatment = D
+              z_name     = ..Z,                   # instrument = Z
+              x_names    = sp$xvars,              # covariates
+              forest_opts= c(get0("forest_opts", inherits = TRUE, ifnotfound = list()),
+                             get0("Zparameters", inherits = TRUE, ifnotfound = list())),
+              weight_col = wcol,
+              cluster_col= ccol
             )
+            fit <- do.call(grf::instrumental_forest, args)
             pred_in   <- as.numeric(predict(fit)$predictions)
             scores_in <- as.numeric(get_scores(fit))
 
-          } else if (sp$model == "rf") {
-            fit <- do.call(
-              regression_forest,
-              c(list(X = X_sub, Y = Y_sub), forest_opts)
-            )
-            pred_in   <- as.numeric(predict(fit)$predictions)
-            scores_in <- Y_sub
+          } else {
+            stop(sprintf("Unknown model '%s'", sp$model))
+          }
 
-          } else stop(sprintf("Unknown model '%s'", sp$model))
-
-          # Write back
+          # write back in-sample
           set(data, i = idx, j = "pred",   value = pred_in)
           set(data, i = idx, j = "scores", value = scores_in)
 
-          # Cross-sample predictions
-          other_idx <- data[grp_id == gid & S != s0, which = TRUE]
+          # cross-sample predict: use the model fit on this group to predict the "other" sample within the same margins
+          other_idx <- data[grp_id == gid & sample != s0, which = TRUE]
           if (length(other_idx)) {
-            X_other   <- as.matrix(data[other_idx, ..sp$xvars])
-            pred_other <- as.numeric(predict(fit, X_other)$predictions)
-            set(data, i = other_idx, j = "pred_o", value = pred_other)
+            X_other <- as.matrix(data[other_idx, sp$xvars, with = FALSE])
+            pred_o  <- as.numeric(predict(fit, X_other)$predictions)
+            set(data, i = other_idx, j = "pred_o", value = pred_o)
           }
 
           NULL
-        }, by = .(grp_id, S)]
+        }, by = .(grp_id, sample)]
 
+        # cleanup
         data[, c("idx__","grp_id") := NULL]
 
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
 
+
         setorderv(data,cols=c("sample","pred"))
 
-        data[, `:=`(a = weights * Y, b = weight), env=list(weight=weight)] ## Per-row basics
+        if (is.null(weight)) weight=1
+        data[,N:=seq_len(.N),by=sample]
+        data[, `:=`(a = weight * Y, b = weight), env=list(weight=weight)] ## Per-row basics
 
         ## Within-cluster running totals (in current order)
-        data[, `:=`(WgY = cumsum(a),Wg  = cumsum(b)), by = c("sample",cluster), env=list(cluster=cluster)]
+        data[, `:=`(WgY = cumsum(a),Wg  = cumsum(b)), by = c("sample",cluster)]
 
         ## Global running totals
-        data[, `:=`(SW  = cumsum(b),SWY = cumsum(a),m = SWY / SW), by=sample]
+        data[, `:=`(SW  = cumsum(b),SWY = cumsum(a)), by=sample]
+        data[,m:= SWY / SW,by=sample]
 
         ## Per-row deltas for the three cross-cluster aggregates
         ## Using (x_new^2 - x_old^2) and (x_new*y_new - x_old*y_old) to avoid shifts
@@ -417,7 +448,7 @@
         data[, `:=`(TA2 = cumsum(dTA2),TB2 = cumsum(dTB2),TAB = cumsum(dTAB)),by=sample]
 
         ## Number of unique clusters seen so far
-        data[, G := cumsum(!duplicated(cluster)),by=sample]
+        data[, G := cumsum(!duplicated(cluster)),by=sample,env=list(cluster=cluster)]
 
         ## Cluster-robust SE for the weighted mean (CRV1 with small-sample adj.)
         ## sumS2 = (TA2 - 2*m*TAB + m^2*TB2)/SW^2
@@ -431,54 +462,37 @@
         data[, c("a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB","sumS2") := NULL]
 
         ##FIND DUAL-constraint TAU CUTOFF that ensures minsize clusters in both samples
-        tau <- data[G == minsize,
-          {  f <- function(v) {
-           m <- suppressWarnings(min(v, na.rm = TRUE))
-          if (is.finite(m)) m else NA_real_   # handles no-match / all-NA
-           }
-        out <- lapply(.SD, f)
-        setNames(out, c("tau_in", "tau_out"))
-        }, by = .(sample, margins), .SDcols = c("pred", "pred_out")]
+        tau <- data[G==minsize,min(pred),by=sample]
+        setorderv(data,cols=c("sample","pred_o"))
 
-        tau <- tau[
-          tau[, .(margins, sample = 3L - sample, pred_out_other = pred_out)],
-          on = .(margins, sample),
-          nomatch = NA
-        ][
-          , pred_out := i.pred_out_other
-        ][
-          , i.pred_out_other := NULL][]   # drop helper col
+        tau <- cbind(tau,data[cumsum(!duplicated(cluster))==minsize,min(pred_o),by=sample,env=list(cluster=cluster)])
 
-        tau[,tau:=pmax(pred_in,pred_out, na.rm = TRUE)]
-        data[tau[, .(sample, margins, tau = med)],
-             on = .(sample, margins),
-             tau := i.tau]
+        tau=c(max(tau[1,2],tau[2,4]),max(tau[2,2],tau[1,4]))
+        data[,tau:=fifelse(sample==1,tau[1],tau[2])]
 
         ###TRAIN SAMPLE RESULTS
-        res=data[pred<=tau, .SD[which.min(t)], by = sample,.SDcols=c("G","N","m","se","t","pred")] ##FIND OPTIMAL CUTOFF
+        res=data[pred>tau, .SD[which.min(t)], by = sample,.SDcols=c("G","N","m","se","t","pred")] ##FIND OPTIMAL CUTOFF
+
 
         #####PERFORM TEST IN TRAIN SAMPE- CR1 cluster robust inference ############
-        res=cbind(res,data[pred_out<=tau, { ##PERFORM TEST
-          # drop NAs in the target within this group
-          n <- length(scores)
-          ybar <- mean(scores)
+        clust=as.formula(paste0("~",cluster))
+        fe=feols(scores~1,data=data,vcov=clust,split=~sample)
+        GN=cbind(data[pred_o<=tau,uniqueN(cluster),by=sample,env=list(cluster=cluster)][,V1],data[pred_o<=tau,.N,by=sample,env=list(cluster=cluster)][,N])
 
-          # cluster summaries
-          clsum <- data.table(cluster = cluster, scores = scores)[, .(ng = .N, ybar_g = mean(scores)), by = cluster]
-          G <- nrow(clsum)
-
-          # Liang–Zeger CR0 meat for the sample mean:
-          # Var_hat = (1/n^2) * sum_g [ (sum_{i in g} (y_i - ybar))^2 ]
-          # which equals (1/n^2) * sum_g [ (ng * (ybar_g - ybar))^2 ]
-          meat <- sum((clsum$ng * (clsum$ybar_g - ybar))^2)
-
-          # small-sample CR1 correction by clusters
-          se <- if (G > 1) sqrt((G/(G - 1)) * meat / (n^2)) else NA_real_
-
-          .(G=G,N=n,m=ybar,se=se,pred=max(pred))
-        },by=sample])
+        res=cbind(res,GN,rbind(fe$`sample.var: sample; sample: 1`$coeftable[1,1:3],fe$`sample.var: sample; sample: 2`$coeftable[1,1:3]))
 
         colnames(res)=c("sample","G.train","N.train","coef.train","stderr.train","t.train","tau cutoff","G.est","N.est","coef.est","stderr.est","t.est")
+
+        Xmeans <- data[pred_o <= tau,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
+        Xmeans_all <- data[,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
+        XSD <- data[,lapply(.SD, sd, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
+
+        marginsmat_all=data[,.N,by=c("sample",margins)]
+        marginsmat=data[pred_o<=tau,.N,by=c("sample",margins)]
+        marginsmat=merge(marginsmat,marginsmat_all, by=c("sample",margins),all=TRUE)
+        marginsmat[,share_all:=N.y/sum(N.y), by=sample]
+        marginsmat[,share:=ifelse(is.na(N.x),0,N.x)/sum(N.x,na.rm=TRUE), by=sample]
+        marginsmat[,c("N.x","N.y"):=NULL]
     }
 
     ################ END: Multiple hypothesis testing and output #####################
@@ -487,9 +501,10 @@
         res[is.na(t.est)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
 
+      minsample=res[which.min(p.raw),sample]
       minp=apply(res[is.na(t.est)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
       time=proc.time()-time
-      return=list(results=res,minp=minp,time=time)
+      return=list(results=res,minsample=minsample,minp=minp,time=time,margins=marginsmat,Xmeans_all=Xmeans_all,XSD=XSD,Xmeans=Xmeans)
       return(return)
   }
 
@@ -605,21 +620,11 @@
    res
  }
 
- materialize_opts <- function(.sd, opts) {
-   out <- opts
-   wname <- out$sample.weights_name
-   cname <- out$clusters_name
-   out$sample.weights_name <- NULL
-   out$clusters_name <- NULL
-   if (!is.null(wname)) out$sample.weights <- .sd[[wname]]
-   if (!is.null(cname)) out$clusters       <- .sd[[cname]]
-   out
- }
 
  ######### MAIN FOREST HELPERS ###############
 
  # ========= Helper: turn names -> GRF args (subset-aligned) =========
- materialize_args <- function(.sd, y_name=NULL, x_names=NULL, w_name=NULL, z_name=NULL,
+ materialize_args <- function(.sd,model="rf",y_name=NULL, x_names=NULL, w_name=NULL, z_name=NULL,
                               forest_opts=list(), weight_col=NULL, cluster_col=NULL) {
    args <- list()
    if (!is.null(x_names)) {
@@ -629,17 +634,17 @@
    if (!is.null(y_name)) {
      if (!y_name %in% names(.sd)) stop("Missing Y: ", y_name)
      args$Y <- .sd[[y_name]]
-     yhat <- paste0(y_name, ".hat"); if (yhat %in% names(.sd)) args$Y.hat <- .sd[[yhat]]
+     if (model %in% c("cf","iv")) {yhat <- paste0(y_name, ".hat"); if (yhat %in% names(.sd)) args$Y.hat <- .sd[[yhat]]}
    }
    if (!is.null(w_name)) {
      if (!w_name %in% names(.sd)) stop("Missing W: ", w_name)
      args$W <- .sd[[w_name]]
-     what <- paste0(w_name, ".hat"); if (what %in% names(.sd)) args$W.hat <- .sd[[what]]
+     if (model %in% c("cf","iv")) {what <- paste0(w_name, ".hat"); if (what %in% names(.sd)) args$W.hat <- .sd[[what]]}
    }
    if (!is.null(z_name)) {
      if (!z_name %in% names(.sd)) stop("Missing Z: ", z_name)
      args$Z <- .sd[[z_name]]
-     zhat <- paste0(z_name, ".hat"); if (zhat %in% names(.sd)) args$Z.hat <- .sd[[zhat]]
+     if (model=="iv")  {zhat <- paste0(z_name, ".hat"); if (zhat %in% names(.sd)) args$Z.hat <- .sd[[zhat]]}
    }
    if (!is.null(weight_col))  { if (!weight_col  %in% names(.sd)) stop("Missing weight: ",  weight_col);  args$sample.weights <- .sd[[weight_col]] }
    if (!is.null(cluster_col)) { if (!cluster_col %in% names(.sd)) stop("Missing cluster: ", cluster_col); args$clusters       <- .sd[[cluster_col]] }
