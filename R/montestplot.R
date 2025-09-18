@@ -1,6 +1,6 @@
-montestplot<-function(object,sample=NULL,margins=NULL) {
+montestplot<-function(object,sample=NULL,margins=NULL,numX=10) {
   if (is.null(sample)==TRUE) s=object$minsample
-  if (is.null(margins)==FALSE) { ##Plot margins
+  if (is.null(margins)==FALSE) { ##Determine margins
     marginnames=colnames(object$margins)
     marginnames=marginnames[!marginnames %in% c("sample","share","share_all")]
     match.arg(margins,c(marginnames,"all"),several.ok=TRUE)
@@ -12,11 +12,13 @@ montestplot<-function(object,sample=NULL,margins=NULL) {
 
   ## Plot X means
     vals=(object$Xmeans-object$Xmeans_all)/object$XSD
-    names=colnames(object$Xmeans)[-1]
     vals=as.numeric(vals[s,-1])
+    vals=vals[order(abs(vals),decreasing=TRUE)]
+    if (length(vals)>numX)vals=vals[1:numX]
+    names=names(vals)
     barplot(vals, names.arg = names, las = 2,
             main = "Standardized differences in means",
-            ylab = "(test sample - full sample) / SD full sample")
+            ylab = "(test mean - full mean) / test SD")
 
 
   if (is.null(margins)==FALSE) { ##Plot margins

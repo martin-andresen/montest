@@ -221,7 +221,7 @@
         data[,maxlevsY:=maxlevs,by=c("id",margins)]
         margins=c(margins,"outcome")
         Y="Ystack"
-      } else maxlevsY=maxlevs
+      } else if (sum(test %in% c("BP","K"))>0) maxlevsY=maxlevs
 
       ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
       if ((sum(test %in% c("MW","AHS"))>0)&Y.res==TRUE)  {
@@ -261,11 +261,11 @@
             margins=c(margins,"condition")
           } else {condition=test}
 
-        ##Expand to a=0,1 for BP, K and MW conditions
+        ##Expand to equation=0,1 for BP, K and MW conditions
           if (sum(test %in% c("MW","BP","K"))>0) {
             data=data[rep(seq(.N),1+condition %in% c("BPK","MW","BP","K"))]
-            data[condition %in% c("BPK","MW","BP","K"),above:=seq(.N)-1*(condition %in% c("BPK","MW","BP","K")),by=c("id",margins)]
-            margins=c(margins,"above")
+            data[condition %in% c("BPK","MW","BP","K"),equation:=seq(.N)-1*(condition %in% c("BPK","MW","BP","K")),by=c("id",margins)]
+            margins=c(margins,"equation")
             }
 
         ##Expand to all groups of Ybin for BP, K conditions
@@ -277,12 +277,12 @@
 
         ##Create outcome variable Q in stacked data
         if (sum(test %in% c("simple","AHS"))>0) data[condition %in% c("simple","AHS"),Q:=D,env=list(D=D)]
-        if (sum(test %in% c("BPK","K","BP"))>0) data[condition %in% c("BPK","BP","K"),Q:=above*(D*(name==ybin))-(1-above)*(1-D)*(name==ybin),env=list(D=D,name=paste0(Y,".bin"))]
-        if ("MW" %in% test) data[condition=="MW",Q:=above*((1-Z.hat)*D*Z-Z.hat*D*(1-Z))+(1-above)*(Z.hat*(1-D)*(1-Z)-(1-Z.hat)*(1-D)*Z),env=list(Z=Z,D=D)]
+        if (sum(test %in% c("BPK","K","BP"))>0) data[condition %in% c("BPK","BP","K"),Q:=equation*(D*(name==ybin))-(1-equation)*(1-D)*(name==ybin),env=list(D=D,name=paste0(Y,".bin"))]
+        if ("MW" %in% test) data[condition=="MW",Q:=equation*((1-Z.hat)*D*Z-Z.hat*D*(1-Z))+(1-equation)*(Z.hat*(1-D)*(1-Z)-(1-Z.hat)*(1-D)*Z),env=list(Z=Z,D=D)]
         if ("K" %in% test) {
-            data[condition %in% c("BPK","K"),D.hat:=D.hat*above+(1-D.hat)*(1-above)]
-            data[condition %in% c("BPK","K"),D:=D*above+(1-D)*(1-above),env=list(D=D)]
-            ##reverse treatment indicator for above==0 and condition=="K"
+            data[condition %in% c("BPK","K"),D.hat:=D.hat*equation+(1-D.hat)*(1-equation)]
+            data[condition %in% c("BPK","K"),D:=D*equation+(1-D)*(1-equation),env=list(D=D)]
+            ##reverse treatment indicator for equation==0 and condition=="K"
         }
 
         ##drop groups/margins/conditions/outcomes with constant Q
@@ -472,21 +472,27 @@
 
         ###TRAIN SAMPLE RESULTS
         res=data[pred>tau, .SD[which.min(t)], by = sample,.SDcols=c("G","N","m","se","t","pred")] ##FIND OPTIMAL CUTOFF
-
+        data[,tau:=fifelse(sample==1,res[2,pred],res[1,pred])] ##replace dual-constraint tau with optimal cutoff
 
         #####PERFORM TEST IN TRAIN SAMPE- CR1 cluster robust inference ############
         clust=as.formula(paste0("~",cluster))
-        fe=feols(scores~1,data=data,vcov=clust,split=~sample)
+        if (weight!=1) wg=as.formula(paste0("~",weight)) else wg=NULL
         GN=cbind(data[pred_o<=tau,uniqueN(cluster),by=sample,env=list(cluster=cluster)][,V1],data[pred_o<=tau,.N,by=sample,env=list(cluster=cluster)][,N])
 
-        res=cbind(res,GN,rbind(fe$`sample.var: sample; sample: 1`$coeftable[1,1:3],fe$`sample.var: sample; sample: 2`$coeftable[1,1:3]))
+        res=cbind(res,GN,rbind(feols(scores~i(sample)-1,data=data[pred_o<=tau],vcov=clust,weights=wg)$coeftable[,1:3]))
 
         colnames(res)=c("sample","G.train","N.train","coef.train","stderr.train","t.train","tau cutoff","G.est","N.est","coef.est","stderr.est","t.est")
 
+        ###TODO: THESE MEANS SHOULD BE WEIGHTED
         Xmeans <- data[pred_o <= tau,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
         Xmeans_all <- data[,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
         XSD <- data[,lapply(.SD, sd, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
 
+        ###TODO: Y res means if MW,AHS
+        if (sum(test %in% c("AHS","MW"))>0) { ##Add Y or Y to Xmeans
+          data[pred_o<=tau,mean(Y),by=sample,env=list(Y=Y)]
+        }
+        ##SHOULD THESE ALSO BE WEIGHTED? Z==0 and Z==K...?
         marginsmat_all=data[,.N,by=c("sample",margins)]
         marginsmat=data[pred_o<=tau,.N,by=c("sample",margins)]
         marginsmat=merge(marginsmat,marginsmat_all, by=c("sample",margins),all=TRUE)
