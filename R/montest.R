@@ -18,6 +18,9 @@
 
 
     ################### 1 CHECK INPUT #####################
+
+    if ((minsize!=floor(minsize))|minsize<0) stop("Minsize must be an integer >0.")
+
     if (is.null(test)==TRUE) {
       if (is.null(Y)==TRUE) {
         test="simple"
@@ -182,12 +185,11 @@
     XW=c(X,W)
     XWY=c(X,W,Y)
 
-    ############ GROUP COMMON FOREST OPTIONS #############
-
     ##group common tree argments
     forest_opts=list(num.trees=max(50,num.trees/4),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
+    forest_optsC=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
 
-    ######################## 6 STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
+    ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
     if (stack==TRUE) {
       margins=c()
 
@@ -202,7 +204,7 @@
         ##estimate Z.hat for each margin in stacked data (also if K==1!)
         if (is.null(X)==FALSE) {
         data[,paste0(Z,".hat"):=do.call(regression_forest, materialize_args(.SD,model="rf",
-            y_name=..Z, x_names=..XW,forest_opts=c(forest_opts,Zparameters),
+            y_name=..Z, x_names=..X,forest_opts=c(forest_opts,Zparameters),
             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
             cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
             $prediction,by=c("sample",margins),env=list(Z=Z)]
@@ -311,7 +313,6 @@
         }
 
     ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
-
         driver_name <- "condition"
 
         model_spec <- list(
@@ -360,8 +361,8 @@
               model      = "rf",
               y_name     = "Q",
               x_names    = sp$xvars,
-              forest_opts= c(get0("forest_opts", inherits = TRUE, ifnotfound = list()),
-                             get0("Zparameters", inherits = TRUE, ifnotfound = list())),
+              forest_opts= c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
+                             get0("Cparameters", inherits = TRUE, ifnotfound = list())),
               weight_col = wcol,
               cluster_col= ccol
             )
@@ -376,8 +377,8 @@
               y_name     = "Q",
               w_name     = ..Z,                   # treatment = Z
               x_names    = sp$xvars,              # covariates
-              forest_opts= c(get0("forest_opts", inherits = TRUE, ifnotfound = list()),
-                             get0("Zparameters", inherits = TRUE, ifnotfound = list())),
+              forest_opts= c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
+                             get0("Cparameters", inherits = TRUE, ifnotfound = list())),
               weight_col = wcol,
               cluster_col= ccol
             )
@@ -393,8 +394,8 @@
               w_name     = ..D,                   # treatment = D
               z_name     = ..Z,                   # instrument = Z
               x_names    = sp$xvars,              # covariates
-              forest_opts= c(get0("forest_opts", inherits = TRUE, ifnotfound = list()),
-                             get0("Zparameters", inherits = TRUE, ifnotfound = list())),
+              forest_opts= c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
+                             get0("Cparameters", inherits = TRUE, ifnotfound = list())),
               weight_col = wcol,
               cluster_col= ccol
             )
@@ -501,7 +502,121 @@
         marginsmat[,c("N.x","N.y"):=NULL]
     }
 
-    ################ END: Multiple hypothesis testing and output #####################
+    ######################## 6b loop over margins and estimate CART or FOREST approach ################
+    else {
+
+        ########## PRE-ESTIMATE Z.hat to avoid redoing it for each loop
+
+        for (z in 1:K) {
+          data[Z==z|Z==z-1,paste0(Z,".hat",z):=do.call(regression_forest, materialize_args(.SD,model="rf",
+             y_name=..Z, x_names=..X,forest_opts=c(forest_opts,Zparameters),
+             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+            cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
+            $prediction,by=sample,env=list(Z=Z)]
+        }
+        ########## FIGURE OUT WHAT TO LOOP OVER ################
+        margins=c();list=list();index=data.frame()
+        if (K>1) { ##margins of Z
+          margins=c(margins,"zmargin")
+          list=append(list,list(zmargin=1:K))
+        }
+
+        if (J>1) { ##margins of D
+          margins=c(margins,"dmargin")
+          list=append(list,list(dmargin=1:J))
+        }
+
+        if (L>1) { ##Outcomes
+          margins=c(margins,"outcome")
+          list=append(list,list(outcome=Y))
+        }
+
+        if (length(test)>1) { ##testable conditions
+          margins=c(margins,"condition")
+          list=append(list,list(condition=test))
+        }
+
+        if (length(list)>0) index=do.call(CJ,list)
+
+        if (sum(test %in% c("K","BP"))>0) { ##bins of Y
+          margins=c(margins,"ybin")
+          if (length(list)==0) {
+            index=data.table(ybin=0:(maxlevs-1))
+          } else {
+            index=index[rep(seq(.N),ifelse(condition %in% c("K","BP"),rep(maxlevs,each=length(Y)),1))]
+            index[condition %in% c("K","BP"),ybin:=sequence(maxlevs),by=margins[!margins %in% "outcome"]]
+          }
+        }
+
+        if (sum(test %in% c("MW","K","BP"))>0) { #equation for two-eq. conditions
+          margins=c(margins,"above")
+          if (nrow(index)==0) index=data.table(above=0:1) else {
+            if (length(test)>1) {
+              index=index[rep(seq(.N),1+(condition %in% c("MW","BP","K")))]
+              index[condition %in% c("MW","BP","K"),equation:=seq(.N)-1*(condition %in% c("MW","BP","K")),by=margins]
+            } else {
+              index=index[rep(seq(.N),2)]
+              index[,equation:=seq(.N)-1,by=margins]
+            }
+          }
+        }
+
+        if (is.null(margins)==FALSE) {
+          setorderv(index,cols=margins)
+          setcolorder(index,margins)
+          loopmax=max(nrow(index),1)
+        } else loopmax=1
+
+        ######## RUN LOOP ##########
+      for (l in 1:loopmax) {
+        if (K>1) z=index[l,zmargin] else z=1
+        if (J>1) d=index[l,dmargin] else d=1
+        if (sum(c("BP","K","MW") %in% test)>0) eq=index[l,equation] else a=NA
+        if (sum(c("BP","K") %in% test)>0) y=index[l,ybin] else y=NA
+        if (length(test)>1) cond=index[l,condition] else cond=test
+        if (L>1) outcome=index[l,outcome] else outcome=Y
+
+        ##replace Z
+        data[,paste0(Z,".hat"):=get(paste0(Z,".hat",z)),env=list(Z=Z)]
+
+        ##define Q
+        if (cond %in% c("simple","AHS")) data[Z==z|Z==z-1,Q:=D>=d,env=list(D=D)]
+        else if (cond=="MW") data[Z==z|Z==z-1,Q:=a*((1-paste0(Z,".hat"))*(D>=d)*(Z>=z)-paste0(Z,".hat")*(D>=d)*(1-(Z>=z)))+(1-a)*(paste0(Z,".hat")*(1-(D>=d))*(1-(Z>=z))-(1-paste0(Z,".hat"))*(1-(D>=d))*(Z>=z)),env=list(Z=Z,D=D)]
+        else data[Z==z|Z==z-1,Q:=a*((D>=d)*(name==y))-(1-a)*(1-(D>=d))*(name==y),env=list(D=D,name=paste0(Y,".bin"))]
+
+        ##Estimate Q.hat
+        if (cond %in% c("MW","AHS")) {
+          data[Z==z|Z==z-1,Q.hat:=do.call(regression_forest, materialize_args(.SD,model="rf",
+            y_name="Q", x_names=..XWY,forest_opts=c(forest_opts,Qparameters),
+            weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+            cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
+            $prediction,by=sample]
+        }
+        else if (cond %in% c("BP","K")) {
+          data[Z==z|Z==z-1,Q.hat:=do.call(regression_forest, materialize_args(.SD,model="rf",
+             y_name="Q", x_names=..XW,forest_opts=c(forest_opts,Qparameters),
+             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+             cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
+             $prediction,by=sample]
+        }
+
+        if (cond=="K") { ##estimate D.hat
+          data[Z==z|Z==z-1,paste0(D,".hat"):=do.call(regression_forest, materialize_args(.SD,model="rf",
+            y_name=..D, x_names=..XW,forest_opts=c(forest_opts,Dparameters),
+            weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
+           cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
+               $prediction,by=sample,env=list(D=D)]
+        }
+
+        ##Estimate causal forest and predict scores & predicted effects
+
+        }
+
+
+
+      }
+
+    ################ 7: Multiple hypothesis testing and output #####################
       res[is.na(t.est)==FALSE,p.raw:=pnorm(t.est)]
       for (m in c("holm","hochberg","BH","BY")) {
         res[is.na(t.est)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
@@ -655,5 +770,262 @@
    if (!is.null(weight_col))  { if (!weight_col  %in% names(.sd)) stop("Missing weight: ",  weight_col);  args$sample.weights <- .sd[[weight_col]] }
    if (!is.null(cluster_col)) { if (!cluster_col %in% names(.sd)) stop("Missing cluster: ", cluster_col); args$clusters       <- .sd[[cluster_col]] }
    c(args, forest_opts)
+ }
+
+ fit_write_models <- function(
+    data,
+    condition,
+    driver_name,
+    get_spec,
+    materialize_args,
+    wcol = NULL,
+    ccol = NULL,
+    Qcol = "Q",
+    Zcol = "Z",
+    Dcol = "D",
+    cleanup = TRUE
+ ) {
+   stopifnot(data.table::is.data.table(data))
+
+   # Core loop: fit per (grp_id, sample), write back in-sample + cross-sample preds
+   data[, {
+     # decide which spec to use for this group
+     key <- if (is.character(condition) && length(condition) == 1L) {
+       condition
+     } else {
+       get(driver_name)[1L]
+     }
+     sp  <- get_spec(key)
+
+     idx <- idx__                 # row indices of this group's rows in original data
+     gid <- grp_id[1L]
+     s0  <- sample[1L]
+
+     # fit according to spec$model
+     if (sp$model == "rf") {
+       args <- materialize_args(
+         .sd         = .SD,
+         model       = "rf",
+         y_name      = Qcol,
+         x_names     = sp$xvars,
+         forest_opts = c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
+                         get0("Cparameters",  inherits = TRUE, ifnotfound = list())),
+         weight_col  = wcol,
+         cluster_col = ccol
+       )
+       fit <- do.call(grf::regression_forest, args)
+       pred_in   <- as.numeric(predict(fit)$predictions)
+       scores_in <- .SD[[Qcol]]  # for RF, scores = outcome
+
+     } else if (sp$model == "cf") {
+       args <- materialize_args(
+         .sd         = .SD,
+         model       = "cf",
+         y_name      = Qcol,
+         w_name      = Zcol,       # treatment = Z
+         x_names     = sp$xvars,
+         forest_opts = c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
+                         get0("Cparameters",  inherits = TRUE, ifnotfound = list())),
+         weight_col  = wcol,
+         cluster_col = ccol
+       )
+       fit <- do.call(grf::causal_forest, args)
+       pred_in   <- as.numeric(predict(fit)$predictions)
+       scores_in <- as.numeric(get_scores(fit))
+
+     } else if (sp$model == "iv") {
+       args <- materialize_args(
+         .sd         = .SD,
+         model       = "iv",
+         y_name      = Qcol,
+         w_name      = Dcol,       # treatment = D
+         z_name      = Zcol,       # instrument = Z
+         x_names     = sp$xvars,
+         forest_opts = c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
+                         get0("Cparameters",  inherits = TRUE, ifnotfound = list())),
+         weight_col  = wcol,
+         cluster_col = ccol
+       )
+       fit <- do.call(grf::instrumental_forest, args)
+       pred_in   <- as.numeric(predict(fit)$predictions)
+       scores_in <- as.numeric(get_scores(fit))
+
+     } else {
+       stop(sprintf("Unknown model '%s'", sp$model))
+     }
+
+     # write back in-sample
+     data.table::set(data, i = idx, j = "pred",   value = pred_in)
+     data.table::set(data, i = idx, j = "scores", value = scores_in)
+
+     # cross-sample predictions within the same grp_id (predict "other" sample)
+     other_idx <- data[grp_id == gid & sample != s0, which = TRUE]
+     if (length(other_idx)) {
+       X_other <- as.matrix(data[other_idx, sp$xvars, with = FALSE])
+       pred_o  <- as.numeric(predict(fit, X_other)$predictions)
+       data.table::set(data, i = other_idx, j = "pred_o", value = pred_o)
+     }
+
+     NULL
+   }, by = .(grp_id, sample)]
+
+   if (cleanup) data[, c("idx__", "grp_id") := NULL]
+
+   invisible(data)
+ }
+
+ forest_test <- function(
+    data,
+    cluster = NULL,                 # string: name of the cluster column (accept NULL?)
+    weight = NULL,           # NULL, scalar, or string (weight column)
+    Ycol = "Y",              # outcome for running mean/SE
+    sample_col = "sample",
+    pred_col   = "pred",
+    pred_o_col = "pred_o",
+    scores_col = "scores",
+    minsize = 50L,
+    cleanup_temp = TRUE      # drop working columns like a,b,WgY,... at the end
+ ) {
+   stopifnot(data.table::is.data.table(data))
+   cl <- as.character(cluster)
+   sc <- as.character(sample_col)
+   pc <- as.character(pred_col)
+   po <- as.character(pred_o_col)
+   yc <- as.character(Ycol)
+   scs <- as.character(scores_col)
+
+   # Order by training score
+   data.table::setorderv(data, cols = c(sc, pc))
+
+   # N per sample (running index in current order)
+   data[, N := seq_len(.N), by = sc]
+
+   # Weights: accept NULL, scalar, or column name
+   w_is_col <- FALSE
+   w_scalar <- 1
+   if (is.null(weight)) {
+     w_is_col <- FALSE; w_scalar <- 1
+   } else if (is.character(weight) && length(weight) == 1L) {
+     stopifnot(weight %chin% names(data))
+     w_is_col <- TRUE
+   } else if (is.numeric(weight) && length(weight) == 1L) {
+     w_is_col <- FALSE; w_scalar <- as.numeric(weight)
+   } else {
+     stop("`weight` must be NULL, a single numeric scalar, or a single column name.")
+   }
+
+   # Per-row basics
+   if (w_is_col) {
+     data[, `:=`(a = get(weight) * get(yc), b = get(weight))]
+   } else {
+     data[, `:=`(a = w_scalar * get(yc), b = w_scalar)]
+   }
+
+   # Within-cluster running totals (per current order)
+   data[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = c(sc, cl)]
+
+   # Global running totals and running mean by sample
+   data[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sc]
+   data[, m := SWY / SW, by = sc]
+
+   # Per-row deltas (avoid shifts)
+   data[, `:=`(
+     dTA2 =  WgY^2 - (WgY - a)^2,
+     dTB2 =  Wg^2  - (Wg  - b)^2,
+     dTAB =  WgY*Wg - (WgY - a)*(Wg - b)
+   )]
+
+   # Cumulative aggregates across rows (by sample)
+   data[, `:=`(TA2 = cumsum(dTA2), TB2 = cumsum(dTB2), TAB = cumsum(dTAB)), by = sc]
+
+   # Number of unique clusters seen so far (by sample, current order)
+   data[, G := cumsum(!duplicated(get(cl))), by = sc]
+
+   # CRV1 (small-sample adj.) SE of weighted mean
+   data[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
+   data[, se := sqrt((G / pmax.int(G - 1L, 1L)) * sumS2)]
+   data[G < 2, se := NA_real_]
+
+   # t-stat for H0: mean = 0
+   data[, t := m / se]
+
+   # Optional: drop heavy working cols
+   if (cleanup_temp) {
+     data[, c("a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB","sumS2") := NULL]
+   }
+
+   # --- Dual-constraint tau ensuring >= minsize clusters in BOTH samples ---
+   # Train-side cutoff by sample
+   tau_tr <- data[G == minsize, .(tau_tr = min(get(pc))), by = sc]
+
+   # Estimation-side cutoff by sample (order by pred_o, count clusters)
+   data.table::setorderv(data, cols = c(sc, po))
+   tau_est <- data[cumsum(!duplicated(get(cl))) == minsize, .(tau_est = min(get(po))), by = sc]
+
+   # Combine into cross-sample constraint: for two samples s1,s2
+   svals <- unique(data[[sc]])
+   if (length(svals) != 2L) stop("This routine assumes exactly two samples.")
+   s1 <- as.character(svals[1]); s2 <- as.character(svals[2])
+
+   tt  <- setNames(tau_tr$tau_tr, tau_tr[[sc]])
+   te  <- setNames(tau_est$tau_est, tau_est[[sc]])
+
+   tau_dual <- setNames(numeric(2), c(s1, s2))
+   tau_dual[s1] <- max(tt[s1], te[s2])
+   tau_dual[s2] <- max(tt[s2], te[s1])
+
+   data[, tau := tau_dual[as.character(get(sc))]]
+
+   # --- Train-sample optimal cutoff: choose pred with min |t| among pred > tau ---
+   # (your code uses which.min(t) directly; it’s fine to keep that)
+   res <- data[get(pc) >= tau, .SD[which.min(t)], by = sc,
+               .SDcols = c("G","N","m","se","t", pc)]
+
+   # Replace dual-constraint tau by the optimal cutoff from the *other* sample
+   cut_other <- setNames(res[[pc]], res[[sc]])
+   flip <- setNames(c(s2, s1), c(s1, s2))
+   data[, tau := cut_other[flip[as.character(get(sc))]]]
+
+   # ----- Final CR1 test on estimation sample: pred_o <= tau -----
+   # fixest formulas
+   clust_fml <- as.formula(paste0("~", cl))
+   wg_fml    <- if (w_is_col) as.formula(paste0("~", weight)) else NULL
+   reg_fml   <- as.formula(paste0(scs, " ~ i(", sc, ") - 1"))
+
+   est_subset <- data[get(po) <= tau]
+
+   fit <- fixest::feols(reg_fml, data = est_subset, vcov = clust_fml, weights = wg_fml)
+   ct  <- fixest::coeftable(fit)[, 1:3, drop = FALSE]
+
+   # Counts on estimation sample
+   GN <- est_subset[, .(G.est = data.table::uniqueN(get(cl)), N.est = .N), by = sc]
+
+   # Assemble output like your original
+   res_out <- data.table::as.data.table(res)
+   res_out[, `tau cutoff` := res_out[[pc]]]
+   res_out[, c("coef.train","stderr.train","t.train") := .(m, se, t)]
+   res_out <- res_out[, .(sample = get(sc), G.train = G, N.train = N,
+                          coef.train, stderr.train, t.train, `tau cutoff`)]
+
+   # Bind estimation-side stats and coefs
+   res_out <- merge(res_out, GN, by.x = "sample", by.y = sc, sort = FALSE)
+   # Order of coefficients follows i(sample) dummies; align by sample values
+   cf <- data.table::data.table(sample = rownames(ct),
+                                coef.est   = ct[,1],
+                                stderr.est = ct[,2],
+                                t.est      = ct[,3])
+   # Row names are like "sample::VALUE"; normalize to VALUE
+   cf[, sample := sub("^.*::", "", sample)]
+   res_out <- merge(res_out, cf, by = "sample", sort = FALSE)
+
+   # Final column order like your code
+   data.table::setcolorder(
+     res_out,
+     c("sample","G.train","N.train","coef.train","stderr.train","t.train",
+       "tau cutoff","G.est","N.est","coef.est","stderr.est","t.est")
+   )
+
+   # Return
+   return(list(res = res_out, data = invisible(data)))
  }
 
