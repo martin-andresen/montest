@@ -289,7 +289,7 @@
 
         ##drop groups/margins/conditions/outcomes with constant Q
         data[,rQ:=max(Q)-min(Q),by=c("sample",margins)]
-        data=data[,rQ:=min(rQ),by=margins]
+        data=data[rQ!=0]
         data[,rQ:=NULL]
 
         ##Estimate Q.hat in stacked data
@@ -426,63 +426,7 @@
         data[, c("idx__","grp_id") := NULL]
 
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
-
-
-        setorderv(data,cols=c("sample","pred"))
-
-        if (is.null(weight)) weight=1
-        data[,N:=seq_len(.N),by=sample]
-        data[, `:=`(a = weight * Y, b = weight), env=list(weight=weight)] ## Per-row basics
-
-        ## Within-cluster running totals (in current order)
-        data[, `:=`(WgY = cumsum(a),Wg  = cumsum(b)), by = c("sample",cluster)]
-
-        ## Global running totals
-        data[, `:=`(SW  = cumsum(b),SWY = cumsum(a)), by=sample]
-        data[,m:= SWY / SW,by=sample]
-
-        ## Per-row deltas for the three cross-cluster aggregates
-        ## Using (x_new^2 - x_old^2) and (x_new*y_new - x_old*y_old) to avoid shifts
-        data[, `:=`(dTA2 =  WgY^2 - (WgY - a)^2,dTB2 =  Wg^2  - (Wg  - b)^2,dTAB =  WgY*Wg - (WgY - a)*(Wg - b))]
-
-        ## Cumulative (global) aggregates across rows
-        data[, `:=`(TA2 = cumsum(dTA2),TB2 = cumsum(dTB2),TAB = cumsum(dTAB)),by=sample]
-
-        ## Number of unique clusters seen so far
-        data[, G := cumsum(!duplicated(cluster)),by=sample,env=list(cluster=cluster)]
-
-        ## Cluster-robust SE for the weighted mean (CRV1 with small-sample adj.)
-        ## sumS2 = (TA2 - 2*m*TAB + m^2*TB2)/SW^2
-        data[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
-        data[, se := sqrt( (G / pmax.int(G - 1L, 1L)) * sumS2 )]
-        data[G < 2, se := NA_real_]
-
-        ## t-stat for H0: mean = 0
-        data[, t := m / se]
-
-        data[, c("a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB","sumS2") := NULL]
-
-        ##FIND DUAL-constraint TAU CUTOFF that ensures minsize clusters in both samples
-        tau <- data[G==minsize,min(pred),by=sample]
-        setorderv(data,cols=c("sample","pred_o"))
-
-        tau <- cbind(tau,data[cumsum(!duplicated(cluster))==minsize,min(pred_o),by=sample,env=list(cluster=cluster)])
-
-        tau=c(max(tau[1,2],tau[2,4]),max(tau[2,2],tau[1,4]))
-        data[,tau:=fifelse(sample==1,tau[1],tau[2])]
-
-        ###TRAIN SAMPLE RESULTS
-        res=data[pred>tau, .SD[which.min(t)], by = sample,.SDcols=c("G","N","m","se","t","pred")] ##FIND OPTIMAL CUTOFF
-        data[,tau:=fifelse(sample==1,res[2,pred],res[1,pred])] ##replace dual-constraint tau with optimal cutoff
-
-        #####PERFORM TEST IN TRAIN SAMPE- CR1 cluster robust inference ############
-        clust=as.formula(paste0("~",cluster))
-        if (weight!=1) wg=as.formula(paste0("~",weight)) else wg=NULL
-        GN=cbind(data[pred_o<=tau,uniqueN(cluster),by=sample,env=list(cluster=cluster)][,V1],data[pred_o<=tau,.N,by=sample,env=list(cluster=cluster)][,N])
-
-        res=cbind(res,GN,rbind(feols(scores~i(sample)-1,data=data[pred_o<=tau],vcov=clust,weights=wg)$coeftable[,1:3]))
-
-        colnames(res)=c("sample","G.train","N.train","coef.train","stderr.train","t.train","tau cutoff","G.est","N.est","coef.est","stderr.est","t.est")
+        res= forest_test(data,cluster=cluster,weight=weight,minsize=minsize)
 
         ###TODO: THESE MEANS SHOULD BE WEIGHTED
         Xmeans <- data[pred_o <= tau,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
@@ -876,57 +820,33 @@
 
  forest_test <- function(
     data,
-    cluster = NULL,                 # string: name of the cluster column (accept NULL?)
+    cluster = NULL,         # string: name of the cluster column (accept NULL?)
     weight = NULL,           # NULL, scalar, or string (weight column)
-    Ycol = "Y",              # outcome for running mean/SE
-    sample_col = "sample",
-    pred_col   = "pred",
-    pred_o_col = "pred_o",
-    scores_col = "scores",
-    minsize = 50L,
-    cleanup_temp = TRUE      # drop working columns like a,b,WgY,... at the end
+    sample = "sample",
+    pred   = "pred",
+    pred_o = "pred_o",
+    scores = "scores",
+    minsize = 50L
  ) {
-   stopifnot(data.table::is.data.table(data))
-   cl <- as.character(cluster)
-   sc <- as.character(sample_col)
-   pc <- as.character(pred_col)
-   po <- as.character(pred_o_col)
-   yc <- as.character(Ycol)
-   scs <- as.character(scores_col)
 
    # Order by training score
-   data.table::setorderv(data, cols = c(sc, pc))
+   setorderv(data, cols = c(sample,pred))
 
    # N per sample (running index in current order)
-   data[, N := seq_len(.N), by = sc]
-
-   # Weights: accept NULL, scalar, or column name
-   w_is_col <- FALSE
-   w_scalar <- 1
-   if (is.null(weight)) {
-     w_is_col <- FALSE; w_scalar <- 1
-   } else if (is.character(weight) && length(weight) == 1L) {
-     stopifnot(weight %chin% names(data))
-     w_is_col <- TRUE
-   } else if (is.numeric(weight) && length(weight) == 1L) {
-     w_is_col <- FALSE; w_scalar <- as.numeric(weight)
-   } else {
-     stop("`weight` must be NULL, a single numeric scalar, or a single column name.")
-   }
-
-   # Per-row basics
-   if (w_is_col) {
-     data[, `:=`(a = get(weight) * get(yc), b = get(weight))]
-   } else {
-     data[, `:=`(a = w_scalar * get(yc), b = w_scalar)]
-   }
+   data[, N := seq_len(.N), by = sample]
 
    # Within-cluster running totals (per current order)
-   data[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = c(sc, cl)]
-
+   if (is.null(weight)==FALSE) {
+     data[, `:=`(a = weight * scores, b = weight),env=list(weight=weight,scores=scores)]
+     data[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = c(sample, cluster)]
+   }
+   else {
+     data[, `:=`(a = scores, b = N),env=list(scores=scores)]
+     data[, `:=`(WgY = cumsum(scores), Wg = N), by = c(sample, cluster)]
+   }
    # Global running totals and running mean by sample
-   data[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sc]
-   data[, m := SWY / SW, by = sc]
+   data[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample]
+   data[, m := SWY / SW, by = sample]
 
    # Per-row deltas (avoid shifts)
    data[, `:=`(
@@ -936,10 +856,10 @@
    )]
 
    # Cumulative aggregates across rows (by sample)
-   data[, `:=`(TA2 = cumsum(dTA2), TB2 = cumsum(dTB2), TAB = cumsum(dTAB)), by = sc]
+   data[, `:=`(TA2 = cumsum(dTA2), TB2 = cumsum(dTB2), TAB = cumsum(dTAB)), by = sample]
 
    # Number of unique clusters seen so far (by sample, current order)
-   data[, G := cumsum(!duplicated(get(cl))), by = sc]
+   data[, G := cumsum(!duplicated(cluster)), by = sample,env=list(cluster=cluster)]
 
    # CRV1 (small-sample adj.) SE of weighted mean
    data[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
@@ -949,83 +869,42 @@
    # t-stat for H0: mean = 0
    data[, t := m / se]
 
-   # Optional: drop heavy working cols
-   if (cleanup_temp) {
-     data[, c("a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB","sumS2") := NULL]
-   }
-
    # --- Dual-constraint tau ensuring >= minsize clusters in BOTH samples ---
    # Train-side cutoff by sample
-   tau_tr <- data[G == minsize, .(tau_tr = min(get(pc))), by = sc]
+   tau_tr <- data[G > minsize, .(tau_tr = min(pred)), by = sample,env=list(pred=pred)]
 
    # Estimation-side cutoff by sample (order by pred_o, count clusters)
-   data.table::setorderv(data, cols = c(sc, po))
-   tau_est <- data[cumsum(!duplicated(get(cl))) == minsize, .(tau_est = min(get(po))), by = sc]
+   setorderv(data, cols = c(sample, pred_o))
+   tau_est <- data[cumsum(!duplicated(cluster)) >= minsize, .(tau_est = min(pred_o)), by = sample,env=list(cluster=cluster,pred_o=pred_o)]
 
    # Combine into cross-sample constraint: for two samples s1,s2
-   svals <- unique(data[[sc]])
-   if (length(svals) != 2L) stop("This routine assumes exactly two samples.")
-   s1 <- as.character(svals[1]); s2 <- as.character(svals[2])
+   tau=c(max(as.numeric(c(tau_tr[1,2],tau_est[2,2]))),max(as.numeric(c(tau_tr[2,2],tau_est[1,2]))))
+   data[, tau := fifelse(sample==1,tau[1],tau[2]),env=list(sample=sample)]
 
-   tt  <- setNames(tau_tr$tau_tr, tau_tr[[sc]])
-   te  <- setNames(tau_est$tau_est, tau_est[[sc]])
-
-   tau_dual <- setNames(numeric(2), c(s1, s2))
-   tau_dual[s1] <- max(tt[s1], te[s2])
-   tau_dual[s2] <- max(tt[s2], te[s1])
-
-   data[, tau := tau_dual[as.character(get(sc))]]
-
-   # --- Train-sample optimal cutoff: choose pred with min |t| among pred > tau ---
-   # (your code uses which.min(t) directly; it’s fine to keep that)
-   res <- data[get(pc) >= tau, .SD[which.min(t)], by = sc,
-               .SDcols = c("G","N","m","se","t", pc)]
+   # --- Train-sample optimal cutoff: choose pred with minimizes t among pred > tau ---
+   res <- data[pred >= tau, .SD[which.min(t)], by = sample,
+               .SDcols = c("G","N","m","se","t", pred),env=list(pred=pred)]
 
    # Replace dual-constraint tau by the optimal cutoff from the *other* sample
-   cut_other <- setNames(res[[pc]], res[[sc]])
-   flip <- setNames(c(s2, s1), c(s1, s2))
-   data[, tau := cut_other[flip[as.character(get(sc))]]]
+   data[, tau := fifelse(sample==1,res[2,pred],res[1,pred]),env=list(sample=sample,pred=pred)]
 
    # ----- Final CR1 test on estimation sample: pred_o <= tau -----
-   # fixest formulas
-   clust_fml <- as.formula(paste0("~", cl))
-   wg_fml    <- if (w_is_col) as.formula(paste0("~", weight)) else NULL
-   reg_fml   <- as.formula(paste0(scs, " ~ i(", sc, ") - 1"))
+  if (is.null(cluster)==FALSE) cl=as.formula(paste0("~",cluster)) else cl=NULL
+   if (is.null(weight)==FALSE) wg=as.formula(paste0("~",weight)) else wg=NULL
 
-   est_subset <- data[get(po) <= tau]
-
-   fit <- fixest::feols(reg_fml, data = est_subset, vcov = clust_fml, weights = wg_fml)
-   ct  <- fixest::coeftable(fit)[, 1:3, drop = FALSE]
+   fit <- feols(as.formula(paste0(scores, " ~ i(", sample, ") - 1")),
+        data = data[pred_o<=tau,env=list(pred_o=pred_o)], vcov = cl, weights = wg)
 
    # Counts on estimation sample
-   GN <- est_subset[, .(G.est = data.table::uniqueN(get(cl)), N.est = .N), by = sc]
+   if (is.null(cluster)==FALSE) GN <- data[pred_o<=tau, .(G.est = uniqueN(cluster), N.est = .N), by = sample,env=list(pred_o=pred_o,cluster=cluster)]
+   else GN <- est_subset[pred_o<=tau, .(G.est = .N, N.est = .N), by = sample,env=list(pred_o=pred_o)]
 
-   # Assemble output like your original
-   res_out <- data.table::as.data.table(res)
-   res_out[, `tau cutoff` := res_out[[pc]]]
-   res_out[, c("coef.train","stderr.train","t.train") := .(m, se, t)]
-   res_out <- res_out[, .(sample = get(sc), G.train = G, N.train = N,
-                          coef.train, stderr.train, t.train, `tau cutoff`)]
-
-   # Bind estimation-side stats and coefs
-   res_out <- merge(res_out, GN, by.x = "sample", by.y = sc, sort = FALSE)
-   # Order of coefficients follows i(sample) dummies; align by sample values
-   cf <- data.table::data.table(sample = rownames(ct),
-                                coef.est   = ct[,1],
-                                stderr.est = ct[,2],
-                                t.est      = ct[,3])
-   # Row names are like "sample::VALUE"; normalize to VALUE
-   cf[, sample := sub("^.*::", "", sample)]
-   res_out <- merge(res_out, cf, by = "sample", sort = FALSE)
-
-   # Final column order like your code
-   data.table::setcolorder(
-     res_out,
-     c("sample","G.train","N.train","coef.train","stderr.train","t.train",
+   # Assemble output
+   res=as.data.table(cbind(res,GN[,-1],fit$coeftable[,1:3]))
+   colnames(res)=c("sample","G.train","N.train","coef.train","stderr.train","t.train",
        "tau cutoff","G.est","N.est","coef.est","stderr.est","t.est")
-   )
 
-   # Return
-   return(list(res = res_out, data = invisible(data)))
+   data[, c("N","a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB","sumS2","se","G","t","m","SW","SWY") := NULL]
+   return(res)
+
  }
-
