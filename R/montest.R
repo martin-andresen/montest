@@ -3,10 +3,10 @@
   #' @export
 
   montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,test=NULL,
-                   normalize=TRUE,stack=NULL,treetype="forest",
+                   normalize.Z=TRUE,normalize.pred=TRUE,stack=NULL,treetype="forest",
                    gridtypeY="equidistant",gridtypeD="equidistant",gridtypeZ="equidistant",
                    Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,
-                   weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
+                   weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,shrink=TRUE,
                    maxrankcp=5,prune=TRUE,cp=0,alpha=0.05,preselect="nonpositive", ##CART options
                    Zparameters=NULL,Yparameters=NULL,Qparameters=NULL,Dparameters=NULL,Cparameters=NULL,
                    tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
@@ -208,7 +208,7 @@
             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
             cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
             $prediction,by=c("sample",margins),env=list(Z=Z)]
-        if (normalize==TRUE) { #Normalize propensity scores
+        if (normalize.Z==TRUE) { #Normalize propensity scores
           data[,Z.hat:=.N*Z.hat/sum(Z/Z.hat),by=c("sample",margins),env=list(Z=Z)]
         }
       } else {
@@ -236,7 +236,10 @@
 
       ##STACK MARGINS OF D
       if (J>1) { ##Stack data for all margins of D
-            data=cbind(CJ(dmargin=(1:J),id=data$id),data[,!"id"])
+
+            data= data[rep.int(.I, J)]    # replicate each row J times
+            data[, dmargin := rep.int(seq_len(J), times = n)]
+            #data=cbind(CJ(dmargin=(1:J),id=data$id),data[,!"id"])
             data[,D:=D>=dmargin,env=list(D=D)]
             margins=c(margins,"dmargin")
           }
@@ -289,7 +292,8 @@
 
         ##drop groups/margins/conditions/outcomes with constant Q
         data[,rQ:=max(Q)-min(Q),by=c("sample",margins)]
-        data=data[rQ!=0]
+        data[,rQ:=min(rQ),by=margins]
+        data=data[rQ>0]
         data[,rQ:=NULL]
 
         ##Estimate Q.hat in stacked data
@@ -313,8 +317,7 @@
         }
 
     ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
-        driver_name <- "condition"
-
+        ##driver_name="condition"
         model_spec <- list(
           "simple" = list(model = "cf", xvars = c(X, W)),          # CF: Q ~ Z ; cov: X,W
           "MW"     = list(model = "rf", xvars = c(X, W, Y)),        # RF: Q ~ X,W,Y
@@ -322,10 +325,6 @@
           "AHS"    = list(model = "cf", xvars = c(X, W, Y)),        # CF: Q ~ Z ; cov: X,W,Y
           "K"      = list(model = "iv", xvars = c(X, W))            # IV: Q ~ D (Z) ; cov: X,W
         )
-
-        # Housekeeping cols
-        data[, idx__ := .I]
-        data[, grp_id := .GRP, by = margins]
 
         # Helper: fetch model spec per key and validate X columns
         get_spec <- function(key) {
@@ -336,97 +335,66 @@
           sp
         }
 
-        # Optional: column names for weights/clusters if present in parent frame
-        wcol <- get0("weight",  inherits = TRUE, ifnotfound = NULL)   # e.g. "w"
-        ccol <- get0("cluster", inherits = TRUE, ifnotfound = NULL)   # e.g. "id"
+        # Housekeeping cols
+        data[, idx__ := .I]
+        data[, grp_id := .GRP, by = margins]
 
-        # ---------- Single pass (fit CF/RF/IVF + write back) ----------
-        data[, {
-          # determine condition for this group
-          key <- if (is.character(condition) && length(condition) == 1L) {
-            condition
-          } else {
-            get(driver_name)[1L]
-          }
-          sp  <- get_spec(key)
+        fit_models(
+          data      = data,
+          condition = condition,      # name of column in `data`
+          get_spec  = get_spec,
+          materialize_args = materialize_args,
+          wcol = weight, ccol = cluster,var=shrink
+        )
 
-          idx <- idx__                # row indices in the original data
-          gid <- grp_id[1L]
-          s0  <- sample[1L]           # this group's sample (e.g., 1 or 2)
 
-          # build args with your helper (adds hats for cf/iv if present)
-          if (sp$model == "rf") {
-            args <- materialize_args(
-              .sd        = .SD,
-              model      = "rf",
-              y_name     = "Q",
-              x_names    = sp$xvars,
-              forest_opts= c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
-                             get0("Cparameters", inherits = TRUE, ifnotfound = list())),
-              weight_col = wcol,
-              cluster_col= ccol
-            )
-            fit <- do.call(grf::regression_forest, args)
-            pred_in   <- as.numeric(predict(fit)$predictions)
-            scores_in <- .SD[,Q]   # MW: scores = Q
-
-          } else if (sp$model == "cf") {
-            args <- materialize_args(
-              .sd        = .SD,
-              model      = "cf",
-              y_name     = "Q",
-              w_name     = ..Z,                   # treatment = Z
-              x_names    = sp$xvars,              # covariates
-              forest_opts= c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
-                             get0("Cparameters", inherits = TRUE, ifnotfound = list())),
-              weight_col = wcol,
-              cluster_col= ccol
-            )
-            fit <- do.call(grf::causal_forest, args)
-            pred_in   <- as.numeric(predict(fit)$predictions)
-            scores_in <- as.numeric(get_scores(fit))
-
-          } else if (sp$model == "iv") {
-            args <- materialize_args(
-              .sd        = .SD,
-              model      = "iv",
-              y_name     = "Q",
-              w_name     = ..D,                   # treatment = D
-              z_name     = ..Z,                   # instrument = Z
-              x_names    = sp$xvars,              # covariates
-              forest_opts= c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
-                             get0("Cparameters", inherits = TRUE, ifnotfound = list())),
-              weight_col = wcol,
-              cluster_col= ccol
-            )
-            fit <- do.call(grf::instrumental_forest, args)
-            pred_in   <- as.numeric(predict(fit)$predictions)
-            scores_in <- as.numeric(get_scores(fit))
-
-          } else {
-            stop(sprintf("Unknown model '%s'", sp$model))
-          }
-
-          # write back in-sample
-          set(data, i = idx, j = "pred",   value = pred_in)
-          set(data, i = idx, j = "scores", value = scores_in)
-
-          # cross-sample predict: use the model fit on this group to predict the "other" sample within the same margins
-          other_idx <- data[grp_id == gid & sample != s0, which = TRUE]
-          if (length(other_idx)) {
-            X_other <- as.matrix(data[other_idx, sp$xvars, with = FALSE])
-            pred_o  <- as.numeric(predict(fit, X_other)$predictions)
-            set(data, i = other_idx, j = "pred_o", value = pred_o)
-          }
-
-          NULL
-        }, by = .(grp_id, sample)]
-
-        # cleanup
+        ##cleanup
         data[, c("idx__","grp_id") := NULL]
 
+        ##Empirical Bayes shrinkage of predictions
+        if (shrink==TRUE) {
+          # 1) Margin-level anchors pooled across samples (common mu and pooled sig2_tau)
+          stats <- data[, {
+            mu  <- mean(scores, na.rm = TRUE)
+            v1  <- var(pred,    na.rm = TRUE); e1 <- mean(pred_var,    na.rm = TRUE); n1 <- sum(!is.na(pred))
+            v2  <- var(pred_o,  na.rm = TRUE); e2 <- mean(pred_o_var,  na.rm = TRUE); n2 <- sum(!is.na(pred_o))
+            sig2_tau <- pmax(weighted.mean(c(v1 - e1, v2 - e2), w = c(n1, n2), na.rm = TRUE), 0)
+            .(mu = mu, sig2_tau = sig2_tau, e1_bar = e1, e2_bar = e2)
+          }, by = margins]
+
+          # 2) Join and create per-obs noise vars (first pass)
+          data <- stats[data, on = margins]
+          data[, `:=`(
+            se2_pred   = fifelse(is.na(pred_var),   e1_bar, pred_var),
+            se2_pred_o = fifelse(is.na(pred_o_var), e2_bar, pred_o_var)
+          )]
+
+          # 3) Weights and shrunken predictions (second pass, now se2_* exist)
+          data[, `:=`(
+            w_pred   = fifelse(sig2_tau + pmax(se2_pred,   0) > 0,
+                               sig2_tau / (sig2_tau + pmax(se2_pred,   0)), 0),
+            w_pred_o = fifelse(sig2_tau + pmax(se2_pred_o, 0) > 0,
+                               sig2_tau / (sig2_tau + pmax(se2_pred_o, 0)), 0)
+          )]
+
+          data[, `:=`(
+            pred   = mu + w_pred   * (pred   - mu),
+            pred_o = mu + w_pred_o * (pred_o - mu)
+          )]
+
+          # (optional) tidy up helpers
+          data[, c("e1_bar","e2_bar","w_pred","w_pred_o","se2_pred","se2_pred_o","pred_var","pred_o_var") := NULL]
+        }
+
+        ##Normalize pred, scores, pred_out
+        if (normalize.pred==TRUE) {
+          data[,scale:=sd(scores),by=margins]
+          data[, (c("pred","pred_o","scores")) := lapply(.SD, function(x) x / sqrt(scale)), .SDcols = c("pred","pred_o","scores") ]
+          data[,scale:=NULL]
+        }
+
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
-        res= forest_test(data,cluster=cluster,weight=weight,minsize=minsize)
+        res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize)
 
         ###TODO: THESE MEANS SHOULD BE WEIGHTED
         Xmeans <- data[pred_o <= tau,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
@@ -448,6 +416,8 @@
 
     ######################## 6b loop over margins and estimate CART or FOREST approach ################
     else {
+
+        ##PLEASE IGNORE THIS BRANCH, NOT DONE!
 
         ########## PRE-ESTIMATE Z.hat to avoid redoing it for each loop
 
@@ -493,8 +463,8 @@
         }
 
         if (sum(test %in% c("MW","K","BP"))>0) { #equation for two-eq. conditions
-          margins=c(margins,"above")
-          if (nrow(index)==0) index=data.table(above=0:1) else {
+          margins=c(margins,"equation")
+          if (nrow(index)==0) index=data.table(equation=0:1) else {
             if (length(test)>1) {
               index=index[rep(seq(.N),1+(condition %in% c("MW","BP","K")))]
               index[condition %in% c("MW","BP","K"),equation:=seq(.N)-1*(condition %in% c("MW","BP","K")),by=margins]
@@ -576,7 +546,7 @@
 
 ##################################################### HELPER FUNCTIONS ######################################
 
-# THIS FUNCTION ESTIMATES A TREE USING CART, TEST IN EACH NODE AND DETERMINE relevance
+# THIS FUNCTION ESTIMATES A TREE USING CART, TEST IN EACH NODE, DETERMINE relevance and perform the test in the other sample
  esttree=function(data,testsample,cp,maxrankcp,alpha,prune,minsize,preselect){
     tree=rpart(scores~.,data=as.data.frame(data[sample==testsample,!c("id","sample")]),method="anova",cp=cp,minbucket=minsize,weights=weight) # run tree with transformed outcome
 
@@ -716,107 +686,135 @@
    c(args, forest_opts)
  }
 
- fit_write_models <- function(
-    data,
-    condition,
-    driver_name,
-    get_spec,
-    materialize_args,
-    wcol = NULL,
-    ccol = NULL,
-    Qcol = "Q",
-    Zcol = "Z",
-    Dcol = "D",
+
+ fit_models <- function(
+    data, condition,
+    get_spec, materialize_args,
+    wcol = NULL, ccol = NULL,
+    Qcol = "Q", Zcol = "Z", Dcol = "D",
+    var = FALSE,
     cleanup = TRUE
  ) {
    stopifnot(data.table::is.data.table(data))
 
-   # Core loop: fit per (grp_id, sample), write back in-sample + cross-sample preds
+   # local copy for .. usage inside j
+   cond_arg <- condition
+
+   # tiny helpers to safely extract predictions/variances across GRF predict variants
+   .get_pred_vec <- function(pred_obj) {
+     if (!is.null(pred_obj$predictions)) as.numeric(pred_obj$predictions)
+     else if (!is.null(pred_obj$prediction)) as.numeric(pred_obj$prediction)
+     else if (is.numeric(pred_obj)) as.numeric(pred_obj)
+     else stop("Unexpected predict() return format.")
+   }
+   .get_var_vec <- function(pred_obj) {
+     if (!is.null(pred_obj$variance.estimates)) as.numeric(pred_obj$variance.estimates)
+     else if (!is.null(pred_obj$variance)) as.numeric(pred_obj$variance)
+     else if (!is.null(pred_obj$pred.var)) as.numeric(pred_obj$pred.var)
+     else NULL
+   }
+
    data[, {
-     # decide which spec to use for this group
-     key <- if (is.character(condition) && length(condition) == 1L) {
-       condition
-     } else {
-       get(driver_name)[1L]
-     }
+     # --- decide key for THIS group ---
+     key <- if (is.character(..cond_arg) && length(..cond_arg) == 1L) {
+       if ((..cond_arg) %chin% names(.SD)) .SD[[..cond_arg]][1L] else ..cond_arg
+     } else stop("Provide `condition` as a column name (string) or as a fixed tag.")
+
      sp  <- get_spec(key)
 
-     idx <- idx__                 # row indices of this group's rows in original data
+     idx <- idx__
      gid <- grp_id[1L]
      s0  <- sample[1L]
 
-     # fit according to spec$model
+     # --- fit forest per spec ---
      if (sp$model == "rf") {
        args <- materialize_args(
          .sd         = .SD,
          model       = "rf",
          y_name      = Qcol,
          x_names     = sp$xvars,
-         forest_opts = c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
-                         get0("Cparameters",  inherits = TRUE, ifnotfound = list())),
+         forest_opts = c(get0("forest_optsC", inherits=TRUE, ifnotfound=list()),
+                         get0("Cparameters",  inherits=TRUE, ifnotfound=list())),
          weight_col  = wcol,
          cluster_col = ccol
        )
        fit <- do.call(grf::regression_forest, args)
-       pred_in   <- as.numeric(predict(fit)$predictions)
-       scores_in <- .SD[[Qcol]]  # for RF, scores = outcome
+       pr_in <- if (var) predict(fit, estimate.variance = TRUE) else predict(fit)
+       pred_in   <- .get_pred_vec(pr_in)
+       scores_in <- .SD[[Qcol]]
+       if (var) pred_in_var <- .get_var_vec(pr_in)
 
      } else if (sp$model == "cf") {
        args <- materialize_args(
          .sd         = .SD,
          model       = "cf",
          y_name      = Qcol,
-         w_name      = Zcol,       # treatment = Z
+         w_name      = Zcol,
          x_names     = sp$xvars,
-         forest_opts = c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
-                         get0("Cparameters",  inherits = TRUE, ifnotfound = list())),
+         forest_opts = c(get0("forest_optsC", inherits=TRUE, ifnotfound=list()),
+                         get0("Cparameters",  inherits=TRUE, ifnotfound=list())),
          weight_col  = wcol,
          cluster_col = ccol
        )
        fit <- do.call(grf::causal_forest, args)
-       pred_in   <- as.numeric(predict(fit)$predictions)
+       pr_in <- if (var) predict(fit, estimate.variance = TRUE) else predict(fit)
+       pred_in   <- .get_pred_vec(pr_in)
        scores_in <- as.numeric(get_scores(fit))
+       if (var) pred_in_var <- .get_var_vec(pr_in)
 
      } else if (sp$model == "iv") {
        args <- materialize_args(
          .sd         = .SD,
          model       = "iv",
          y_name      = Qcol,
-         w_name      = Dcol,       # treatment = D
-         z_name      = Zcol,       # instrument = Z
+         w_name      = Dcol,
+         z_name      = Zcol,
          x_names     = sp$xvars,
-         forest_opts = c(get0("forest_optsC", inherits = TRUE, ifnotfound = list()),
-                         get0("Cparameters",  inherits = TRUE, ifnotfound = list())),
+         forest_opts = c(get0("forest_optsC", inherits=TRUE, ifnotfound=list()),
+                         get0("Cparameters",  inherits=TRUE, ifnotfound=list())),
          weight_col  = wcol,
          cluster_col = ccol
        )
        fit <- do.call(grf::instrumental_forest, args)
-       pred_in   <- as.numeric(predict(fit)$predictions)
+       pr_in <- if (var) predict(fit, estimate.variance = TRUE) else predict(fit)
+       pred_in   <- .get_pred_vec(pr_in)
        scores_in <- as.numeric(get_scores(fit))
+       if (var) pred_in_var <- .get_var_vec(pr_in)
 
      } else {
        stop(sprintf("Unknown model '%s'", sp$model))
      }
 
-     # write back in-sample
+     # write back in-sample preds/scores
      data.table::set(data, i = idx, j = "pred",   value = pred_in)
      data.table::set(data, i = idx, j = "scores", value = scores_in)
+     if (isTRUE(var) && !is.null(pred_in_var)) {
+       data.table::set(data, i = idx, j = "pred_var", value = pred_in_var)
+     }
 
-     # cross-sample predictions within the same grp_id (predict "other" sample)
+     # cross-sample prediction (+ variance if requested)
      other_idx <- data[grp_id == gid & sample != s0, which = TRUE]
      if (length(other_idx)) {
        X_other <- as.matrix(data[other_idx, sp$xvars, with = FALSE])
-       pred_o  <- as.numeric(predict(fit, X_other)$predictions)
+       pr_o <- if (var) predict(fit, X_other, estimate.variance = TRUE) else predict(fit, X_other)
+       pred_o <- .get_pred_vec(pr_o)
        data.table::set(data, i = other_idx, j = "pred_o", value = pred_o)
+       if (isTRUE(var)) {
+         pred_o_var <- .get_var_vec(pr_o)
+         if (!is.null(pred_o_var)) {
+           data.table::set(data, i = other_idx, j = "pred_o_var", value = pred_o_var)
+         }
+       }
      }
 
      NULL
    }, by = .(grp_id, sample)]
 
-   if (cleanup) data[, c("idx__", "grp_id") := NULL]
-
+   if (cleanup) data[, c("idx__","grp_id") := NULL]
    invisible(data)
  }
+
+
 
  forest_test <- function(
     data,
@@ -871,7 +869,7 @@
 
    # --- Dual-constraint tau ensuring >= minsize clusters in BOTH samples ---
    # Train-side cutoff by sample
-   tau_tr <- data[G > minsize, .(tau_tr = min(pred)), by = sample,env=list(pred=pred)]
+   tau_tr <- data[G >= minsize, .(tau_tr = min(pred)), by = sample,env=list(pred=pred)]
 
    # Estimation-side cutoff by sample (order by pred_o, count clusters)
    setorderv(data, cols = c(sample, pred_o))
