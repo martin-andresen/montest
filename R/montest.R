@@ -6,7 +6,7 @@
                    normalize.Z=TRUE,normalize.pred=TRUE,stack=NULL,treetype="forest",
                    gridtypeY="equidistant",gridtypeD="equidistant",gridtypeZ="equidistant",
                    Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,
-                   weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,shrink=TRUE,
+                   weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,shrink=FALSE,shrink.alpha=0.3,
                    maxrankcp=5,prune=TRUE,cp=0,alpha=0.05,preselect="nonpositive", ##CART options
                    Zparameters=NULL,Yparameters=NULL,Qparameters=NULL,Dparameters=NULL,Cparameters=NULL,
                    tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
@@ -108,6 +108,24 @@
 
     if (sum(test %in% c("AHS","MW"))==0&is.null(Y)==FALSE) Y=NULL
 
+    ##Instance specific helper functions
+    model_spec <- list(
+      "simple" = list(model = "cf", xvars = c(X, W)),          # CF: Q ~ Z ; cov: X,W
+      "MW"     = list(model = "rf", xvars = c(X, W, Y)),        # RF: Q ~ X,W,Y
+      "BP"     = list(model = "cf", xvars = c(X, W)),           # CF: Q ~ Z ; cov: X,W
+      "AHS"    = list(model = "cf", xvars = c(X, W, Y)),        # CF: Q ~ Z ; cov: X,W,Y
+      "K"      = list(model = "iv", xvars = c(X, W))            # IV: Q ~ D (Z) ; cov: X,W
+    )
+
+    # Helper: fetch model spec per key and validate X columns
+    get_spec <- function(key) {
+      sp <- model_spec[[as.character(key)]]
+      if (is.null(sp)) stop(sprintf("No model_spec entry for '%s'", key))
+      miss <- setdiff(sp$xvars, names(data))
+      if (length(miss)) stop(sprintf("Missing X columns for '%s': %s", key, paste(miss, collapse = ", ")))
+      sp
+    }
+
     ###################### 2 Prepare data #########################3
     XW=c(X,W)
     if (sum(c("MW","AHS") %in% test)>0) {XWY=c(X,W,Y)} else {XWY=XW}
@@ -117,8 +135,13 @@
     data=data[,..allvars]
     data=data[complete.cases(data)]
     n=nrow(data)
+    if (is.null(cluster)==FALSE) {
+      G=length(unique(data[,..cluster]))
+      if (G<=2*minsize) stop("Number of clusters is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
+    } else if (n<=2*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
 
     data[,id:=(1:n)]
+
     if (is.null(cluster)==TRUE) {
       data[,sample:=1+1*(id %in% sample(n,size=floor(treefraction*n), replace = FALSE))]
     } else {
@@ -264,6 +287,7 @@
                 data[,condition:=ifelse(length(test)==2,"BPK",test)]
               }
             margins=c(margins,"condition")
+            condition="condition"
           } else {condition=test}
 
         ##Expand to equation=0,1 for BP, K and MW conditions
@@ -317,24 +341,6 @@
         }
 
     ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
-        ##driver_name="condition"
-        model_spec <- list(
-          "simple" = list(model = "cf", xvars = c(X, W)),          # CF: Q ~ Z ; cov: X,W
-          "MW"     = list(model = "rf", xvars = c(X, W, Y)),        # RF: Q ~ X,W,Y
-          "BP"     = list(model = "cf", xvars = c(X, W)),           # CF: Q ~ Z ; cov: X,W
-          "AHS"    = list(model = "cf", xvars = c(X, W, Y)),        # CF: Q ~ Z ; cov: X,W,Y
-          "K"      = list(model = "iv", xvars = c(X, W))            # IV: Q ~ D (Z) ; cov: X,W
-        )
-
-        # Helper: fetch model spec per key and validate X columns
-        get_spec <- function(key) {
-          sp <- model_spec[[as.character(key)]]
-          if (is.null(sp)) stop(sprintf("No model_spec entry for '%s'", key))
-          miss <- setdiff(sp$xvars, names(data))
-          if (length(miss)) stop(sprintf("Missing X columns for '%s': %s", key, paste(miss, collapse = ", ")))
-          sp
-        }
-
         # Housekeeping cols
         data[, idx__ := .I]
         data[, grp_id := .GRP, by = margins]
@@ -352,24 +358,46 @@
         data[, c("idx__","grp_id") := NULL]
 
         ##Empirical Bayes shrinkage of predictions
-        if (shrink==TRUE) {
-          # 1) Margin-level anchors pooled across samples (common mu and pooled sig2_tau)
-          stats <- data[, {
-            mu  <- mean(scores, na.rm = TRUE)
-            v1  <- var(pred,    na.rm = TRUE); e1 <- mean(pred_var,    na.rm = TRUE); n1 <- sum(!is.na(pred))
-            v2  <- var(pred_o,  na.rm = TRUE); e2 <- mean(pred_o_var,  na.rm = TRUE); n2 <- sum(!is.na(pred_o))
-            sig2_tau <- pmax(weighted.mean(c(v1 - e1, v2 - e2), w = c(n1, n2), na.rm = TRUE), 0)
-            .(mu = mu, sig2_tau = sig2_tau, e1_bar = e1, e2_bar = e2)
-          }, by = margins]
+        if (shrink==TRUE) { ##NEED TO ACCEPTS WEIGHTS
+          calc_stats <- function(DT) {
+            mu  <- mean(DT[["scores"]],   na.rm = TRUE)
+            v1  <- var(DT[["pred"]],      na.rm = TRUE)
+            e1  <- mean(DT[["pred_var"]], na.rm = TRUE)
+            n1  <- sum(!is.na(DT[["pred"]]))
+            v2  <- var(DT[["pred_o"]],      na.rm = TRUE)
+            e2  <- mean(DT[["pred_o_var"]], na.rm = TRUE)
+            n2  <- sum(!is.na(DT[["pred_o"]]))
+            sig2_tau <- pmax(weighted.mean(c(v1 - e1, v2 - e2), w = c(n1, n2), na.rm = TRUE),0)
+            list(mu = mu, sig2_tau = sig2_tau, e1_bar = e1, e2_bar = e2)
+          }
 
-          # 2) Join and create per-obs noise vars (first pass)
-          data <- stats[data, on = margins]
+          if (is.null(margins)) {
+            # no grouping: one-row stats
+            tmp <- calc_stats(data)
+            stats <- data.table(mu = tmp$mu, sig2_tau = tmp$sig2_tau,
+                                e1_bar = tmp$e1_bar, e2_bar = tmp$e2_bar)
+            # attach constants
+            data[, `:=`(mu = stats$mu[1L],
+                        sig2_tau = stats$sig2_tau[1L],
+                        e1_bar = stats$e1_bar[1L],
+                        e2_bar = stats$e2_bar[1L])]
+          } else {
+            # grouped stats by margins
+            stats <- data[, {
+              tmp <- calc_stats(.SD)
+              .(mu = tmp$mu, sig2_tau = tmp$sig2_tau, e1_bar = tmp$e1_bar, e2_bar = tmp$e2_bar)
+            }, by = margins]
+            # join back on those keys
+            data <- stats[data, on = margins]
+          }
+
+          # 2) Join and create per-obs noise vars
           data[, `:=`(
             se2_pred   = fifelse(is.na(pred_var),   e1_bar, pred_var),
             se2_pred_o = fifelse(is.na(pred_o_var), e2_bar, pred_o_var)
           )]
 
-          # 3) Weights and shrunken predictions (second pass, now se2_* exist)
+          # 3) Weights
           data[, `:=`(
             w_pred   = fifelse(sig2_tau + pmax(se2_pred,   0) > 0,
                                sig2_tau / (sig2_tau + pmax(se2_pred,   0)), 0),
@@ -377,18 +405,19 @@
                                sig2_tau / (sig2_tau + pmax(se2_pred_o, 0)), 0)
           )]
 
+          # 4) Shrunken estimates
           data[, `:=`(
-            pred   = mu + w_pred   * (pred   - mu),
-            pred_o = mu + w_pred_o * (pred_o - mu)
+            pred   = mu + ((1-shrink.alpha)*w_pred+shrink.alpha)   * (pred   - mu),
+            pred_o = mu + ((1-shrink.alpha)*w_pred_o+shrink.alpha)  * (pred_o - mu)
           )]
 
           # (optional) tidy up helpers
-          data[, c("e1_bar","e2_bar","w_pred","w_pred_o","se2_pred","se2_pred_o","pred_var","pred_o_var") := NULL]
+          data[, c("e1_bar","e2_bar","se2_pred","se2_pred_o","pred_var","pred_o_var","sig2_tau","w_pred","w_pred_o") := NULL]
         }
 
         ##Normalize pred, scores, pred_out
         if (normalize.pred==TRUE) {
-          data[,scale:=sd(scores),by=margins]
+          if (is.null(margins)==FALSE) data[,scale:=sd(scores),by=margins] else  data[,scale:=sd(scores)]
           data[, (c("pred","pred_o","scores")) := lapply(.SD, function(x) x / sqrt(scale)), .SDcols = c("pred","pred_o","scores") ]
           data[,scale:=NULL]
         }
@@ -482,6 +511,10 @@
         } else loopmax=1
 
         ######## RUN LOOP ##########
+
+        data[, idx__ := .I]
+        data[, grp_id := .GRP]
+
       for (l in 1:loopmax) {
         if (K>1) z=index[l,zmargin] else z=1
         if (J>1) d=index[l,dmargin] else d=1
@@ -491,8 +524,9 @@
         if (L>1) outcome=index[l,outcome] else outcome=Y
 
         ##replace Z
-        data[,paste0(Z,".hat"):=get(paste0(Z,".hat",z)),env=list(Z=Z)]
+        data[,paste0(Z,".hat"):=paste0(Z,".hat",z),env=list(Z=Z)]
 
+        browser()
         ##define Q
         if (cond %in% c("simple","AHS")) data[Z==z|Z==z-1,Q:=D>=d,env=list(D=D)]
         else if (cond=="MW") data[Z==z|Z==z-1,Q:=a*((1-paste0(Z,".hat"))*(D>=d)*(Z>=z)-paste0(Z,".hat")*(D>=d)*(1-(Z>=z)))+(1-a)*(paste0(Z,".hat")*(1-(D>=d))*(1-(Z>=z))-(1-paste0(Z,".hat"))*(1-(D>=d))*(Z>=z)),env=list(Z=Z,D=D)]
@@ -522,8 +556,16 @@
                $prediction,by=sample,env=list(D=D)]
         }
 
-        ##Estimate causal forest and predict scores & predicted effects
-
+        ##Estimate causal forests and predict scores & predicted effects
+        if (K>1) idx <- which(which(data[,Z]==z|data[,Z]==z-1)) else idx=NULL
+        browser()
+        fit_models(data,
+              condition = cond,
+              get_spec = get_spec,
+              materialize_args = materialize_args,
+              wcol = weight, ccol = cluster, var=shrink,
+              rows = idx
+          )
         }
 
 
@@ -688,37 +730,43 @@
 
 
  fit_models <- function(
-    data, condition,
-    get_spec, materialize_args,
+    data,
+    condition,                 # string: column name in data OR a fixed tag ("rf","cf","iv")
+    get_spec,
+    materialize_args,
     wcol = NULL, ccol = NULL,
     Qcol = "Q", Zcol = "Z", Dcol = "D",
-    var = FALSE,
+    rows = NULL,               # integer row indices to process; if NULL, do all rows
+    cross_within_subset = TRUE,# if TRUE, write pred_o only to rows in `rows`
+    variance = TRUE,  # <- NEW: also compute pred_var / pred_o_var via GRF
     cleanup = TRUE
  ) {
    stopifnot(data.table::is.data.table(data))
 
-   # local copy for .. usage inside j
+   if (is.null(rows)) rows <- seq_len(nrow(data))
+   if (!length(rows)) return(invisible(data))
+
+   # stable ids for write-back
+   if (!(".__rowid__" %chin% names(data))) {
+     data[, .__rowid__ := .I]
+     on.exit(try(data[, .__rowid__ := NULL], silent = TRUE), add = TRUE)
+   }
+
+   # work view on the subset only
+   DT <- data[rows]
+   DT[, idx__ := .__rowid__]
+
+   # ensure grouping columns exist
+   if (!("grp_id" %chin% names(DT))) DT[, grp_id := 1L]
+   if (!("sample" %chin% names(DT))) DT[, sample := 1L]
+
    cond_arg <- condition
 
-   # tiny helpers to safely extract predictions/variances across GRF predict variants
-   .get_pred_vec <- function(pred_obj) {
-     if (!is.null(pred_obj$predictions)) as.numeric(pred_obj$predictions)
-     else if (!is.null(pred_obj$prediction)) as.numeric(pred_obj$prediction)
-     else if (is.numeric(pred_obj)) as.numeric(pred_obj)
-     else stop("Unexpected predict() return format.")
-   }
-   .get_var_vec <- function(pred_obj) {
-     if (!is.null(pred_obj$variance.estimates)) as.numeric(pred_obj$variance.estimates)
-     else if (!is.null(pred_obj$variance)) as.numeric(pred_obj$variance)
-     else if (!is.null(pred_obj$pred.var)) as.numeric(pred_obj$pred.var)
-     else NULL
-   }
-
-   data[, {
-     # --- decide key for THIS group ---
+   DT[, {
+     # decide key for this group
      key <- if (is.character(..cond_arg) && length(..cond_arg) == 1L) {
        if ((..cond_arg) %chin% names(.SD)) .SD[[..cond_arg]][1L] else ..cond_arg
-     } else stop("Provide `condition` as a column name (string) or as a fixed tag.")
+     } else stop("`condition` must be a single string (column name or fixed tag).")
 
      sp  <- get_spec(key)
 
@@ -726,7 +774,7 @@
      gid <- grp_id[1L]
      s0  <- sample[1L]
 
-     # --- fit forest per spec ---
+     # ---- fit according to spec ----
      if (sp$model == "rf") {
        args <- materialize_args(
          .sd         = .SD,
@@ -739,10 +787,11 @@
          cluster_col = ccol
        )
        fit <- do.call(grf::regression_forest, args)
-       pr_in <- if (var) predict(fit, estimate.variance = TRUE) else predict(fit)
-       pred_in   <- .get_pred_vec(pr_in)
-       scores_in <- .SD[[Qcol]]
-       if (var) pred_in_var <- .get_var_vec(pr_in)
+       pin <- predict(fit, estimate.variance = variance)
+       pred_in <- as.numeric(if (is.list(pin)) pin$predictions else pin)
+       pred_in_var <- if (variance && is.list(pin) && !is.null(pin$variance.estimates))
+         as.numeric(pin$variance.estimates) else rep(NA_real_, length(idx))
+       scores_in <- .SD[[Qcol]]  # RF: scores = outcome
 
      } else if (sp$model == "cf") {
        args <- materialize_args(
@@ -757,10 +806,11 @@
          cluster_col = ccol
        )
        fit <- do.call(grf::causal_forest, args)
-       pr_in <- if (var) predict(fit, estimate.variance = TRUE) else predict(fit)
-       pred_in   <- .get_pred_vec(pr_in)
+       pin <- predict(fit, estimate.variance = variance)
+       pred_in <- as.numeric(if (is.list(pin)) pin$predictions else pin)
+       pred_in_var <- if (variance && is.list(pin) && !is.null(pin$variance.estimates))
+         as.numeric(pin$variance.estimates) else rep(NA_real_, length(idx))
        scores_in <- as.numeric(get_scores(fit))
-       if (var) pred_in_var <- .get_var_vec(pr_in)
 
      } else if (sp$model == "iv") {
        args <- materialize_args(
@@ -776,34 +826,39 @@
          cluster_col = ccol
        )
        fit <- do.call(grf::instrumental_forest, args)
-       pr_in <- if (var) predict(fit, estimate.variance = TRUE) else predict(fit)
-       pred_in   <- .get_pred_vec(pr_in)
+       pin <- predict(fit, estimate.variance = variance)
+       pred_in <- as.numeric(if (is.list(pin)) pin$predictions else pin)
+       pred_in_var <- if (variance && is.list(pin) && !is.null(pin$variance.estimates))
+         as.numeric(pin$variance.estimates) else rep(NA_real_, length(idx))
        scores_in <- as.numeric(get_scores(fit))
-       if (var) pred_in_var <- .get_var_vec(pr_in)
 
-     } else {
-       stop(sprintf("Unknown model '%s'", sp$model))
-     }
+     } else stop(sprintf("Unknown model '%s'", sp$model))
 
-     # write back in-sample preds/scores
-     data.table::set(data, i = idx, j = "pred",   value = pred_in)
-     data.table::set(data, i = idx, j = "scores", value = scores_in)
-     if (isTRUE(var) && !is.null(pred_in_var)) {
+     # ---- write back (only this subset) ----
+     data.table::set(data, i = idx, j = "pred",     value = pred_in)
+     data.table::set(data, i = idx, j = "scores",   value = scores_in)
+     if (variance) {
        data.table::set(data, i = idx, j = "pred_var", value = pred_in_var)
      }
 
-     # cross-sample prediction (+ variance if requested)
-     other_idx <- data[grp_id == gid & sample != s0, which = TRUE]
+     # ---- cross-sample predictions (pred_o, pred_o_var) ----
+     # decide which "other" rows to fill
+     if (cross_within_subset) {
+       other_idx <- data[.__rowid__ %in% rows & grp_id == gid & sample != s0, which = TRUE]
+     } else {
+       other_idx <- data[grp_id == gid & sample != s0, which = TRUE]
+     }
+
      if (length(other_idx)) {
        X_other <- as.matrix(data[other_idx, sp$xvars, with = FALSE])
-       pr_o <- if (var) predict(fit, X_other, estimate.variance = TRUE) else predict(fit, X_other)
-       pred_o <- .get_pred_vec(pr_o)
+       pout <- predict(fit, X_other, estimate.variance = variance)
+       pred_o <- as.numeric(if (is.list(pout)) pout$predictions else pout)
        data.table::set(data, i = other_idx, j = "pred_o", value = pred_o)
-       if (isTRUE(var)) {
-         pred_o_var <- .get_var_vec(pr_o)
-         if (!is.null(pred_o_var)) {
-           data.table::set(data, i = other_idx, j = "pred_o_var", value = pred_o_var)
-         }
+       if (variance && is.list(pout) && !is.null(pout$variance.estimates)) {
+         pred_o_var <- as.numeric(pout$variance.estimates)
+         data.table::set(data, i = other_idx, j = "pred_o_var", value = pred_o_var)
+       } else if (variance) {
+         data.table::set(data, i = other_idx, j = "pred_o_var", value = NA_real_)
        }
      }
 
@@ -813,6 +868,7 @@
    if (cleanup) data[, c("idx__","grp_id") := NULL]
    invisible(data)
  }
+
 
 
 
@@ -880,7 +936,7 @@
    data[, tau := fifelse(sample==1,tau[1],tau[2]),env=list(sample=sample)]
 
    # --- Train-sample optimal cutoff: choose pred with minimizes t among pred > tau ---
-   res <- data[pred >= tau, .SD[which.min(t)], by = sample,
+   res <- data[pred >= tau&G>=minsize, .SD[which.min(t)], by = sample,
                .SDcols = c("G","N","m","se","t", pred),env=list(pred=pred)]
 
    # Replace dual-constraint tau by the optimal cutoff from the *other* sample
