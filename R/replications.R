@@ -3,25 +3,68 @@ library(haven)
 library(data.table)
 library(grf)
 library(fixest)
+library(tinyplot)
 
 montests=list()
+
+#ALLCOTT 2020
 data=data.table(read_dta("Allcott2020_data.dta"))
 data=data[,c("v_wins","stratum","T","D","endline_wta_update")]
 montests[["Allcott2020"]]=montest(data=data,Y="endline_wta_update",X=c("v_wins","stratum"),Z="T",D="D",test="simple")
 #ivreg2 endline_wta_update v_wins i.stratum (D = T), robust
+#NOTE: ONLY ONE REGRESSION IN THIS REPLICATION FILE?
+#MAIN SPEC IS FROM APPENDIX TABLE A12
 
+#AMBRUS 2020: MULTIPLE INSTRUMENTS
+#ivreg2 log_rentals_1864 (death_ind = broad##c.dist_broad) dist_urinal old_sewer dist_pump if dist_netw<=0.292, cl(block)
+
+#ASHER 2020
+##MAIN EST: TABLE 3
+##ivregress 2sls transport_index_andrsn (r2012 = t) left right primary_school med_center elect tdist irr_share ln_land pc01_lit_share pc01_sc_share bpl_landed_share bpl_inc_source_sub_share bpl_inc_250plus i.vhg_dist_id [aw = kernel_tri_ik] if mainsample, vce(robust)
+data=data.table(read_dta("Asher2020_data.dta"))
+data=data[mainsample==1]
+data=data[,c("transport_index_andrsn","r2012","t","left","right","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id","kernel_tri_ik")]
+montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=c("left","right","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id"),test="simple")
+##NOT NP ID?
+
+##AUTOR 2020a
+#ivreg2 dhs2_tot_cont_2002_2010 (d_imp_usch_pd=d_imp_otch_lag_pd) [aw=sh_district_2002], cluster(czone congressionaldistrict)
+data=data.table(read_dta("Autor2020a_data_1.dta"))
+X=c("reg_encen","reg_midatl","reg_wncen","reg_satl","reg_escen","reg_wscen","reg_mount","reg_pacif","l_shind_manuf_cbp","l_sh_routine33","l_task_outsource","shnr_pres2000","shnr_pres1996","l_sh_pop_f","l_sh_pop_edu_c","l_sh_fborn","l_sh_pop_age_1019","l_sh_pop_age_2029","l_sh_pop_age_3039","l_sh_pop_age_4049","l_sh_pop_age_5059","l_sh_pop_age_6069","l_sh_pop_age_7079","l_sh_pop_age_8000","l_sh_pop_white","l_sh_pop_black","l_sh_pop_asian","l_sh_pop_hispanic")
+cols=c(X,"d_imp_usch_pd","d_imp_otch_lag_pd","czone","sh_district_2002")
+data=data[, ..cols]
+montests[["Autor2020a"]]=montest(data=data,Z="d_imp_otch_lag_pd",D="d_imp_usch_pd",X=X,test="simple",weight="sh_district_2002",cluster="czone")
+#MAIN SPEC TABLE 3, row 1, col 5
+#ivreg2 dhs2_tot_cont_2002_2010 (d_imp_usch_pd=d_imp_otch_lag_pd) reg* l_shind_manuf_cbp l_sh_routine33 l_task_outsource shnr_pres2000 shnr_pres1996 l_sh_pop_f l_sh_pop_edu_c l_sh_fborn l_sh_pop_age_1019 l_sh_pop_age_2029 l_sh_pop_age_3039 l_sh_pop_age_4049 l_sh_pop_age_5059 l_sh_pop_age_6069 l_sh_pop_age_7079 l_sh_pop_age_8000 l_sh_pop_white l_sh_pop_black l_sh_pop_asian l_sh_pop_hispanic [aw=sh_district_2002], cluster(czone congressionaldistrict)
+##OOPS: TWO-WAY CLUSTERING, imp??lemented cluster on czone only!
+
+
+##BANDIERA 2020
+#ivregress 2sls Qcontrol_body control_body _B* age (QC_clubparticipateIMP=treatment) if panel==1, cluster(villid) first
+data=data.table(read_dta("Bandiera2020_data.dta"))
+data[,Bbranch := as.integer(sub("^_Bbranch_na_", "", branch_cols[max.col(.SD)])),.SDcols = branch_cols]
+X=c("control_body reg_encen","reg_midatl","reg_wncen","reg_satl","reg_escen","reg_wscen","reg_mount","reg_pacif","l_shind_manuf_cbp","l_sh_routine33","l_task_outsource","shnr_pres2000","shnr_pres1996","l_sh_pop_f","l_sh_pop_edu_c","l_sh_fborn","l_sh_pop_age_1019","l_sh_pop_age_2029","l_sh_pop_age_3039","l_sh_pop_age_4049","l_sh_pop_age_5059","l_sh_pop_age_6069","l_sh_pop_age_7079","l_sh_pop_age_8000","l_sh_pop_white","l_sh_pop_black","l_sh_pop_asian","l_sh_pop_hispanic")
+cols=c(X,"d_imp_usch_pd","d_imp_otch_lag_pd","czone","sh_district_2002")
+data=data[, ..cols]
+
+##BURSZTYN 2020
 data=data.table(read_dta("Bursztyn2020_data_1.dta"))
-data=data[data$public==0]
+data=data[data$public==1]
 data[,sob_culture_50 := sob_culture - 50]
 data=data[,c("female","age","married","years_edu","income_000s","white","donate","trump","sob_culture_50")]
 montests[["Bursztyn2020"]]=montest(data=data,Z="trump",D="sob_culture_50",X=c("female","age","married","years_edu","income_000s","white"),test="simple")
-#ivregress 2sls donate (sob_culture_50 = trump) if public == 0, r
+#ivregress 2sls donate (sob_culture_50 = trump) female age married years_edu income_000s white
+#MAIN estimate: table 2, panel B, col 6.
 
-data=data.table(read_dta("Caprettini2020_data.dta")) # REJECT
+
+
+##CAPRETTINI 2020
+data=data.table(read_dta("Caprettini2020_data.dta"))
 data=data[sample==1]
-data=data[,c("thresh","heavysh","cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews")]
-montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=c("cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews"),test="simple")
-#xi: ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews if sample == 1, r first
+data=data[,c("thresh","heavysh","cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION")]
+montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=c("cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION"),test="simple")
+#ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
+#MAIN ESTIMATE: table 2, col 8
 
 data=data.table(read_dta("Dupas2013_data.dta"))
 data=data[,c("bank_savings","active","treatment","wave2","wave3","bg_boda","bg_malevendor","bg_boda_wave2","bg_malevendor_wave2","bg_married","bg_num_children","bg_age","bg_kis_read","bg_rosca_contrib_lyr","filled_log")]
