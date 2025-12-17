@@ -5,7 +5,7 @@
   montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,test=NULL,
                    normalize.Z=TRUE,normalize.pred=TRUE,stack=NULL,treetype="forest",
                    gridtypeY="equidistant",gridtypeD="equidistant",gridtypeZ="equidistant",
-                   Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,
+                   Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,eps=0.02,min_n=10L,
                    weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,shrink=FALSE,shrink.alpha=0.3,
                    maxrankcp=5,prune=TRUE,cp=0,alpha=0.05,preselect="nonpositive", ##CART options
                    Zparameters=NULL,Yparameters=NULL,Qparameters=NULL,Dparameters=NULL,Cparameters=NULL,
@@ -370,11 +370,27 @@
             ##reverse treatment indicator for equation==0 and condition=="K"
         }
 
-        ##drop groups/margins/conditions/outcomes with constant Q
-        data[,rQ:=max(Q)-min(Q),by=c("sample",margins)]
-        data[,rQ:=min(rQ),by=margins]
-        data=data[rQ>0]
-        data[,rQ:=NULL]
+        ##TEST FOR SUPPORT and VARIATION IN Z AND Q within each group
+
+
+      data[,nQ:=uniqueN(Q), by=c("sample",margins)]
+      data[,nZ:=uniqueN(get(..Z)), by=c("sample",margins)]
+      data[,n0:=sum(get(..Z)==0), by=c("sample",margins)]
+      data[,n1:=sum(get(..Z)==1), by=c("sample",margins)]
+      data[,minp:=min(get(paste0(..Z,".hat"))), by=c("sample",margins)]
+      data[,maxp:=max(get(paste0(..Z,".hat"))), by=c("sample",margins)]
+      data[,bad:= (nQ<2| nZ<2 | n0<min_n | n1 <min_n | minp<eps | maxp>1-eps)]
+
+      data=data[bad==FALSE]
+
+      ##ALSO DROP OTHER SAMPLE PART WITHIN A MARGIN IF ONE PART HAS BEEN DROPPED
+      data[,sdsample:=sd(sample),by=margins]
+      data=data[sdsample>0]
+      data[,sdsample:=NULL]
+
+      if (nrow(data)==0) {
+        stop("No observations with variation in Z and Q and overlap remains - identification issue.")
+      }
 
         ##Estimate Q.hat in stacked data
         if (sum(test %in% c("simple","BP","K","BPK"))>0) {
@@ -439,13 +455,14 @@
           condition = condition,      # name of column in `data`
           get_spec  = get_spec,
           materialize_args = materialize_args,
-          wcol = weight, ccol = cluster,  Qcol = "Q", Zcol = Z, Dcol = D,
-        )
+          variance=FALSE,cleanup=FALSE,
+          wcol = weight, ccol = cluster,  Qcol = "Q", Zcol = Z, Dcol = D
+          )
 
 
         ##Normalize pred, scores, pred_out
         if (normalize.pred==TRUE) {
-          if (is.null(margins)==FALSE) data[,scale:=sd(scores),by=margins] else  data[,scale:=sd(scores)]
+          data[,scale:=sd(scores),by=c(margins,"sample")]
           data[, (c("pred","pred_o","scores")) := lapply(.SD, function(x) x / sqrt(scale)), .SDcols = c("pred","pred_o","scores") ]
           data[,scale:=NULL]
         }

@@ -38,15 +38,17 @@ montests[["Autor2020a"]]=montest(data=data,Z="d_imp_otch_lag_pd",D="d_imp_usch_p
 #MAIN SPEC TABLE 3, row 1, col 5
 #ivreg2 dhs2_tot_cont_2002_2010 (d_imp_usch_pd=d_imp_otch_lag_pd) reg* l_shind_manuf_cbp l_sh_routine33 l_task_outsource shnr_pres2000 shnr_pres1996 l_sh_pop_f l_sh_pop_edu_c l_sh_fborn l_sh_pop_age_1019 l_sh_pop_age_2029 l_sh_pop_age_3039 l_sh_pop_age_4049 l_sh_pop_age_5059 l_sh_pop_age_6069 l_sh_pop_age_7079 l_sh_pop_age_8000 l_sh_pop_white l_sh_pop_black l_sh_pop_asian l_sh_pop_hispanic [aw=sh_district_2002], cluster(czone congressionaldistrict)
 ##OOPS: TWO-WAY CLUSTERING, imp??lemented cluster on czone only!
-
+##NOT NP ID?
 
 ##BANDIERA 2020
 #ivregress 2sls Qcontrol_body control_body _B* age (QC_clubparticipateIMP=treatment) if panel==1, cluster(villid) first
 data=data.table(read_dta("Bandiera2020_data.dta"))
-data[,Bbranch := as.integer(sub("^_Bbranch_na_", "", branch_cols[max.col(.SD)])),.SDcols = branch_cols]
-X=c("control_body reg_encen","reg_midatl","reg_wncen","reg_satl","reg_escen","reg_wscen","reg_mount","reg_pacif","l_shind_manuf_cbp","l_sh_routine33","l_task_outsource","shnr_pres2000","shnr_pres1996","l_sh_pop_f","l_sh_pop_edu_c","l_sh_fborn","l_sh_pop_age_1019","l_sh_pop_age_2029","l_sh_pop_age_3039","l_sh_pop_age_4049","l_sh_pop_age_5059","l_sh_pop_age_6069","l_sh_pop_age_7079","l_sh_pop_age_8000","l_sh_pop_white","l_sh_pop_black","l_sh_pop_asian","l_sh_pop_hispanic")
-cols=c(X,"d_imp_usch_pd","d_imp_otch_lag_pd","czone","sh_district_2002")
-data=data[, ..cols]
+data=data[panel==1]
+X=c("control_body","branchno","age")
+cols=c(X,"treatment","QC_clubparticipateIMP","villid")
+data=data[,..cols]
+montests[["Bandiera2020"]]=montest(data=data,Z="treatment",D="QC_clubparticipateIMP",X=X,test="simple",cluster="villid")
+
 
 ##BURSZTYN 2020
 data=data.table(read_dta("Bursztyn2020_data_1.dta"))
@@ -57,16 +59,40 @@ montests[["Bursztyn2020"]]=montest(data=data,Z="trump",D="sob_culture_50",X=c("f
 #ivregress 2sls donate (sob_culture_50 = trump) female age married years_edu income_000s white
 #MAIN estimate: table 2, panel B, col 6.
 
-
-
 ##CAPRETTINI 2020
 data=data.table(read_dta("Caprettini2020_data.dta"))
 data=data[sample==1]
 data=data[,c("thresh","heavysh","cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION")]
 montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=c("cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION"),test="simple")
 #ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
-#MAIN ESTIMATE: table 2, col 8
+#MAIN ESTIMATE: table 2, col 81
 
+
+##Bau2020
+#ivreg2 TVA_mean (mean_1 = mean_2) female local some_training BA_plus lessthan4 temp_contract _Idistrict__* if gov==1, cluster(group) endog(mean_1)
+data=data.table(read_dta("Bau2020_data_1.dta"))
+data=data[gov==1]
+X=c("schoolid","female","local","some_training","BA_plus","lessthan4","temp_contract")
+cols=c(X,"mean_1","mean_2","group")
+data=data[,..cols]
+montests[["Bau2020"]]=montest(data=data,D="mean_1",Z="mean_2",X=X,test="simple",cluster="group")
+##MAIN ESTIMATE: table 3, cols 6-7 (district or school id)
+##NOT NP
+
+##Becker2019
+#ivreg2 share_antisem_reich_1890 (f_prot_1882=kmwittenberg) f_young f_fem f_ortsgeb f_pruss hhsize lnpop posen f_urban, cluster(code_reichstag_wk)
+#Main spec: table 4, panel C. However, table 6 might be thought of as the main est, we don't ahve data.
+data=data.table(read_dta("Becker2019_data.dta"))
+X=c("f_young","f_fem","f_ortsgeb","f_pruss","hhsize","lnpop","posen","f_urban")
+cols=c(X,"f_prot_1882","kmwittenberg","code_reichstag_wk")
+data=data[,..cols]
+montests[["Becker2019"]]=montest(data=data,D="f_prot_1882",Z="kmwittenberg",X=X,test="simple",cluster="code_reichstag_wk")
+
+
+###OLD SAMPLE
+
+
+##Dupas2013
 data=data.table(read_dta("Dupas2013_data.dta"))
 data=data[,c("bank_savings","active","treatment","wave2","wave3","bg_boda","bg_malevendor","bg_boda_wave2","bg_malevendor_wave2","bg_married","bg_num_children","bg_age","bg_kis_read","bg_rosca_contrib_lyr","filled_log")]
 montests[["Dupas2013"]]=montest(data=data,X=c("wave2","wave3","bg_boda","bg_malevendor","bg_boda_wave2","bg_malevendor_wave2","bg_married","bg_num_children","bg_age","bg_kis_read","bg_rosca_contrib_lyr","filled_log"),Y="bank_savings",D="active",Z="treatment",test="simple")
