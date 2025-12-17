@@ -12,16 +12,17 @@ montestplot<-function(object,sample=NULL,margins=NULL,numX=10) {
 
   ## Plot X means
     vals=(object$Xmeans-object$Xmeans_all)/object$XSD
-    vals=as.numeric(vals[s,-1])
-    vals=vals[order(abs(vals),decreasing=TRUE)]
-    if (length(vals)>numX)vals=vals[1:numX]
+    vals=vals[s,-1]
+    setcolorder(vals,names(vals)[order(abs(unlist(vals[1])), decreasing = TRUE)])
     names=names(vals)
-    barplot(vals, names.arg = names, las = 2,
+    vals=as.numeric(vals)
+    if (length(vals)>numX)vals=vals[1:numX]
+    barplot(vals, names.arg = names,
             main = "Standardized differences in means",
             ylab = "(test mean - full mean) / test SD")
 
-
-  if (is.null(margins)==FALSE) { ##Plot margins
+  ##Plot margins
+  if (is.null(margins)==FALSE) {
         data=object$margins
         data=data[sample==s]
 
