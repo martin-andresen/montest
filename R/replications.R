@@ -23,9 +23,10 @@ montests[["Allcott2020"]]=montest(data=data,Y="endline_wta_update",X=c("v_wins",
 ##ivregress 2sls transport_index_andrsn (r2012 = t) left right primary_school med_center elect tdist irr_share ln_land pc01_lit_share pc01_sc_share bpl_landed_share bpl_inc_source_sub_share bpl_inc_250plus i.vhg_dist_id [aw = kernel_tri_ik] if mainsample, vce(robust)
 data=data.table(read_dta("Asher2020_data.dta"))
 data=data[mainsample==1]
-data=data[,c("transport_index_andrsn","r2012","t","left","right","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id","kernel_tri_ik")]
-montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=c("left","right","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id"),test="simple")
-##NOT NP ID?
+data[,runvar:=ifelse(t==1,right,left)]
+data=data[,c("transport_index_andrsn","r2012","t","runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id","kernel_tri_ik")]
+montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=c("runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id"),test="simple")
+##NOT NP ID - fuzzy RD
 
 ##AUTOR 2020a
 #ivreg2 dhs2_tot_cont_2002_2010 (d_imp_usch_pd=d_imp_otch_lag_pd) [aw=sh_district_2002], cluster(czone congressionaldistrict)

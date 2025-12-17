@@ -128,6 +128,8 @@
 
     ###################### 2 Prepare data #########################3
     XW=c(X,W)
+
+    #
     if (sum(c("MW","AHS") %in% test)>0) {XWY=c(X,W,Y)} else {XWY=XW}
 
     data=data.table(data)
@@ -136,43 +138,43 @@
     data=data[complete.cases(data)]
     n=nrow(data)
     if (is.null(cluster)==FALSE) {
-      G=length(unique(data[,..cluster]))
+      G=length(unique(data[,get(..cluster)]))
       if (G<=2*minsize) stop("Number of clusters is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
     } else if (n<=2*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
 
-    data[,id:=(1:n)]
+    data[,id_:=(1:n)]
 
     if (is.null(cluster)==TRUE) {
-      data[,sample:=1+1*(id %in% sample(n,size=floor(treefraction*n), replace = FALSE))]
+      data[,sample:=1+1*(id_ %in% sample(n,size=floor(treefraction*n), replace = FALSE))]
     } else {
-      s2=sample(as.matrix(unique(data[,cluster,with=F])),size=floor(treefraction*nrow(unique(data[,cluster,with=F]))),replace=TRUE)
-      data[,sample:=1+1*(cluster %in% s2)]
-      rm(s2)
+      s=as.numeric(unique(data[,get(..cluster)]))
+      s2=sample(s,size=floor(treefraction*length(s)),replace=TRUE)
+      data[,sample:=1+1*(get(..cluster) %in% ..s2)]
+      rm(s,s2)
     }
-    if ((is.null(cluster)==TRUE)&(is.null(stack)==FALSE)) cluster="id"
+    if ((is.null(cluster)==TRUE)&(is.null(stack)==FALSE)) cluster="id_"
 
     ############### 3 Discretize Z, D and Y into subsets ###############33
     ##TODO: ALLOW FOR WEIGHTED QUANTILES
 
     if (is.null(Dsubsets)==FALSE) { ##bin treatment
-      unique(data[,D,env=list(D=D)])
-      if (length(unique(data[,D,env=list(D=D)]))>Dsubsets){
+      if (length(unique(data[,get(..D)]))>Dsubsets){
         if (gridtypeD=="equidistant") {
-          data[,D:=as.numeric(cut(D, breaks = seq(from = min(D) - 0.001, to = max(D) + 0.001, length.out = Dsubsets + 1)))-1,env=list(D=D)]
+          data[,(D):=as.numeric(cut(get(..D), breaks = seq(from = min(get(..D)) - 0.001, to = max(get(..D)) + 0.001, length.out = Dsubsets + 1)))-1]
         }
         else {
-          data[,D:=as.numeric(cut(D, breaks = c(-Inf, quantile(D, seq(1/Dsubsets, 1 - 1/Dsubsets, 1/Dsubsets)), Inf)))-1,env=list(D=D)]
+          data[,(D):=as.numeric(cut(get(..D), breaks = c(-Inf, quantile(get(..D), seq(1/Dsubsets, 1 - 1/Dsubsets, 1/Dsubsets)), Inf)))-1]
         }
       }
     }
 
     if (is.null(Zsubsets)==FALSE) { ##bin instrument
-      if (length(unique(data[,Z,env=list(Z=Z)]))>Zsubsets){
+      if (length(unique(data[,get(..Z)]))>Zsubsets){
         if (gridtypeZ=="equidistant") {
-          data[,Z:=as.numeric(cut(Z, breaks = seq(from = min(Z) - 0.001, to = max(Z) + 0.001, length.out = Zsubsets + 1)))-1,env=list(Z=Z)]
+          data[,(Z):=as.numeric(cut(get(..Z), breaks = seq(from = min(get(..Z)) - 0.001, to = max(get(..Z)) + 0.001, length.out = Zsubsets + 1)))-1]
         }
         else {
-          data[,Z:=as.numeric(cut(Z, breaks = c(-Inf, quantile(Z, seq(1/Zsubsets, 1 - 1/Zsubsets, 1/Zsubsets)), Inf)))-1,env=list(Z=Z)]
+          data[,(Z):=as.numeric(cut(get(..Z), breaks = c(-Inf, quantile(get(..Z), seq(1/Zsubsets, 1 - 1/Zsubsets, 1/Zsubsets)), Inf)))-1]
         }
       }
     }
@@ -180,22 +182,22 @@
     if (sum(test %in% c("BP","K"))>0) { ##bin outcome(s)
       maxlevs=c();Ybin=c()
       for (Yno in Y) {
-      if (length(unique(data[,Yno,env=list(Yno=Yno)]))>Ysubsets) {
+      if (length(unique(data[,get(..Yno)]))>Ysubsets) {
         if (gridtypeY=="equidistant") {
-          data[,name:=as.numeric(cut(Yno, breaks = seq(from = min(Yno) - 0.001, to = max(Yno) + 0.001, length.out = Ysubsets + 1))),env=list(Yno=Yno,name=paste0(Yno,".bin"))]
+          data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno), breaks = seq(from = min(get(..Yno)) - 0.001, to = max(get(..Yno)) + 0.001, length.out = Ysubsets + 1)))]
         }
         else {
-          data[,name:=as.numeric(cut(Yno, breaks = c(-Inf, quantile(Yno, seq(1/Ysubsets, 1 - 1/Ysubsets, 1/Ysubsets)), Inf))),env=list(Yno=Yno,name=paste0(Yno,".bin"))]
+          data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno), breaks = c(-Inf, quantile(get(..Yno), seq(1/Ysubsets, 1 - 1/Ysubsets, 1/Ysubsets)), Inf)))]
         }
       } else {
-        data[,name:=as.numeric(cut(Yno,breaks=length(unique(Yno))))-1,env=list(Yno=Yno,name=paste0(Yno,".bin"))]
+        data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno),breaks=length(unique(get(..Yno)))))-1]
         }
-      maxlevs=c(maxlevs,max(data[,paste0(Yno,".bin"),with=F]))
+      maxlevs=c(maxlevs,max(data[,get(..Yno)]))
       Ybin=c(Ybin,paste0(Yno,".bin"))
       }
     }
 
-    n=nrow(data); J=dim(unique(data[,D,with=F]))[1]-1; K=dim(unique(data[,Z,with=F]))[1]-1;L=length(Y)
+    n=nrow(data); J=length(unique(data[,get(..D)]))-1; K=length(unique(data[,get(..Z)]))-1;L=length(Y)
 
     results=c();tunable.Cparams=c()
 
@@ -218,24 +220,47 @@
 
       ##HANDLE Z STACKS
         if (K>1) { ##Expand to all margins of Z
-          data=data[rep(seq(.N),1+1*(Z>0&Z<K)),env=list(Z=Z)]
-          data[,zmargin:=seq(.N)+Z-1*(Z>0),by=id,env=list(Z=Z)]
-          data[,Z:=Z>=zmargin,env=list(Z=Z)]
+          times = 1L + 2L * as.integer(data[[Z]] > 0 & data[[Z]] < K)
+          data = data[rep.int(seq_len(nrow(data)), times)]
+
+          #data[rep(seq_len(nrow(data)),1L + as.integer(data[, get(..Z) > 0 & get(..Z) < ..K]))]
+          #data=data[rep(seq(.N),1+1*(get(Z)>0&get(Z)<..K))]
+          data[,zmargin:=seq(.N)+get(..Z)-1*(get(..Z)>0),by=id_]
+          data[,(Z):=get(..Z)>=zmargin]
           margins=c(margins,"zmargin")
         }
 
         ##estimate Z.hat for each margin in stacked data (also if K==1!)
         if (is.null(X)==FALSE) {
-        data[,paste0(Z,".hat"):=do.call(regression_forest, materialize_args(.SD,model="rf",
-            y_name=..Z, x_names=..X,forest_opts=c(forest_opts,Zparameters),
-            weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
-            cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
-            $prediction,by=c("sample",margins),env=list(Z=Z)]
+          Z_arg <- Z
+          X_arg <- X
+          by_arg <- c("sample", margins)
+
+          data[, (paste0(Z_arg, ".hat")) := {
+            args <- materialize_args(
+              .sd         = .SD,
+              model       = "rf",
+              y_name      = Z_arg,                # <- name, not data
+              x_names     = X_arg,                # <- names, not data
+              forest_opts = c(forest_opts, Zparameters),
+              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
+              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
+            )
+            fit <- do.call(grf::regression_forest, args)
+            as.numeric(predict(fit)$predictions)
+          }, by = by_arg,
+          .SDcols = unique(c(Z_arg, X_arg,
+                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
+                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
         if (normalize.Z==TRUE) { #Normalize propensity scores
-          data[,Z.hat:=.N*Z.hat/sum(Z/Z.hat),by=c("sample",margins),env=list(Z=Z)]
+          data[, (paste0(Z_arg, ".hat")) := {
+            zhat <- get(paste0(Z_arg, ".hat"))
+            z    <- get(Z_arg)
+            .N * zhat / sum(z / zhat)
+          }, by = c("sample", margins)]
         }
       } else {
-      data[,Z.hat:=(mean(Z)*.N-Z)/(.N-1),by=c("sample",margins),env=list(Z=Z)] ##leave one out mean
+      data[,(paste0(Z,".hat")):=(mean(get(..Z))*.N-get(..Z))/(.N-1),by=c("sample",margins)] ##leave one out mean
       }
 
 
@@ -250,30 +275,61 @@
 
       ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
       if ((sum(test %in% c("MW","AHS"))>0)&Y.res==TRUE)  {
-        data[,paste0(Y,".res"):=Y-do.call(regression_forest, materialize_args(.SD,model="rf",
-             y_name=..Y, x_names=..XW,forest_opts=c(forest_opts,Zparameters),
-              weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
-             cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
-             $prediction,by=c("sample",margins),env=list(Y=Y)]
+
+          Y_arg <- Y
+          X_arg <- X
+          by_arg <- c("sample", margins)
+
+          data[, (paste0(Y_arg, ".res")) := {
+            args <- materialize_args(
+              .sd         = .SD,
+              model       = "rf",
+              y_name      = Y_arg,                # <- name, not data
+              x_names     = X_arg,                # <- names, not data
+              forest_opts = c(forest_opts, Yparameters),
+              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
+              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
+            )
+            fit <- do.call(grf::regression_forest, args)
+            get(..Y.arg)-as.numeric(predict(fit)$predictions)
+          }, by = by_arg,
+          .SDcols = unique(c(Y_arg, X_arg,
+                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
+                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
         }
 
       ##STACK MARGINS OF D
       if (J>1) { ##Stack data for all margins of D
-
-            data= data[rep.int(.I, J)]    # replicate each row J times
-            data[, dmargin := rep.int(seq_len(J), times = n)]
-            #data=cbind(CJ(dmargin=(1:J),id=data$id),data[,!"id"])
-            data[,D:=D>=dmargin,env=list(D=D)]
-            margins=c(margins,"dmargin")
+          rows=rep(seq_len(nrow(data)),each=J)
+          data= data[rows]    # replicate each row J times
+          data[,dmargin:=seq_len(J),by=c("id_",margins)]
+          #data=cbind(CJ(dmargin=(1:J),id=data$id),data[,!"id"])
+          data[,D:=D>=dmargin,env=list(D=D)]
+          margins=c(margins,"dmargin")
           }
 
       ##Estimate D.hat if test includes "K"
       if ("K" %in% test) {
-        data[,paste0(D,".hat"):=do.call(regression_forest, materialize_args(.SD,model="rf",
-            y_name=..D, x_names=..XW,forest_opts=c(forest_opts,Zparameters),
-             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
-            cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))
-             $prediction,by=c("sample",margins),env=list(D=D)]
+        D_arg <- D
+        X_arg <- X
+        by_arg <- c("sample", margins)
+
+        data[, (paste0(D_arg, ".hat")) := {
+          args <- materialize_args(
+            .sd         = .SD,
+            model       = "rf",
+            y_name      = D_arg,                # <- name, not data
+            x_names     = X_arg,                # <- names, not data
+            forest_opts = c(forest_opts, Dparameters),
+            weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
+            cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
+          )
+          fit <- do.call(grf::regression_forest, args)
+          as.numeric(predict(fit)$predictions)
+        }, by = by_arg,
+        .SDcols = unique(c(D_arg, X_arg,
+                           get0("weight",  inherits=TRUE, ifnotfound=NULL),
+                           get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
         }
 
         ##Expand multiple conditions for testing (except K + BP, which has same def of Q - expand later)
@@ -322,16 +378,49 @@
 
         ##Estimate Q.hat in stacked data
         if (sum(test %in% c("simple","BP","K","BPK"))>0) {
-          data[condition %in% c("simple","BPK","BP","K"),Q.hat:=do.call(regression_forest, materialize_args(.SD,model="rf",
-               y_name="Q", x_names=..XW,forest_opts=c(forest_opts,Zparameters),
-               weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
-               cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))$prediction,by=c("sample",margins)]
+
+          X_arg <- X
+          by_arg <- c("sample", margins)
+
+          data[condition %in% c("simple","BPK","BP","K"), Q.hat := {
+            args <- materialize_args(
+              .sd         = .SD,
+              model       = "rf",
+              y_name      = "Q",                # <- name, not data
+              x_names     = X_arg,                # <- names, not data
+              forest_opts = c(forest_opts, Qparameters),
+              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
+              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
+            )
+            fit <- do.call(grf::regression_forest, args)
+            as.numeric(predict(fit)$predictions)
+          }, by = by_arg,
+          .SDcols = unique(c("Q", X_arg,
+                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
+                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
+
         }
+
         if ("AHS" %in% test) {
-          data[condition=="AHS",Q.hat:=do.call(regression_forest, materialize_args(.SD,model="rf",
-             y_name="Q", x_names=..XWY,forest_opts=c(forest_opts,Zparameters),
-             weight_col=get0("weight",  inherits = TRUE, ifnotfound = NULL),
-             cluster_col=get0("cluster",  inherits = TRUE, ifnotfound = NULL)))$prediction,by=c("sample",margins)]
+          X_arg <- XWY
+          by_arg <- c("sample", margins)
+
+          data[condition %in% "AHS", Q.hat := {
+            args <- materialize_args(
+              .sd         = .SD,
+              model       = "rf",
+              y_name      = "Q",                # <- name, not data
+              x_names     = X_arg,                # <- names, not data
+              forest_opts = c(forest_opts, Qparameters),
+              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
+              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
+            )
+            fit <- do.call(grf::regression_forest, args)
+            as.numeric(predict(fit)$predictions)
+          }, by = by_arg,
+          .SDcols = unique(c("Q", X_arg,
+                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
+                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
           }
 
         ##Split BP and K conditions if doing both
@@ -350,70 +439,9 @@
           condition = condition,      # name of column in `data`
           get_spec  = get_spec,
           materialize_args = materialize_args,
-          wcol = weight, ccol = cluster,var=shrink
+          wcol = weight, ccol = cluster,  Qcol = "Q", Zcol = Z, Dcol = D,
         )
 
-
-        ##cleanup
-        data[, c("idx__","grp_id") := NULL]
-
-        ##Empirical Bayes shrinkage of predictions
-        if (shrink==TRUE) { ##NEED TO ACCEPTS WEIGHTS
-          calc_stats <- function(DT) {
-            mu  <- mean(DT[["scores"]],   na.rm = TRUE)
-            v1  <- var(DT[["pred"]],      na.rm = TRUE)
-            e1  <- mean(DT[["pred_var"]], na.rm = TRUE)
-            n1  <- sum(!is.na(DT[["pred"]]))
-            v2  <- var(DT[["pred_o"]],      na.rm = TRUE)
-            e2  <- mean(DT[["pred_o_var"]], na.rm = TRUE)
-            n2  <- sum(!is.na(DT[["pred_o"]]))
-            sig2_tau <- pmax(weighted.mean(c(v1 - e1, v2 - e2), w = c(n1, n2), na.rm = TRUE),0)
-            list(mu = mu, sig2_tau = sig2_tau, e1_bar = e1, e2_bar = e2)
-          }
-
-          if (is.null(margins)) {
-            # no grouping: one-row stats
-            tmp <- calc_stats(data)
-            stats <- data.table(mu = tmp$mu, sig2_tau = tmp$sig2_tau,
-                                e1_bar = tmp$e1_bar, e2_bar = tmp$e2_bar)
-            # attach constants
-            data[, `:=`(mu = stats$mu[1L],
-                        sig2_tau = stats$sig2_tau[1L],
-                        e1_bar = stats$e1_bar[1L],
-                        e2_bar = stats$e2_bar[1L])]
-          } else {
-            # grouped stats by margins
-            stats <- data[, {
-              tmp <- calc_stats(.SD)
-              .(mu = tmp$mu, sig2_tau = tmp$sig2_tau, e1_bar = tmp$e1_bar, e2_bar = tmp$e2_bar)
-            }, by = margins]
-            # join back on those keys
-            data <- stats[data, on = margins]
-          }
-
-          # 2) Join and create per-obs noise vars
-          data[, `:=`(
-            se2_pred   = fifelse(is.na(pred_var),   e1_bar, pred_var),
-            se2_pred_o = fifelse(is.na(pred_o_var), e2_bar, pred_o_var)
-          )]
-
-          # 3) Weights
-          data[, `:=`(
-            w_pred   = fifelse(sig2_tau + pmax(se2_pred,   0) > 0,
-                               sig2_tau / (sig2_tau + pmax(se2_pred,   0)), 0),
-            w_pred_o = fifelse(sig2_tau + pmax(se2_pred_o, 0) > 0,
-                               sig2_tau / (sig2_tau + pmax(se2_pred_o, 0)), 0)
-          )]
-
-          # 4) Shrunken estimates
-          data[, `:=`(
-            pred   = mu + ((1-shrink.alpha)*w_pred+shrink.alpha)   * (pred   - mu),
-            pred_o = mu + ((1-shrink.alpha)*w_pred_o+shrink.alpha)  * (pred_o - mu)
-          )]
-
-          # (optional) tidy up helpers
-          data[, c("e1_bar","e2_bar","se2_pred","se2_pred_o","pred_var","pred_o_var","sig2_tau","w_pred","w_pred_o") := NULL]
-        }
 
         ##Normalize pred, scores, pred_out
         if (normalize.pred==TRUE) {
@@ -526,7 +554,6 @@
         ##replace Z
         data[,paste0(Z,".hat"):=paste0(Z,".hat",z),env=list(Z=Z)]
 
-        browser()
         ##define Q
         if (cond %in% c("simple","AHS")) data[Z==z|Z==z-1,Q:=D>=d,env=list(D=D)]
         else if (cond=="MW") data[Z==z|Z==z-1,Q:=a*((1-paste0(Z,".hat"))*(D>=d)*(Z>=z)-paste0(Z,".hat")*(D>=d)*(1-(Z>=z)))+(1-a)*(paste0(Z,".hat")*(1-(D>=d))*(1-(Z>=z))-(1-paste0(Z,".hat"))*(1-(D>=d))*(Z>=z)),env=list(Z=Z,D=D)]
@@ -558,7 +585,6 @@
 
         ##Estimate causal forests and predict scores & predicted effects
         if (K>1) idx <- which(which(data[,Z]==z|data[,Z]==z-1)) else idx=NULL
-        browser()
         fit_models(data,
               condition = cond,
               get_spec = get_spec,
@@ -710,21 +736,21 @@
    }
    if (!is.null(y_name)) {
      if (!y_name %in% names(.sd)) stop("Missing Y: ", y_name)
-     args$Y <- .sd[[y_name]]
-     if (model %in% c("cf","iv")) {yhat <- paste0(y_name, ".hat"); if (yhat %in% names(.sd)) args$Y.hat <- .sd[[yhat]]}
+     args$Y <- as.numeric(.sd[[y_name]])
+     if (model %in% c("cf","iv")) {yhat <- paste0(y_name, ".hat"); if (yhat %in% names(.sd)) args$Y.hat <- as.numeric(.sd[[yhat]])}
    }
    if (!is.null(w_name)) {
      if (!w_name %in% names(.sd)) stop("Missing W: ", w_name)
-     args$W <- .sd[[w_name]]
-     if (model %in% c("cf","iv")) {what <- paste0(w_name, ".hat"); if (what %in% names(.sd)) args$W.hat <- .sd[[what]]}
+     args$W <- as.numeric(.sd[[w_name]])
+     if (model %in% c("cf","iv")) {what <- paste0(w_name, ".hat"); if (what %in% names(.sd)) args$W.hat <- as.numeric(.sd[[what]])}
    }
    if (!is.null(z_name)) {
      if (!z_name %in% names(.sd)) stop("Missing Z: ", z_name)
-     args$Z <- .sd[[z_name]]
-     if (model=="iv")  {zhat <- paste0(z_name, ".hat"); if (zhat %in% names(.sd)) args$Z.hat <- .sd[[zhat]]}
+     args$Z <- as.numeric(.sd[[z_name]])
+     if (model=="iv")  {zhat <- paste0(z_name, ".hat"); if (zhat %in% names(.sd)) args$Z.hat <- as.numeric(.sd[[zhat]])}
    }
-   if (!is.null(weight_col))  { if (!weight_col  %in% names(.sd)) stop("Missing weight: ",  weight_col);  args$sample.weights <- .sd[[weight_col]] }
-   if (!is.null(cluster_col)) { if (!cluster_col %in% names(.sd)) stop("Missing cluster: ", cluster_col); args$clusters       <- .sd[[cluster_col]] }
+   if (!is.null(weight_col))  { if (!weight_col  %in% names(.sd)) stop("Missing weight: ",  weight_col);  args$sample.weights <- as.numeric(.sd[[weight_col]]) }
+   if (!is.null(cluster_col)) { if (!cluster_col %in% names(.sd)) stop("Missing cluster: ", cluster_col); args$clusters       <- as.numeric(.sd[[cluster_col]]) }
    c(args, forest_opts)
  }
 
