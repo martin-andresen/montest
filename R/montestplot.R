@@ -16,10 +16,39 @@ montestplot<-function(object,sample=NULL,margins=NULL,numX=10) {
     setcolorder(vals,names(vals)[order(abs(unlist(vals[1])), decreasing = TRUE)])
     names=names(vals)
     vals=as.numeric(vals)
-    if (length(vals)>numX)vals=vals[1:numX]
-    barplot(vals, names.arg = names,
+    if (length(vals)>numX) {
+      vals=vals[1:numX]
+      names=names[1:numX]
+    }
+
+    ##find right margin
+    theta <- 45 * pi/180
+    w <- strwidth(names, units = "inches", cex = 1)   # unrotated width
+    t <- strheight(names, units = "inches", cex = 1)  # unrotated height
+
+    # Vertical projection of a rotated rectangle (good approximation for text)
+    needed_in <- max(w * sin(theta) + t * cos(theta))
+
+    # Convert inches to "lines" used by par(mar=...)
+    line_in <- par("csi")  # character size (inches) per line
+    bottom_lines <- ceiling(needed_in / line_in) + 1  # +1 line padding
+
+    op <- par(mar = c(bottom_lines, 4, 2, 1))
+
+    ##plot
+    barplot = barplot(vals, names.arg = names,
             main = "Standardized differences in means",
-            ylab = "(test mean - full mean) / test SD")
+            ylab = "(test mean - full mean) / test SD",
+            xaxt= "n")
+    text(
+      x      = barplot,
+      y      = par("usr")[3] - 0.05,
+      labels = names,
+      srt    = 45,
+      adj    = 1,
+      xpd    = NA
+    )
+    barplot
 
   ##Plot margins
   if (is.null(margins)==FALSE) {

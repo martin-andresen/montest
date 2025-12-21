@@ -1,6 +1,68 @@
 
 
+############
+BAYESIAN SHRINKAGE STUFF
 
+##Empirical Bayes shrinkage of predictions
+if (shrink==TRUE) { ##NEED TO ACCEPTS WEIGHTS
+  calc_stats <- function(DT) {
+    mu  <- mean(DT[["scores"]],   na.rm = TRUE)
+    v1  <- var(DT[["pred"]],      na.rm = TRUE)
+    e1  <- mean(DT[["pred_var"]], na.rm = TRUE)
+    n1  <- sum(!is.na(DT[["pred"]]))
+    v2  <- var(DT[["pred_o"]],      na.rm = TRUE)
+    e2  <- mean(DT[["pred_o_var"]], na.rm = TRUE)
+    n2  <- sum(!is.na(DT[["pred_o"]]))
+    sig2_tau <- pmax(weighted.mean(c(v1 - e1, v2 - e2), w = c(n1, n2), na.rm = TRUE),0)
+    list(mu = mu, sig2_tau = sig2_tau, e1_bar = e1, e2_bar = e2)
+  }
+
+  if (is.null(margins)) {
+    # no grouping: one-row stats
+    tmp <- calc_stats(data)
+    stats <- data.table(mu = tmp$mu, sig2_tau = tmp$sig2_tau,
+                        e1_bar = tmp$e1_bar, e2_bar = tmp$e2_bar)
+    # attach constants
+    data[, `:=`(mu = stats$mu[1L],
+                sig2_tau = stats$sig2_tau[1L],
+                e1_bar = stats$e1_bar[1L],
+                e2_bar = stats$e2_bar[1L])]
+  } else {
+    # grouped stats by margins
+    stats <- data[, {
+      tmp <- calc_stats(.SD)
+      .(mu = tmp$mu, sig2_tau = tmp$sig2_tau, e1_bar = tmp$e1_bar, e2_bar = tmp$e2_bar)
+    }, by = margins]
+    # join back on those keys
+    data <- stats[data, on = margins]
+  }
+
+  # 2) Join and create per-obs noise vars
+  data[, `:=`(
+    se2_pred   = fifelse(is.na(pred_var),   e1_bar, pred_var),
+    se2_pred_o = fifelse(is.na(pred_o_var), e2_bar, pred_o_var)
+  )]
+
+  # 3) Weights
+  data[, `:=`(
+    w_pred   = fifelse(sig2_tau + pmax(se2_pred,   0) > 0,
+                       sig2_tau / (sig2_tau + pmax(se2_pred,   0)), 0),
+    w_pred_o = fifelse(sig2_tau + pmax(se2_pred_o, 0) > 0,
+                       sig2_tau / (sig2_tau + pmax(se2_pred_o, 0)), 0)
+  )]
+
+  # 4) Shrunken estimates
+  data[, `:=`(
+    pred   = mu + ((1-shrink.alpha)*w_pred+shrink.alpha)   * (pred   - mu),
+    pred_o = mu + ((1-shrink.alpha)*w_pred_o+shrink.alpha)  * (pred_o - mu)
+  )]
+
+  # (optional) tidy up helpers
+  data[, c("e1_bar","e2_bar","se2_pred","se2_pred_o","pred_var","pred_o_var","sig2_tau","w_pred","w_pred_o") := NULL]
+}
+
+
+########3
 ##########   If not stacking: Loop #####################
 if (stack==FALSE) {
 
@@ -288,13 +350,4 @@ if (stack==FALSE) {
       clsum <- data.table(cluster = cluster, scores = scores)[, .(ng = .N, ybar_g = mean(scores)), by = cluster]
       G <- nrow(clsum)
 
-      # Liang–Zeger CR0 meat for the sample mean:
-      # Var_hat = (1/n^2) * sum_g [ (sum_{i in g} (y_i - ybar))^2 ]
-      # which equals (1/n^2) * sum_g [ (ng * (ybar_g - ybar))^2 ]
-      meat <- sum((clsum$ng * (clsum$ybar_g - ybar))^2)
-
-      # small-sample CR1 correction by clusters
-      se <- if (G > 1) sqrt((G/(G - 1)) * meat / (n^2)) else NA_real_
-
-      .(G=G,N=n,m=ybar,se=se,pred=max(pred))
-    },by=sample])
+      # Liangb

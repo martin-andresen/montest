@@ -11,6 +11,7 @@ montests=list()
 data=data.table(read_dta("Allcott2020_data.dta"))
 data=data[,c("v_wins","stratum","T","D","endline_wta_update")]
 montests[["Allcott2020"]]=montest(data=data,Y="endline_wta_update",X=c("v_wins","stratum"),Z="T",D="D",test="simple")
+feols(D~T+v_wins +i(stratum),data=data) ##FS
 #ivreg2 endline_wta_update v_wins i.stratum (D = T), robust
 #NOTE: ONLY ONE REGRESSION IN THIS REPLICATION FILE?
 #MAIN SPEC IS FROM APPENDIX TABLE A12
@@ -24,8 +25,11 @@ montests[["Allcott2020"]]=montest(data=data,Y="endline_wta_update",X=c("v_wins",
 data=data.table(read_dta("Asher2020_data.dta"))
 data=data[mainsample==1]
 data[,runvar:=ifelse(t==1,right,left)]
-data=data[,c("transport_index_andrsn","r2012","t","runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id","kernel_tri_ik")]
-montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=c("runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id"),test="simple")
+feols(r2012~t+left+right+primary_school+med_center+elect+tdist+irr_share+ln_land+pc01_lit_share+bpl_landed_share+bpl_inc_source_sub_share+bpl_inc_250plus+i(vhg_dist_id),data=data,weight=~kernel_tri_ik)
+X=c("runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id")
+cols=c(X,"transport_index_andrsn","r2012","t","kernel_tri_ik")
+data=data[,..cols]
+#montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=X,test="simple")
 ##NOT NP ID - fuzzy RD
 
 ##AUTOR 2020a
@@ -46,24 +50,20 @@ data=data.table(read_dta("Bandiera2020_data.dta"))
 data=data[panel==1]
 X=c("control_body","branchno","age")
 cols=c(X,"treatment","QC_clubparticipateIMP","villid")
+feols(QC_clubparticipateIMP~treatment+control_body+i(branchno)+age, data=data)
 data=data[,..cols]
 montests[["Bandiera2020"]]=montest(data=data,Z="treatment",D="QC_clubparticipateIMP",X=X,test="simple",cluster="villid")
 
 
-##BURSZTYN 2020
-data=data.table(read_dta("Bursztyn2020_data_1.dta"))
-data=data[data$public==1]
-data[,sob_culture_50 := sob_culture - 50]
-data=data[,c("female","age","married","years_edu","income_000s","white","donate","trump","sob_culture_50")]
-montests[["Bursztyn2020"]]=montest(data=data,Z="trump",D="sob_culture_50",X=c("female","age","married","years_edu","income_000s","white"),test="simple")
-#ivregress 2sls donate (sob_culture_50 = trump) female age married years_edu income_000s white
-#MAIN estimate: table 2, panel B, col 6.
-
 ##CAPRETTINI 2020
 data=data.table(read_dta("Caprettini2020_data.dta"))
 data=data[sample==1]
-data=data[,c("thresh","heavysh","cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION")]
-montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=c("cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION"),test="simple")
+X=c("cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION")
+cols=c(X,"thresh","heavysh","SWING")
+data=data[,..cols]
+feols(as.formula(paste0(c("thresh~heavysh",X),collapse="+")),data=data) ##NEGATIVE FS
+data[,heavysh:=-heavysh]
+montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple")
 #ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
 #MAIN ESTIMATE: table 2, col 81
 
@@ -75,9 +75,9 @@ data=data[gov==1]
 X=c("schoolid","female","local","some_training","BA_plus","lessthan4","temp_contract")
 cols=c(X,"mean_1","mean_2","group")
 data=data[,..cols]
+feols(as.formula(paste0(c("mean_1~mean_2",X),collapse="+")),data=data)
 montests[["Bau2020"]]=montest(data=data,D="mean_1",Z="mean_2",X=X,test="simple",cluster="group")
 ##MAIN ESTIMATE: table 3, cols 6-7 (district or school id)
-##NOT NP
 
 ##Becker2019
 #ivreg2 share_antisem_reich_1890 (f_prot_1882=kmwittenberg) f_young f_fem f_ortsgeb f_pruss hhsize lnpop posen f_urban, cluster(code_reichstag_wk)
@@ -86,8 +86,130 @@ data=data.table(read_dta("Becker2019_data.dta"))
 X=c("f_young","f_fem","f_ortsgeb","f_pruss","hhsize","lnpop","posen","f_urban")
 cols=c(X,"f_prot_1882","kmwittenberg","code_reichstag_wk")
 data=data[,..cols]
+feols(as.formula(paste0(c("f_prot_1882~kmwittenberg",X),collapse="+")),data=data) ##NEGATIVE FS
+data[,kmwittenberg:=-kmwittenberg]
 montests[["Becker2019"]]=montest(data=data,D="f_prot_1882",Z="kmwittenberg",X=X,test="simple",cluster="code_reichstag_wk")
 
+#Bergqquist2020
+#ivregress 2sls weighted_price_adj_trim _Iweek_* _Imarket_na_* (num_entrants = S2) if S1!=1 [aweight=num_traders_inv], r cluster(market_block)
+data=data.table(read_dta("Bergquist2020_data.dta"))
+data[,marketno:=as.factor(market_name)]
+data[,marketno:=as.numeric(marketno)]
+data[,market_block:=as.numeric(as.factor(market_block))]
+X=c("week","marketno")
+data=data[S1!=1]
+cols=c(X,"weighted_price_adj_trim","num_entrants","S2","num_traders_inv","market_block")
+data=data[,..cols]
+feols(num_entrants~S2+i(marketno)+i(week),weight=~num_traders_inv,data=data)
+montests[["Bergquist2020"]]=montest(data=data,D="num_entrants",Z="S2",X=X,test="simple",weight="num_traders_inv",cluster="market_block")
+#Main estimate: table 5, col 4
+
+##Bound2020
+#xtivreg2 l_foreign_fresh (l_state_ap = l_state_app_at_state) l_population y1-y17 [w=weight] if Research==1, fe cluster(state_of_college)
+data=data.table(read_dta("Bound2020_data_1.dta"))
+data=data[Research==1]
+yvars <- paste0("y", 1:17)
+data[, year := max.col(as.matrix(.SD)), .SDcols = yvars]
+X=c("l_population","unitid","year")
+cols=c(X,"weight","l_state_ap","l_state_app_at_state","l_foreign_fresh","state_of_college")
+data=data[,..cols]
+data[,state_of_college:=as.numeric(as.factor(state_of_college))]
+
+data=as.data.table(data)
+data=data[complete.cases(data)]
+data[,D_res:=feols(l_state_ap~1 | unitid+year,data=data,weight=~weight)$residuals]
+data[,Z_res:=feols(l_state_app_at_state~1 | unitid+year,data=data,weight=~weight)$residuals]
+feols(l_state_ap~l_state_app_at_state +l_population | unitid+year,data=data,weight=~weight)
+
+montests[["Bound2020"]]=montest(data=data,D="D_res",Z="Z_res",X="l_population",W=c("year","unitid"),test="simple",weight="weight")
+
+##MAIN ESTIMATE: Table 2, col2
+##OBS cant cluster by state - too few!
+
+
+
+##BURSZTYN 2020
+data=data.table(read_dta("Bursztyn2020_data_1.dta"))
+data=data[data$public==1]
+data[,sob_culture_50 := sob_culture - 50]
+X=c("female","age","married","years_edu","income_000s","white")
+cols=c(X,"donate","trump","sob_culture_50")
+data=data[,..cols]
+montests[["Bursztyn2020"]]=montest(data=data,Z="trump",D="sob_culture_50",X=X,test="simple")
+feols(as.formula(paste0(c("sob_culture_50~trump",X),collapse="+")),data=data)
+#ivregress 2sls donate (sob_culture_50 = trump) female age married years_edu income_000s white
+#MAIN estimate: table 2, panel B, col 6.
+
+##Butters2020
+#ivregress 2sls logcaputil logwage logrent logelecprice logpipc logpi logempllh ur logllhshare logllhsqmile logpipc5yr logpi5yr logempllh5yr i.segment i.year (demandvolatility = instrument1_imt), vce(cluster metro) first
+#main spec: table 2 col c
+data=data.table(read_dta("Butters2020_data_1.dta"))
+X=c("logwage", "logrent", "logelecprice", "logpipc", "logpi", "logempllh",
+    "ur", "logllhshare", "logllhsqmile",
+    "logpipc5yr", "logpi5yr", "logempllh5yr")
+feols(as.formula(paste0(c("demandvolatility~instrument1_imt",X,"i(segment)","i(year)"),collapse="+")),data=data)
+X=c(X,"segment", "year")
+cols=c(X,"logcaputil","demandvolatility","instrument1_imt","metro")
+data=data[,..cols]
+montests[["Butters2020"]]=montest(data=data,Z="instrument1_imt",D="demandvolatility",X=X,test="simple")
+#NOTE: variable "intstrument" doesn't exist - assumed instrment1_imt
+##couldn't cluster - 92 clusters
+
+
+##Cahyadi2020
+#ivregress 2sls pre_natal_visits hh_head_agr_baseline_nm hh_head_serv_baseline_nm hh_educ*baseline_nm roof_type*baseline_nm wall_type*baseline_nm floor_type*baseline_nm clean_water_baseline_nm own_latrine_baseline_nm square_latrine_baseline_nm own_septic_tank_baseline_nm electricity_PLN_baseline_nm hhsize_ln_baseline_nm logpcexp_baseline_nm *miss kabu_* (pkh_by_this_wave = L07) if survey_round == 2, vce(cluster kecamatan)
+#Main spec: table 2, col 2
+data=data.table(read_dta("Cahyadi2020_data_1.dta"))
+data=data[survey_round==2]
+
+vars <- paste0("kabu_", 1:28)
+data[, kabu := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+
+vars <- paste0("hh_educ_", 1:9,"_baseline_nm")
+data[, hh_educ := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+
+vars <- paste0("floor_type", 1:9,"_baseline_nm")
+data[, floor_type := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+
+vars <- paste0("roof_type", 1:9,"_baseline_nm")
+data[, roof_type := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+
+vars <- paste0("wall_type", 1:9,"_baseline_nm")
+data[, wall_type := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+
+X=c("hh_head_agr_baseline_nm", "hh_head_serv_baseline_nm", "clean_water_baseline_nm", "own_latrine_baseline_nm", "square_latrine_baseline_nm", "own_septic_tank_baseline_nm", "electricity_PLN_baseline_nm", "hhsize_ln_baseline_nm", "logpcexp_baseline_nm"
+,"hh_educ","clean_water_baseline_miss","own_latrine_baseline_miss","square_latrine_baseline_miss","own_septic_tank_baseline_miss","electricity_PLN_baseline_miss","logpcexp_baseline_miss","hhsize_ln_baseline_miss")
+feols(as.formula(paste0(c("pkh_by_this_wave~L07",X,"i(kabu)","i(floor_type)","i(roof_type)","i(wall_type)"),collapse="+")),data=data)
+X=c(X,"kabu","floor_type","wall_type","roof_type")
+
+cols=c(X,"pre_natal_visits","pkh_by_this_wave","L07","kecamatan")
+data=data[,..cols]
+montests[["Cahyadi2020"]]=montest(data=data,Z="L07",D="pkh_by_this_wave",X=X,test="simple")
 
 ###OLD SAMPLE
 

@@ -2,10 +2,10 @@
   #' @return A matrix of the infile
   #' @export
 
-  montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,test=NULL,
+  montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,test=NULL,folds=10,
                    normalize.Z=TRUE,normalize.pred=TRUE,stack=NULL,treetype="forest",
-                   gridtypeY="equidistant",gridtypeD="equidistant",gridtypeZ="equidistant",
-                   Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,eps=0.02,min_n=10L,
+                   gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",
+                   Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,min_n=1L,
                    weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,shrink=FALSE,shrink.alpha=0.3,
                    maxrankcp=5,prune=TRUE,cp=0,alpha=0.05,preselect="nonpositive", ##CART options
                    Zparameters=NULL,Yparameters=NULL,Qparameters=NULL,Dparameters=NULL,Cparameters=NULL,
@@ -75,23 +75,25 @@
     gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
     gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
 
-    if ((gridtypeZ=="equisized"|gridtypeY=="equisized"|gridtypeD=="equisized")&is.null(weight)==FALSE) stop("Cannot combine weights and quantile-based splits of Y, D or Z.")
 
     if ((length(D)!=1)|(!(D %in% colnames(data)))) {
       stop("Argument D must be the name of a single column in data")
     }
 
     if (is.null(weight)==FALSE) {
+      wvar=weight
       if ((length(weight)!=1)|(!(weight %in% colnames(data)))) {
         stop("Argument weight must be the name of a single column in data")
       }
-    }
+    } else wvar=NA_character_
 
     if (is.null(cluster)==FALSE) {
+      clvar=cluster
       if ((length(cluster)!=1)|(!(cluster %in% colnames(data)))) {
         stop("Argument cluster must be the name of a single column in data")
       }
-    }
+    } else clvar=NA_character_
+
     if ((length(Z)!=1)|(!(Z %in% colnames(data)))) {
       stop("Argument Z must be the name of a single column in data")
     }
@@ -135,6 +137,8 @@
     data=data.table(data)
     allvars=c(X,W,Y,D,Z,weight,cluster)
     data=data[,..allvars]
+    dropped=sum(!complete.cases(data))
+    if (dropped>0) message(paste("Note: dropped ",dropped," observations with missing data on one or more input variables."))
     data=data[complete.cases(data)]
     n=nrow(data)
     if (is.null(cluster)==FALSE) {
@@ -147,11 +151,13 @@
     if (is.null(cluster)==TRUE) {
       data[,sample:=1+1*(id_ %in% sample(n,size=floor(treefraction*n), replace = FALSE))]
     } else {
-      s=as.numeric(unique(data[,get(..cluster)]))
-      s2=sample(s,size=floor(treefraction*length(s)),replace=TRUE)
-      data[,sample:=1+1*(get(..cluster) %in% ..s2)]
+      s=unique(data[[cluster]])
+      s2=sample(s,size=floor(0.5*length(s)),replace=FALSE)
+      data[,sample:=1L+1L*(get(cluster)) %in% s2]
       rm(s,s2)
     }
+    make_group_folds(data, K = folds, cluster_name = cluster)
+
     if ((is.null(cluster)==TRUE)&(is.null(stack)==FALSE)) cluster="id_"
 
     ############### 3 Discretize Z, D and Y into subsets ###############33
@@ -160,10 +166,14 @@
     if (is.null(Dsubsets)==FALSE) { ##bin treatment
       if (length(unique(data[,get(..D)]))>Dsubsets){
         if (gridtypeD=="equidistant") {
-          data[,(D):=as.numeric(cut(get(..D), breaks = seq(from = min(get(..D)) - 0.001, to = max(get(..D)) + 0.001, length.out = Dsubsets + 1)))-1]
+          data[,(D):=as.integer(cut(get(..D), breaks = seq(from = min(get(..D)) - 0.001, to = max(get(..D)) + 0.001, length.out = Dsubsets + 1)))-1]
         }
         else {
-          data[,(D):=as.numeric(cut(get(..D), breaks = c(-Inf, quantile(get(..D), seq(1/Dsubsets, 1 - 1/Dsubsets, 1/Dsubsets)), Inf)))-1]
+          data[,(D):={
+            w <- if (is.na(..wvar)) NULL else get(..wvar)
+            as.integer(cut(get(..D),breaks=c(-Inf,unique(weighted_quantile(get(..D),w=w,probs=(1:(Dsubsets-1))/Dsubsets)),Inf)))-1
+            }]
+
         }
       }
     }
@@ -171,10 +181,13 @@
     if (is.null(Zsubsets)==FALSE) { ##bin instrument
       if (length(unique(data[,get(..Z)]))>Zsubsets){
         if (gridtypeZ=="equidistant") {
-          data[,(Z):=as.numeric(cut(get(..Z), breaks = seq(from = min(get(..Z)) - 0.001, to = max(get(..Z)) + 0.001, length.out = Zsubsets + 1)))-1]
+          data[,(Z):=as.integer(cut(get(..Z), breaks = seq(from = min(get(..Z)) - 0.001, to = max(get(..Z)) + 0.001, length.out = Zsubsets + 1)))-1]
         }
         else {
-          data[,(Z):=as.numeric(cut(get(..Z), breaks = c(-Inf, quantile(get(..Z), seq(1/Zsubsets, 1 - 1/Zsubsets, 1/Zsubsets)), Inf)))-1]
+          data[,(Z):={
+            w <- if (is.na(..wvar)) NULL else get(..wvar)
+            as.integer(cut(get(..Z),breaks=c(-Inf,unique(weighted_quantile(get(..Z),w=w,probs=(1:(Zsubsets-1))/Zsubsets)),Inf)))-1
+          }]
         }
       }
     }
@@ -184,10 +197,13 @@
       for (Yno in Y) {
       if (length(unique(data[,get(..Yno)]))>Ysubsets) {
         if (gridtypeY=="equidistant") {
-          data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno), breaks = seq(from = min(get(..Yno)) - 0.001, to = max(get(..Yno)) + 0.001, length.out = Ysubsets + 1)))]
+          data[,(paste0(Yno,".bin")):=as.integer(cut(get(..Yno), breaks = seq(from = min(get(..Yno)) - 0.001, to = max(get(..Yno)) + 0.001, length.out = Ysubsets + 1)))]
         }
         else {
-          data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno), breaks = c(-Inf, quantile(get(..Yno), seq(1/Ysubsets, 1 - 1/Ysubsets, 1/Ysubsets)), Inf)))]
+          data[,(paste0(Yno,".bin")):={
+            w <- if (is.na(..wvar)) NULL else get(..wvar)
+            as.integer(cut(get(..Yno),breaks=c(-Inf,unique(weighted_quantile(get(..Yno),w=w,probs=(1:(Ysubsets-1))/Ysubsets)),Inf)))-1
+          }]
         }
       } else {
         data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno),breaks=length(unique(get(..Yno)))))-1]
@@ -218,13 +234,11 @@
     if (stack==TRUE) {
       margins=c()
 
+
       ##HANDLE Z STACKS
         if (K>1) { ##Expand to all margins of Z
           times = 1L + 2L * as.integer(data[[Z]] > 0 & data[[Z]] < K)
           data = data[rep.int(seq_len(nrow(data)), times)]
-
-          #data[rep(seq_len(nrow(data)),1L + as.integer(data[, get(..Z) > 0 & get(..Z) < ..K]))]
-          #data=data[rep(seq(.N),1+1*(get(Z)>0&get(Z)<..K))]
           data[,zmargin:=seq(.N)+get(..Z)-1*(get(..Z)>0),by=id_]
           data[,(Z):=get(..Z)>=zmargin]
           margins=c(margins,"zmargin")
@@ -232,36 +246,22 @@
 
         ##estimate Z.hat for each margin in stacked data (also if K==1!)
         if (is.null(X)==FALSE) {
-          Z_arg <- Z
-          X_arg <- X
-          by_arg <- c("sample", margins)
-
-          data[, (paste0(Z_arg, ".hat")) := {
-            args <- materialize_args(
-              .sd         = .SD,
-              model       = "rf",
-              y_name      = Z_arg,                # <- name, not data
-              x_names     = X_arg,                # <- names, not data
-              forest_opts = c(forest_opts, Zparameters),
-              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
-              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
-            )
-            fit <- do.call(grf::regression_forest, args)
-            as.numeric(predict(fit)$predictions)
-          }, by = by_arg,
-          .SDcols = unique(c(Z_arg, X_arg,
-                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
-                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
-        if (normalize.Z==TRUE) { #Normalize propensity scores
-          data[, (paste0(Z_arg, ".hat")) := {
-            zhat <- get(paste0(Z_arg, ".hat"))
-            z    <- get(Z_arg)
-            .N * zhat / sum(z / zhat)
-          }, by = c("sample", margins)]
+          crossfit_hat(
+            data,
+            y_name = Z,
+            x_names = X,
+            margins = margins,
+            weight_name = weight,
+            cluster_name = cluster,
+            fold_col = "cf_fold",
+            k_col = "cf_K"
+          )
+        } else {
+          data[,(paste0(Z,".hat")):=(mean(get(..Z))*.N-get(..Z))/(.N-1),by=c("sample",margins)] ##leave one out mean
         }
-      } else {
-      data[,(paste0(Z,".hat")):=(mean(get(..Z))*.N-get(..Z))/(.N-1),by=c("sample",margins)] ##leave one out mean
-      }
+        if (normalize.Z==TRUE) { #Normalize propensity scores
+          data[, (paste0(Z, ".hat")) := get(paste0(Z, ".hat"))*.N / sum(get(Z)/get(paste0(Z,".hat"))), by = c("sample", margins)]
+        }
 
 
       ##STACK MULTIPLE OUTCOMES
@@ -276,26 +276,18 @@
       ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
       if ((sum(test %in% c("MW","AHS"))>0)&Y.res==TRUE)  {
 
-          Y_arg <- Y
-          X_arg <- X
-          by_arg <- c("sample", margins)
+        crossfit_hat(
+          data,
+          y_name = Y,
+          x_names = X,
+          margins = margins,
+          weight_name = weight,
+          cluster_name = cluster,
+          fold_col = "cf_fold",
+          k_col = "cf_K"
+        )
+        data[,paste0(Y,".res"):=Y-paste0(Y,".hat"),env=list(Y=Y)]
 
-          data[, (paste0(Y_arg, ".res")) := {
-            args <- materialize_args(
-              .sd         = .SD,
-              model       = "rf",
-              y_name      = Y_arg,                # <- name, not data
-              x_names     = X_arg,                # <- names, not data
-              forest_opts = c(forest_opts, Yparameters),
-              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
-              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
-            )
-            fit <- do.call(grf::regression_forest, args)
-            get(..Y.arg)-as.numeric(predict(fit)$predictions)
-          }, by = by_arg,
-          .SDcols = unique(c(Y_arg, X_arg,
-                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
-                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
         }
 
       ##STACK MARGINS OF D
@@ -310,26 +302,16 @@
 
       ##Estimate D.hat if test includes "K"
       if ("K" %in% test) {
-        D_arg <- D
-        X_arg <- X
-        by_arg <- c("sample", margins)
-
-        data[, (paste0(D_arg, ".hat")) := {
-          args <- materialize_args(
-            .sd         = .SD,
-            model       = "rf",
-            y_name      = D_arg,                # <- name, not data
-            x_names     = X_arg,                # <- names, not data
-            forest_opts = c(forest_opts, Dparameters),
-            weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
-            cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
-          )
-          fit <- do.call(grf::regression_forest, args)
-          as.numeric(predict(fit)$predictions)
-        }, by = by_arg,
-        .SDcols = unique(c(D_arg, X_arg,
-                           get0("weight",  inherits=TRUE, ifnotfound=NULL),
-                           get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
+        crossfit_hat(
+          data,
+          y_name = D,
+          x_names = X,
+          margins = margins,
+          weight_name = weight,
+          cluster_name = cluster,
+          fold_col = "cf_fold",
+          k_col = "cf_K"
+        )
         }
 
         ##Expand multiple conditions for testing (except K + BP, which has same def of Q - expand later)
@@ -377,10 +359,8 @@
       data[,nZ:=uniqueN(get(..Z)), by=c("sample",margins)]
       data[,n0:=sum(get(..Z)==0), by=c("sample",margins)]
       data[,n1:=sum(get(..Z)==1), by=c("sample",margins)]
-      data[,minp:=min(get(paste0(..Z,".hat"))), by=c("sample",margins)]
-      data[,maxp:=max(get(paste0(..Z,".hat"))), by=c("sample",margins)]
-      data[,bad:= (nQ<2| nZ<2 | n0<min_n | n1 <min_n | minp<eps | maxp>1-eps)]
-
+      data[,sd_res:=sd(get(..Z)-get(paste0(..Z,".hat"))),by=c("sample",margins)]
+      data[,bad:= (nQ<2| nZ<2 | n0<min_n | n1 <min_n | sd_res==0)]
       data=data[bad==FALSE]
 
       ##ALSO DROP OTHER SAMPLE PART WITHIN A MARGIN IF ONE PART HAS BEEN DROPPED
@@ -394,49 +374,30 @@
 
         ##Estimate Q.hat in stacked data
         if (sum(test %in% c("simple","BP","K","BPK"))>0) {
-
-          X_arg <- X
-          by_arg <- c("sample", margins)
-
-          data[condition %in% c("simple","BPK","BP","K"), Q.hat := {
-            args <- materialize_args(
-              .sd         = .SD,
-              model       = "rf",
-              y_name      = "Q",                # <- name, not data
-              x_names     = X_arg,                # <- names, not data
-              forest_opts = c(forest_opts, Qparameters),
-              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
-              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
-            )
-            fit <- do.call(grf::regression_forest, args)
-            as.numeric(predict(fit)$predictions)
-          }, by = by_arg,
-          .SDcols = unique(c("Q", X_arg,
-                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
-                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
+          crossfit_hat(
+            data[condition %in% c("simple","BP","K","BPK")],
+            y_name = "Q",
+            x_names = X,
+            margins = margins,
+            weight_name = weight,
+            cluster_name = cluster,
+            fold_col = "cf_fold",
+            k_col = "cf_K"
+          )
 
         }
 
         if ("AHS" %in% test) {
-          X_arg <- XWY
-          by_arg <- c("sample", margins)
-
-          data[condition %in% "AHS", Q.hat := {
-            args <- materialize_args(
-              .sd         = .SD,
-              model       = "rf",
-              y_name      = "Q",                # <- name, not data
-              x_names     = X_arg,                # <- names, not data
-              forest_opts = c(forest_opts, Qparameters),
-              weight_col  = get0("weight",  inherits=TRUE, ifnotfound=NULL),
-              cluster_col = get0("cluster", inherits=TRUE, ifnotfound=NULL)
-            )
-            fit <- do.call(grf::regression_forest, args)
-            as.numeric(predict(fit)$predictions)
-          }, by = by_arg,
-          .SDcols = unique(c("Q", X_arg,
-                             get0("weight",  inherits=TRUE, ifnotfound=NULL),
-                             get0("cluster", inherits=TRUE, ifnotfound=NULL)))]
+          crossfit_hat(
+            data[condition=="AHS"],
+            y_name = "Q",
+            x_names = c(X,paste0(Y,".res")),
+            margins = margins,
+            weight_name = weight,
+            cluster_name = cluster,
+            fold_col = "cf_fold",
+            k_col = "cf_K"
+          )
           }
 
         ##Split BP and K conditions if doing both
@@ -459,7 +420,6 @@
           wcol = weight, ccol = cluster,  Qcol = "Q", Zcol = Z, Dcol = D
           )
 
-
         ##Normalize pred, scores, pred_out
         if (normalize.pred==TRUE) {
           data[,scale:=sd(scores),by=c(margins,"sample")]
@@ -470,10 +430,30 @@
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
         res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize)
 
-        ###TODO: THESE MEANS SHOULD BE WEIGHTED
-        Xmeans <- data[pred_o <= tau,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
-        Xmeans_all <- data[,lapply(.SD, mean, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
-        XSD <- data[,lapply(.SD, sd, na.rm = TRUE),by = sample,.SDcols = get0("XW", inherits = TRUE)]
+        ##Global as comp
+        if (is.null(cluster)==FALSE) cl=as.formula(paste0("~",cluster)) else cl=NULL
+        if (is.null(weight)==FALSE) wg=as.formula(paste0("~",weight)) else wg=NULL
+        global=data[,.(.N,uniqueN(id_)),by=sample]
+        global=cbind(global,feols(scores~i(sample)-1,data=data,cluster=cl,weight=wg)$coeftable[,-4])
+        colnames(global)=c("sample","N","G","coef","stderr","t")
+
+        w_vec <- if (is.null(weight)) rep(1, nrow(data)) else data[[weight]]
+        cols <- get0("XW", inherits = TRUE)
+
+        Xmeans=data[pred_o <= tau, {
+          w <- ..w_vec[.I]
+          lapply(.SD, weighted.mean, w = w, na.rm = TRUE)
+        }, by = sample, .SDcols = cols]
+
+        Xmeans_all=data[, {
+          w <- ..w_vec[.I]
+          lapply(.SD, weighted.mean, w = w, na.rm = TRUE)
+        }, by = sample, .SDcols = cols]
+
+        XSD=data[pred_o <= tau, {
+          w <- ..w_vec[.I]
+          lapply(.SD, w_sd, w = w, na.rm = TRUE)
+        }, by = sample, .SDcols = cols]
 
         ###TODO: Y res means if MW,AHS
         if (sum(test %in% c("AHS","MW"))>0) { ##Add Y or Y to Xmeans
@@ -623,8 +603,14 @@
 
       minsample=res[which.min(p.raw),sample]
       minp=apply(res[is.na(t.est)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
+
+      global[,p.raw:=pnorm(t)]
+      for (m in c("holm","hochberg","BH","BY")) {
+        global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+      }
+
       time=proc.time()-time
-      return=list(results=res,minsample=minsample,minp=minp,time=time,margins=marginsmat,Xmeans_all=Xmeans_all,XSD=XSD,Xmeans=Xmeans)
+      return=list(results=res,global=global,minsample=minsample,minp=minp,time=time,margins=marginsmat,Xmeans_all=Xmeans_all,XSD=XSD,Xmeans=Xmeans)
       return(return)
   }
 
@@ -671,11 +657,13 @@
     setcolorder(res, c("leaf","G_train","N_train","coef_train","stderr_train","t_train","relevant","G_est","N_est","coef_est","stderr_est","t_est"))
     return(list(tree=tree,res=res))
  }
-
- weighted_quantile <- function(x, w, probs = c(0.25, 0.5, 0.75),
-                  na.rm = TRUE,
-                  interpolation = c("linear", "left", "right", "midpoint")) {
+ weighted_quantile <- function(x, w = NULL, probs = c(0.25, 0.5, 0.75),
+                               na.rm = TRUE,
+                               interpolation = c("linear", "left", "right", "midpoint")) {
    interpolation <- match.arg(interpolation)
+
+   # default: no weights -> equal weights
+   if (is.null(w)) w <- rep(1, length(x))
 
    # basic checks
    if (length(x) != length(w)) stop("x and w must have the same length.")
@@ -707,29 +695,24 @@
        if (interpolation == "left")      return(x[k])
        if (interpolation == "right")     return(x[k])
        if (interpolation == "midpoint") {
-         # average of the "mass at p": include any ties on x with same cw threshold
          j <- k
          while (j > 1L && cw[j - 1L] == cw[k]) j <- j - 1L
          i <- k
          while (i < length(x) && cw[i + 1L] == cw[k]) i <- i + 1L
          return((x[j] + x[i]) / 2)
        }
-       # "linear" with exact hit returns x[k]
-       return(x[k])
+       return(x[k]) # linear or default on exact hit
      } else {
-       # cw[k-1] < p < cw[k]  (k >= 1)
-       if (k == 1L) {
-         # all mass at the first point
-         return(x[1L])
-       }
-       if (interpolation == "left")  return(x[k - 1L])
-       if (interpolation == "right") return(x[k])
-       if (interpolation == "midpoint") return((x[k - 1L] + x[k]) / 2)
+       # cw[k-1] < p < cw[k]
+       if (k == 1L) return(x[1L])
+       if (interpolation == "left")      return(x[k - 1L])
+       if (interpolation == "right")     return(x[k])
+       if (interpolation == "midpoint")  return((x[k - 1L] + x[k]) / 2)
 
        # linear interpolation in cumulative weight space
        w_below <- cw[k - 1L]
        w_above <- cw[k]
-       t <- (p - w_below) / (w_above - w_below)  # in (0,1)
+       t <- (p - w_below) / (w_above - w_below)
        return(x[k - 1L] + t * (x[k] - x[k - 1L]))
      }
    }
@@ -740,9 +723,238 @@
    res
  }
 
+ w_sd <- function(x, w = NULL, na.rm = TRUE, unbiased = FALSE) {
+   if (is.null(w)) return(sd(x, na.rm = na.rm))
+
+   if (na.rm) {
+     keep <- is.finite(x) & is.finite(w)
+     x <- x[keep]; w <- w[keep]
+   }
+   if (!length(x)) return(NA_real_)
+
+   mu <- weighted.mean(x, w)
+   v  <- sum(w * (x - mu)^2) / sum(w)
+
+   if (unbiased && sum(w) > 1)
+     v <- v * sum(w) / (sum(w) - 1)
+
+   sqrt(v)
+ }
+
+
+
 
  ######### MAIN FOREST HELPERS ###############
 
+ # ========= Helper: Randomize into K folds =========
+
+ make_group_folds <- function(DT,
+                              K = 10L,
+                              cluster_name = NULL,
+                              fold_col = "cf_fold",
+                              diag_prefix = "cf_",
+                              verbose = TRUE) {
+   stopifnot(is.data.table(DT))
+   stopifnot(is.numeric(K) && K >= 2)
+
+   k_col <- paste0(diag_prefix, "K")
+   g_col <- paste0(diag_prefix, "G")
+   n_col <- paste0(diag_prefix, "n_ok")
+
+   DT[, c(fold_col, k_col, g_col, n_col) := {
+
+     ok <- rep(TRUE, .N)
+     n_ok <- sum(ok)
+
+     if (!is.null(cluster_name)) {
+       cl <- get(cluster_name)
+       ok <- ok & !is.na(cl)
+       n_ok <- sum(ok)
+
+       if (n_ok == 0L) {
+         return(list(rep(NA_integer_, .N), 0L, 0L, 0L))
+       }
+
+       cl_ok <- cl[ok]
+       ucl <- unique(cl_ok)
+       G <- length(ucl)
+       Kg <- as.integer(min(K, G))
+
+       fold <- rep(NA_integer_, .N)
+       if (Kg < 2L) {
+         fold[ok] <- 1L
+         return(list(fold, Kg, G, n_ok))
+       }
+
+       fold_cl <- sample(rep_len(seq_len(Kg), G))
+       fold[ok] <- as.integer(fold_cl[match(cl_ok, ucl)])
+
+       list(fold, Kg, G, n_ok)
+     } else {
+       if (n_ok == 0L) {
+         return(list(rep(NA_integer_, .N), 0L, NA_integer_, 0L))
+       }
+
+       Kg <- as.integer(min(K, n_ok))
+       fold <- rep(NA_integer_, .N)
+
+       if (Kg < 2L) {
+         fold[ok] <- 1L
+         return(list(fold, Kg, NA_integer_, n_ok))
+       }
+
+       fold[ok] <- as.integer(sample(rep_len(seq_len(Kg), n_ok)))
+
+       list(fold, Kg, NA_integer_, n_ok)
+     }
+   }, by = "sample"]
+
+   if (verbose) {
+     bad <- DT[get(k_col) < 2L, unique(sample)]
+     if (length(bad) > 0L) {
+       warning(sprintf(
+         "Cross-fitting folds: %d sample(s) have %s < 2 (too few clusters/rows). Using 1 fold in those samples.",
+         length(bad), k_col
+       ))
+     } else {
+       message(sprintf(
+         "Cross-fitting folds: created %s with up to %d folds within each sample.",
+         fold_col, K
+       ))
+     }
+   }
+
+   invisible(DT)
+ }
+
+
+
+ # ========= Helper: Predict nuissance using regression-forest - cross-fit =========
+
+
+ crossfit_hat <- function(DT,
+                          y_name,
+                          x_names,
+                          margins = NULL,            # default NULL
+                          weight_name = NULL,
+                          cluster_name = NULL,
+                          fold_col = "cf_fold",
+                          k_col = "cf_K",
+                          forest_opts = list(),
+                          hat_suffix = ".hat",
+                          diag_prefix = "nh_",
+                          verbose = TRUE,
+                          residuals = FALSE) {
+   stopifnot(is.data.table(DT))
+   stopifnot(is.character(y_name) && length(y_name) == 1L)
+   stopifnot(is.character(x_names) && length(x_names) >= 1L)
+
+   if (is.null(margins)) margins <- character() else margins <- as.character(margins)
+
+   grp_cols <- c("sample", margins)
+   if (!all(grp_cols %chin% names(DT))) {
+     stop("Missing grouping columns: ", paste(setdiff(grp_cols, names(DT)), collapse = ", "))
+   }
+   if (!(fold_col %chin% names(DT))) stop("Missing fold column: ", fold_col)
+
+   hat_col <- paste0(y_name, hat_suffix)
+   diag_usedK <- paste0(diag_prefix, y_name, "_K_used")
+   diag_nok   <- paste0(diag_prefix, y_name, "_n_ok")
+   diag_note  <- paste0(diag_prefix, y_name, "_note")
+
+   DT[, c(hat_col, diag_usedK, diag_nok, diag_note) := {
+     # outcome (force numeric; map logical -> 0/1)
+     y_raw <- get(y_name)
+     y <- as.numeric(y_raw)
+     if (is.logical(y_raw)) y <- y - 1
+
+     fold <- get(fold_col)
+
+     w  <- if (is.null(weight_name)) NULL else get(weight_name)
+     cl <- if (is.null(cluster_name)) NULL else get(cluster_name)
+
+     n <- .N
+     preds <- rep(NA_real_, n)
+     note <- ""
+     n_ok <- 0L
+
+     # K used (constant within group if provided; otherwise inferred)
+     K_used <- if (!is.null(k_col) && (k_col %chin% names(DT))) as.integer(get(k_col)[1L]) else NA_integer_
+
+     # IMPORTANT: build each ok-component explicitly as length-.N logical
+     ok_y    <- is.finite(y)
+     ok_fold <- is.finite(as.numeric(fold))          # robust even if fold is integer/factor-like
+     ok_x    <- stats::complete.cases(.SD)           # .SD is DT subset, returns length .N
+     ok_w    <- if (is.null(w))  rep(TRUE, n) else is.finite(w)
+     ok_cl   <- if (is.null(cl)) rep(TRUE, n) else !is.na(cl)
+
+     ok <- ok_y & ok_fold & ok_x & ok_w & ok_cl
+     n_ok <- sum(ok)
+
+     if (is.na(K_used)) K_used <- as.integer(uniqueN(fold[ok]))
+
+     if (n_ok < 2L) {
+       mu <- if (is.null(w)) mean(y, na.rm = TRUE) else weighted.mean(y, w = w, na.rm = TRUE)
+       preds[ok_y] <- mu
+       note <- "fallback_mean_too_few_ok"
+     } else {
+       y_ok <- y[ok]
+
+       if (length(unique(y_ok)) < 2L) {
+         preds[ok] <- y_ok[1L]
+         note <- "fallback_constant_y"
+       } else if (!is.finite(K_used) || K_used < 2L) {
+         w_ok <- if (is.null(w)) NULL else w[ok]
+         mu <- if (is.null(w_ok)) mean(y_ok, na.rm = TRUE) else weighted.mean(y_ok, w = w_ok, na.rm = TRUE)
+         preds[ok] <- mu
+         note <- "fallback_mean_K<2"
+       } else {
+         X_ok   <- as.matrix(.SD[ok])                 # now safe: 2D matrix
+         f_ok   <- as.integer(fold[ok])
+         ok_idx <- which(ok)
+
+         w_ok  <- if (is.null(w)) NULL else w[ok]
+         cl_ok <- if (is.null(cl)) NULL else cl[ok]
+
+         for (k in sort(unique(f_ok))) {
+           te <- f_ok == k
+           tr <- !te
+           if (!any(te) || !any(tr)) next
+
+           rf <- do.call(
+             regression_forest,
+             c(
+               list(
+                 X = X_ok[tr, , drop = FALSE],
+                 Y = y_ok[tr],
+                 sample.weights = if (is.null(w_ok)) NULL else w_ok[tr],
+                 clusters       = if (is.null(cl_ok)) NULL else cl_ok[tr]
+               ),
+               forest_opts
+             )
+           )
+
+           preds[ok_idx[te]] <- predict(rf, X_ok[te, , drop = FALSE])$predictions
+         }
+
+         note <- "ok_crossfit"
+       }
+     }
+
+     list(preds, K_used, n_ok, note)
+   }, by = c("sample", margins), .SDcols = x_names]
+
+   if (verbose) {
+     bad <- DT[get(diag_note) != "ok_crossfit",
+               unique(.SD),
+               .SDcols = c("sample", margins, diag_note, diag_usedK, diag_nok)]
+     if (nrow(bad) > 0L) {
+       warning(sprintf("crossfit_hat(%s): %d group(s) used fallback.", y_name, nrow(bad)))
+     }
+   }
+
+   invisible(DT)
+ }
  # ========= Helper: turn names -> GRF args (subset-aligned) =========
  materialize_args <- function(.sd,model="rf",y_name=NULL, x_names=NULL, w_name=NULL, z_name=NULL,
                               forest_opts=list(), weight_col=NULL, cluster_col=NULL) {
