@@ -2,7 +2,7 @@
   #' @return A matrix of the infile
   #' @export
 
-  montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,test=NULL,folds=10,
+  montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,treefraction=0.5,test=NULL,folds=2,onetest=TRUE,
                    normalize.Z=TRUE,normalize.pred=TRUE,stack=NULL,treetype="forest",
                    gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",
                    Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,min_n=1L,
@@ -428,7 +428,7 @@
         }
 
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
-        res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize)
+        res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,onetest=onetest)
 
         ##Global as comp
         if (is.null(cluster)==FALSE) cl=as.formula(paste0("~",cluster)) else cl=NULL
@@ -440,20 +440,21 @@
         w_vec <- if (is.null(weight)) rep(1, nrow(data)) else data[[weight]]
         cols <- get0("XW", inherits = TRUE)
 
+        if (onetest==TRUE) byv=NULL else byv=sample
         Xmeans=data[pred_o <= tau, {
           w <- ..w_vec[.I]
           lapply(.SD, weighted.mean, w = w, na.rm = TRUE)
-        }, by = sample, .SDcols = cols]
+        }, by = byv, .SDcols = cols]
 
         Xmeans_all=data[, {
           w <- ..w_vec[.I]
           lapply(.SD, weighted.mean, w = w, na.rm = TRUE)
-        }, by = sample, .SDcols = cols]
+        }, by = byv, .SDcols = cols]
 
         XSD=data[pred_o <= tau, {
           w <- ..w_vec[.I]
           lapply(.SD, w_sd, w = w, na.rm = TRUE)
-        }, by = sample, .SDcols = cols]
+        }, by = byv, .SDcols = cols]
 
         ###TODO: Y res means if MW,AHS
         if (sum(test %in% c("AHS","MW"))>0) { ##Add Y or Y to Xmeans
@@ -596,17 +597,25 @@
       }
 
     ################ 7: Multiple hypothesis testing and output #####################
-      res[is.na(t.est)==FALSE,p.raw:=pnorm(t.est)]
-      for (m in c("holm","hochberg","BH","BY")) {
-        res[is.na(t.est)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
+      if (onetest==TRUE) {
+        res[is.na(t)==FALSE,p.raw:=pnorm(t)]
+        minsample=NA
+        minp=res[is.na(sample)==TRUE,p.raw]
+        } else {
+          res[is.na(t)==FALSE,p.raw:=pnorm(t)]
+          for (m in c("holm","hochberg","BH","BY")) {
+            res[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
+          }
+          minsample=res[train==FALSE&which.min(p.raw),sample]
+          if (length(minsample)>1) minsample=minsample[1]
+          minp=apply(res[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
       }
 
-      minsample=res[which.min(p.raw),sample]
-      minp=apply(res[is.na(t.est)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
-
       global[,p.raw:=pnorm(t)]
-      for (m in c("holm","hochberg","BH","BY")) {
+      if (onetest==FALSE) {
+        for (m in c("holm","hochberg","BH","BY")) {
         global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+        }
       }
 
       time=proc.time()-time
@@ -657,6 +666,7 @@
     setcolorder(res, c("leaf","G_train","N_train","coef_train","stderr_train","t_train","relevant","G_est","N_est","coef_est","stderr_est","t_est"))
     return(list(tree=tree,res=res))
  }
+
  weighted_quantile <- function(x, w = NULL, probs = c(0.25, 0.5, 0.75),
                                na.rm = TRUE,
                                interpolation = c("linear", "left", "right", "midpoint")) {
@@ -1135,7 +1145,8 @@
     pred   = "pred",
     pred_o = "pred_o",
     scores = "scores",
-    minsize = 50L
+    minsize = 50L,
+    onetest=FALSE
  ) {
 
    # Order by training score
@@ -1193,25 +1204,39 @@
    # --- Train-sample optimal cutoff: choose pred with minimizes t among pred > tau ---
    res <- data[pred >= tau&G>=minsize, .SD[which.min(t)], by = sample,
                .SDcols = c("G","N","m","se","t", pred),env=list(pred=pred)]
+   res[,train:=TRUE]
+   setcolorder(res,c("train","sample"))
 
    # Replace dual-constraint tau by the optimal cutoff from the *other* sample
    data[, tau := fifelse(sample==1,res[2,pred],res[1,pred]),env=list(sample=sample,pred=pred)]
 
    # ----- Final CR1 test on estimation sample: pred_o <= tau -----
-  if (is.null(cluster)==FALSE) cl=as.formula(paste0("~",cluster)) else cl=NULL
+   if (is.null(cluster)==FALSE) cl=as.formula(paste0("~",cluster)) else cl=NULL
    if (is.null(weight)==FALSE) wg=as.formula(paste0("~",weight)) else wg=NULL
 
-   fit <- feols(as.formula(paste0(scores, " ~ i(", sample, ") - 1")),
+   if (onetest==FALSE) {
+     fit <- feols(as.formula(paste0(scores, " ~ i(", sample, ") - 1")),
         data = data[pred_o<=tau,env=list(pred_o=pred_o)], vcov = cl, weights = wg)
+     byv=sample
+   } else {
+     fit <- feols(scores~1,
+                  data = data[pred_o<=tau,env=list(pred_o=pred_o)], vcov = cl, weights = wg)
+    byv=NULL
+     }
 
    # Counts on estimation sample
-   if (is.null(cluster)==FALSE) GN <- data[pred_o<=tau, .(G.est = uniqueN(cluster), N.est = .N), by = sample,env=list(pred_o=pred_o,cluster=cluster)]
-   else GN <- est_subset[pred_o<=tau, .(G.est = .N, N.est = .N), by = sample,env=list(pred_o=pred_o)]
+   if (is.null(cluster)==FALSE) GN <- data[pred_o<=tau, .(G.est = uniqueN(cluster), N.est = .N), by = byv,env=list(pred_o=pred_o,cluster=cluster)]
+   else GN <- data[pred_o<=tau, .(G.est = .N, N.est = .N), by = byv,env=list(pred_o=pred_o)]
 
    # Assemble output
-   res=as.data.table(cbind(res,GN[,-1],fit$coeftable[,1:3]))
-   colnames(res)=c("sample","G.train","N.train","coef.train","stderr.train","t.train",
-       "tau cutoff","G.est","N.est","coef.est","stderr.est","t.est")
+   if (onetest==TRUE) test=c(FALSE,NA,GN,fit$coeftable[1:3],NA) else {
+     test=as.data.table(cbind(GN,fit$coeftable[,1:3]))
+     test[,train:=FALSE]
+     test[,tau_cutoff:=NA]
+     setcolorder(test,c("train","sample"))
+   }
+   res=rbind(res,test,use.names=FALSE)
+   colnames(res)=c("train","sample","G","N","coef","stderr","t","tau cutoff")
 
    data[, c("N","a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB","sumS2","se","G","t","m","SW","SWY") := NULL]
    return(res)

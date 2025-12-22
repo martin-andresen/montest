@@ -29,7 +29,7 @@ feols(r2012~t+left+right+primary_school+med_center+elect+tdist+irr_share+ln_land
 X=c("runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id")
 cols=c(X,"transport_index_andrsn","r2012","t","kernel_tri_ik")
 data=data[,..cols]
-#montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=X,test="simple")
+##montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=X,test="simple")
 ##NOT NP ID - fuzzy RD
 
 ##AUTOR 2020a
@@ -55,27 +55,16 @@ data=data[,..cols]
 montests[["Bandiera2020"]]=montest(data=data,Z="treatment",D="QC_clubparticipateIMP",X=X,test="simple",cluster="villid")
 
 
-##CAPRETTINI 2020
-data=data.table(read_dta("Caprettini2020_data.dta"))
-data=data[sample==1]
-X=c("cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews","REGION")
-cols=c(X,"thresh","heavysh","SWING")
-data=data[,..cols]
-feols(as.formula(paste0(c("thresh~heavysh",X),collapse="+")),data=data) ##NEGATIVE FS
-data[,heavysh:=-heavysh]
-montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple")
-#ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
-#MAIN ESTIMATE: table 2, col 81
-
-
 ##Bau2020
 #ivreg2 TVA_mean (mean_1 = mean_2) female local some_training BA_plus lessthan4 temp_contract _Idistrict__* if gov==1, cluster(group) endog(mean_1)
 data=data.table(read_dta("Bau2020_data_1.dta"))
+data[,district:=as.integer(as.factor(district_name))]
 data=data[gov==1]
 X=c("schoolid","female","local","some_training","BA_plus","lessthan4","temp_contract")
-cols=c(X,"mean_1","mean_2","group")
+cols=c(X,"mean_1","mean_2","group","district")
 data=data[,..cols]
-feols(as.formula(paste0(c("mean_1~mean_2",X),collapse="+")),data=data)
+feols(as.formula(paste0(c("mean_1~mean_2",X,"i(district)"),collapse="+")),data=data)
+X=c(X,"district")
 montests[["Bau2020"]]=montest(data=data,D="mean_1",Z="mean_2",X=X,test="simple",cluster="group")
 ##MAIN ESTIMATE: table 3, cols 6-7 (district or school id)
 
@@ -114,15 +103,7 @@ X=c("l_population","unitid","year")
 cols=c(X,"weight","l_state_ap","l_state_app_at_state","l_foreign_fresh","state_of_college")
 data=data[,..cols]
 data[,state_of_college:=as.numeric(as.factor(state_of_college))]
-
-data=as.data.table(data)
-data=data[complete.cases(data)]
-data[,D_res:=feols(l_state_ap~1 | unitid+year,data=data,weight=~weight)$residuals]
-data[,Z_res:=feols(l_state_app_at_state~1 | unitid+year,data=data,weight=~weight)$residuals]
-feols(l_state_ap~l_state_app_at_state +l_population | unitid+year,data=data,weight=~weight)
-
-montests[["Bound2020"]]=montest(data=data,D="D_res",Z="Z_res",X="l_population",W=c("year","unitid"),test="simple",weight="weight")
-
+montests[["Bound2020"]]=montest(data=data,D="l_state_ap",Z="l_state_app_at_state",X=X,test="simple",weight="weight")
 ##MAIN ESTIMATE: Table 2, col2
 ##OBS cant cluster by state - too few!
 
@@ -211,33 +192,87 @@ cols=c(X,"pre_natal_visits","pkh_by_this_wave","L07","kecamatan")
 data=data[,..cols]
 montests[["Cahyadi2020"]]=montest(data=data,Z="L07",D="pkh_by_this_wave",X=X,test="simple")
 
+#Cai 2015
+#ivregress 2sls takeup_survey (pre_takeup_rate = default) male age agpop ricearea_2010 literacy intensive risk_averse disaster_prob _Ivilid* if delay == 1 & info_none == 0, cluster(address)
+##baseline spec: table 6, col 5 - oops should probably be col 3, but can't find the spec
+data=data.table(read_dta("Cai2015_data_1.dta"))
+X=c("male", "age", "agpop", "ricearea_2010", "literacy", "intensive", "risk_averse", "disaster_prob")
+feols(as.formula(paste0(c("pre_takeup_rate~default",X,"i(vilid)"),collapse="+")),data=data)
+cols=c(X,"pre_takeup_rate","takeup_survey","takeup_survey","address","default")
+data=data[,..cols]
+data[,address:=as.integer(as.factor(address))]
+montests[["Cai2015"]]=montest(data=data,Z="default",D="pre_takeup_rate",X=X,test="simple",cluster="address")
+
+##CAPRETTINI 2020
+data=data.table(read_dta("Caprettini2020_data.dta"))
+data=data[sample==1]
+X=c("cer","log_density","agri_share","log_sex_ratio","log_distel","log_distnews")
+cols=c(X,"thresh","heavysh","SWING","REGION")
+data=data[,..cols]
+feols(as.formula(paste0(c("thresh~heavysh",X,"i(REGION)"),collapse="+")),data=data) ##NEGATIVE FS
+data[,heavysh:=-heavysh]
+X=c(X,"REGION")
+montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple")
+#ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
+#MAIN ESTIMATE: table 2, col 81
+
+##Carrol 2020: Multiple instruments
+
+##Collins 2013
+#ivreg2 lnfaminc80 pownocc50 lnmedval50 pdilap50 poldunits50 punitswoplumb50 pcrowd50 lnpop50 pnonwht50 plf_manuf_50 pemp50 medsch50 lnfaminc50 pinc_under2g_50 _I* (app_funds_pc50=yrsexposure_UR), robust cluster(statefip)
+#baseline: table 3 panel A
+data=data.table(read_dta("Collins2013_data_1.dta"))
+X=c("pownocc50", "lnmedval50", "pdilap50", "poldunits50", "punitswoplumb50",
+    "pcrowd50", "lnpop50", "pnonwht50", "plf_manuf_50", "pemp50",
+    "medsch50", "lnfaminc50", "pinc_under2g_50")
+cols=c(X,"region","lnfaminc80","app_funds_pc50","yrsexposure_UR","statefip")
+data=data[,..cols]
+feols(as.formula(paste0(c("app_funds_pc50~yrsexposure_UR",X,"i(region)"),collapse="+")),data=data) ##NEGATIVE FS
+montests[["Collins2013"]]=montest(data=data,D="app_funds_pc50",Z="yrsexposure_UR",X=X,test="simple")
+
+
 ###OLD SAMPLE
 
 
-##Dupas2013
+##Dupas 2013
 data=data.table(read_dta("Dupas2013_data.dta"))
 data=data[,c("bank_savings","active","treatment","wave2","wave3","bg_boda","bg_malevendor","bg_boda_wave2","bg_malevendor_wave2","bg_married","bg_num_children","bg_age","bg_kis_read","bg_rosca_contrib_lyr","filled_log")]
-montests[["Dupas2013"]]=montest(data=data,X=c("wave2","wave3","bg_boda","bg_malevendor","bg_boda_wave2","bg_malevendor_wave2","bg_married","bg_num_children","bg_age","bg_kis_read","bg_rosca_contrib_lyr","filled_log"),Y="bank_savings",D="active",Z="treatment",test="simple")
+X=c("wave2","wave3","bg_boda","bg_malevendor","bg_boda_wave2","bg_malevendor_wave2","bg_married","bg_num_children","bg_age","bg_kis_read","bg_rosca_contrib_lyr","filled_log")
+cols=c(X,"bank_savings","active","treatment")
+data=data[,..cols]
+feols(as.formula(paste0(c("active~treatment",X),collapse="+")),data=data)
+montests[["Dupas2013"]]=montest(data=data,X=X,D="active",Z="treatment",test="simple")
 #ivreg bank_savings (active = treatment) wave2 wave3 bg_boda bg_malevendor bg_boda_wave2 bg_malevendor_wave2 bg_married bg_num_children bg_age bg_kis_read bg_rosca_contrib_lyr filled_log, robust
 
+##Galiani 2011
 data=data.table(read_dta("Galiani2011_data_1.dta"))
 data=data[cohort>1957&cohort<1963]
 data=data[,c("crimerate","sm","highnumber","cohort")]
-montests[["Galiani2011"]]=montest(data=data,X="cohort",Y="crimerate",D="sm",Z="highnumber",test="simple")
+feols(sm~highnumber+i(cohort),data=data)
+montests[["Galiani2011"]]=montest(data=data,X="cohort",D="sm",Z="highnumber",test="simple")
 #i: ivreg crimerate (sm = highnumber) i.cohort if cohort > 1957 & cohort < 1963, robust
 
+##Gerber 2020
 data=data.table(read_dta("Gerber2020_data.dta")) # cLOSE TO
 data=data[,c("votemarg_post","t_close","ppstaten","vote_admin2000","vote_admin2002","vote_admin2004","vote_admin2006","vote_admin2008")]
-montests[["Gerber2020"]]=montest(data=data,,D="votemarg_post",Z="t_close",X=c("ppstaten","vote_admin2000","vote_admin2002","vote_admin2004","vote_admin2006","vote_admin2008"),test="simple")
+X=c("ppstaten","vote_admin2000","vote_admin2002","vote_admin2004","vote_admin2006","vote_admin2008")
+feols(votemarg_post~t_close+i(ppstaten)+vote_admin2002+vote_admin2004+vote_admin2008,data=data)
+data[,t_close:=-t_close] ##neagtive FS
+##montests[["Gerber2020"]]=montest(data=data,D="votemarg_post",Z="t_close",X=X,test="simple")
 #xi: ivreg2 vote_admin1 (votemarg_post=t_close) i.ppstaten vote_admin2000 vote_admin2002 vote_admin2004 vote_admin2006 vote_admin2008, first savefirst robust
+##Not np identified - fuzzy RD?
 
+
+#Gregg2020
 data=data.table(read_dta("Gregg2020_data.dta")) ## NO WORK
 data=data[,c("Form","RelRevCPMinus","Industry","PIHerfIndex")]
 data[,Industry:=as.numeric(as.factor(Industry))]
 data=na.omit(data)
-#montests[["Gregg2020"]]=montest(data=data,D="Form",Z="RelRevCPMinus",X=c("Industry","PIHerfIndex"),test="simple")
+feols(Form~RelRevCPMinus+i(Industry)+PIHerfIndex,data=data)
+montests[["Gregg2020"]]=montest(data=data,D="Form",Z="RelRevCPMinus",X=c("Industry","PIHerfIndex"),test="simple")
 #xi: ivregress 2sls logRevperWorker (Form = RelRevCPMinus) i.Industry PIHerfIndex, r first
 
+##Guryan 2010
 data=data.table(read_dta("Guryan2010_data_1.dta")) ##REJECT, but because of minsize bug
 data[, dyrmo := {
   M   <- as.matrix(.SD) * 1L              # coerce logicals to 0/1 if needed
@@ -249,20 +284,29 @@ data[, dyrmo := {
 }, .SDcols = patterns("^dyrmo")]
 data=data[,c("lzsales1","gzanywin","lzsales","dyrmo")]
 data=na.omit(data)
-data[,dyrmo:=as.numeric(dyrmo)]
+data[,dyrmo:=as.integer(dyrmo)]
+feols(lzsales1~gzanywin+lzsales+i(dyrmo),data=data)
 montests[["Guryan2010"]]=montest(data=data,D="lzsales1",Z="gzanywin",X=c("lzsales","dyrmo"),test="simple")
 #ivregress 2sls lzsales2 (lzsales1 = gzanywin) lzsales dyrmo*, robust first
 
-#data=data.table(read_dta("Lagos2020_data.dta")) #NO X
-#data=data[(FOMC_Hbased==1|FOMC_Hbased==0)&date>="1994-01-01"&date<="2008-01-01"]
-#data=data[,c("dr","wr")]
+#Lagos 2020
+data=data.table(read_dta("Lagos2020_data.dta")) #NO X
+data=data[(FOMC_Hbased==1|FOMC_Hbased==0)&date>="1994-01-01"&date<="2008-01-01"]
+data=data[,c("dr","wr")]
+feols(dr~mr,data=data)
 #ivregress 2sls ret_m (dr=wr) if (FOMC_Hbased==1|FOMC_Hbased==0)&date>=d(01jan1994)&date<=d(01jan2008), robust
+#No X?
 
+##Owens 2020
 data=data.table(read_dta("Owens2020_data_1.dta"))
-data=data[,c("log_dist_to_park","log_dist_to_highway","log_dist_to_airport","log_dist_to_water","log_dist_to_college","logRj","logAi")]
-montests[["Owens2020"]]=montest(data=data,X=c("log_dist_to_park","log_dist_to_highway","log_dist_to_airport","log_dist_to_water","log_dist_to_college"),D="logRj",Z="logAi",test="simple")
+X=c("log_dist_to_park","log_dist_to_highway","log_dist_to_airport","log_dist_to_water","log_dist_to_college")
+feols(as.formula(paste0("logRj~logAi",X,collapse="+")),data=data)
+cols=c(X,"lofRj","logAi","logamenities")
+data=data[,..cols]
+montests[["Owens2020"]]=montest(data=data,X=,D="logRj",Z="logAi",test="simple")
 #ivreg2 logamenities log_dist_to_park log_dist_to_highway log_dist_to_airport log_dist_to_water log_dist_to_college (logRj = logAi), robust
 
+##Pons 2018
 data=data.table(read_dta("Pons2018_data.dta"))
 data=data[merge_results12==1]
 data=data[,c("allocated","treatment","stratum_identifier")]

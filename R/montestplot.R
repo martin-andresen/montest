@@ -1,5 +1,9 @@
 montestplot<-function(object,sample=NULL,margins=NULL,numX=10) {
-  if (is.null(sample)==TRUE) s=object$minsample
+  if (dim(object$results)[1]>2) {
+    sno=1
+    } else {
+    if (is.null(sample)==TRUE) sno=object$minsample else sno=sample
+  }
   if (is.null(margins)==FALSE) { ##Determine margins
     marginnames=colnames(object$margins)
     marginnames=marginnames[!marginnames %in% c("sample","share","share_all")]
@@ -12,7 +16,7 @@ montestplot<-function(object,sample=NULL,margins=NULL,numX=10) {
 
   ## Plot X means
     vals=(object$Xmeans-object$Xmeans_all)/object$XSD
-    vals=vals[s,-1]
+    vals=vals[sno,-1]
     setcolorder(vals,names(vals)[order(abs(unlist(vals[1])), decreasing = TRUE)])
     names=names(vals)
     vals=as.numeric(vals)
