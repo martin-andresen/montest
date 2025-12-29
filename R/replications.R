@@ -230,9 +230,21 @@ data=data[,..cols]
 feols(as.formula(paste0(c("app_funds_pc50~yrsexposure_UR",X,"i(region)"),collapse="+")),data=data) ##NEGATIVE FS
 montests[["Collins2013"]]=montest(data=data,D="app_funds_pc50",Z="yrsexposure_UR",X=X,test="simple")
 
+##DeMel 2013
+#xi: ivreg2 realprofits (registerDS= treat2 treat3 treat4) lagrealprofits i.strata wave3-wave8 if treat1==0, robust cluster(sheno)
+#Multiple instruments
+#baseline table 5A - col 1
 
-###OLD SAMPLE
-
+#Draca 2011
+#xi: ivreg dltot (dlhpop=full_treat1) full i.week [aw=pop], cluster(ocu)
+#Baseline: Table 2 panel C) col 3
+data=data.table(read_dta("Draca2011_data_1.dta"))
+X=c("full","week")
+cols=c(X,"dlhpop","full_treat1","pop","ocu")
+data=data[,..cols]
+feols(dlhpop~full_treat1+full+i(week),data=data,weight=~pop,cluster=~ocu) ##NEGATIVE FS
+montests[["Draca2011"]]=montest(data=data,D="dlhpop",Z="full_treat1",X=X,test="simple",weight="pop")
+##Couldn't cluster!
 
 ##Dupas 2013
 data=data.table(read_dta("Dupas2013_data.dta"))
@@ -252,16 +264,42 @@ feols(sm~highnumber+i(cohort),data=data)
 montests[["Galiani2011"]]=montest(data=data,X="cohort",D="sm",Z="highnumber",test="simple")
 #i: ivreg crimerate (sm = highnumber) i.cohort if cohort > 1957 & cohort < 1963, robust
 
+
 ##Gerber 2020
-data=data.table(read_dta("Gerber2020_data.dta")) # cLOSE TO
+data=data.table(read_dta("Gerber2020_data.dta"))
 data=data[,c("votemarg_post","t_close","ppstaten","vote_admin2000","vote_admin2002","vote_admin2004","vote_admin2006","vote_admin2008")]
 X=c("ppstaten","vote_admin2000","vote_admin2002","vote_admin2004","vote_admin2006","vote_admin2008")
 feols(votemarg_post~t_close+i(ppstaten)+vote_admin2002+vote_admin2004+vote_admin2008,data=data)
 data[,t_close:=-t_close] ##neagtive FS
-##montests[["Gerber2020"]]=montest(data=data,D="votemarg_post",Z="t_close",X=X,test="simple")
+montests[["Gerber2020"]]=montest(data=data,D="votemarg_post",Z="t_close",X=X,test="simple")
 #xi: ivreg2 vote_admin1 (votemarg_post=t_close) i.ppstaten vote_admin2000 vote_admin2002 vote_admin2004 vote_admin2006 vote_admin2008, first savefirst robust
 ##Not np identified - fuzzy RD?
 
+
+
+#Glitz 2020
+#ivreg2 c3difflnTFP (espionage=exp_inf_gva_old2) difflnTFP patents br_* yd_* [aw=weight_workers], cluster(branch)
+data=data.table(read_dta("Glitz2020_data_1.dta"))
+vars <- paste0("yd_", 1:18)
+data[, yd := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+vars <- paste0("br_", 1:16)
+data[,  br := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+X=c("difflnTFP","patents","br","yd")
+cols=c(X,"espionage","exp_inf_gva_old2","weight_workers","branch","c3difflnTFP")
+data=data[,..cols]
+feols(espionage~exp_inf_gva_old2+patents+difflnTFP+i(yd)+i(br),weight=~weight_workers,cluster=~branch,data=data)
+montests[["Glitz2020"]]=montest(data=data,D="espionage",Z="exp_inf_gva_old2",X=X,weight="weight_workers",test="simple")
+##COULDN'T cluster
 
 #Gregg2020
 data=data.table(read_dta("Gregg2020_data.dta")) ## NO WORK
@@ -293,17 +331,18 @@ montests[["Guryan2010"]]=montest(data=data,D="lzsales1",Z="gzanywin",X=c("lzsale
 data=data.table(read_dta("Lagos2020_data.dta")) #NO X
 data=data[(FOMC_Hbased==1|FOMC_Hbased==0)&date>="1994-01-01"&date<="2008-01-01"]
 data=data[,c("dr","wr")]
-feols(dr~mr,data=data)
+feols(dr~wr,data=data)
 #ivregress 2sls ret_m (dr=wr) if (FOMC_Hbased==1|FOMC_Hbased==0)&date>=d(01jan1994)&date<=d(01jan2008), robust
+#montests[["Lagos2020"]]=montest(data=data,D="dr",Z="wr",X=NULL,test="simple")
 #No X?
 
 ##Owens 2020
 data=data.table(read_dta("Owens2020_data_1.dta"))
 X=c("log_dist_to_park","log_dist_to_highway","log_dist_to_airport","log_dist_to_water","log_dist_to_college")
-feols(as.formula(paste0("logRj~logAi",X,collapse="+")),data=data)
-cols=c(X,"lofRj","logAi","logamenities")
+feols(as.formula(paste0(c("logRj~logAi",X),collapse="+")),data=data)
+cols=c(X,"logRj","logAi","logamenities")
 data=data[,..cols]
-montests[["Owens2020"]]=montest(data=data,X=,D="logRj",Z="logAi",test="simple")
+montests[["Owens2020"]]=montest(data=data,X=X,D="logRj",Z="logAi",test="simple")
 #ivreg2 logamenities log_dist_to_park log_dist_to_highway log_dist_to_airport log_dist_to_water log_dist_to_college (logRj = logAi), robust
 
 ##Pons 2018
