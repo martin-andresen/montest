@@ -8,7 +8,7 @@
                    Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,saveforest=F,min_n=1L,
                    weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,shrink=FALSE,shrink.alpha=0.3,
                    maxrankcp=5,prune=TRUE,cp=0,alpha=0.05,preselect="nonpositive", ##CART options
-                   Zparameters=NULL,Yparameters=NULL,Qparameters=NULL,Dparameters=NULL,Cparameters=NULL,
+                   Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list(),
                    tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
                    tune.num.trees=200,tune.num.reps=50,tune.num.draws=1000,tunetype="one" ##tuning options
                    ){
@@ -119,6 +119,7 @@
     }
 
     if (sum(test %in% c("AHS","MW"))==0&is.null(Y)==FALSE) Y=NULL
+    time=rbind(start=time,checks=proc.time())
 
     ###################### 2 Prepare data #########################3
     XW=c(X,W)
@@ -152,6 +153,8 @@
     }
 
     if ((is.null(cluster)==TRUE)&(is.null(stack)==FALSE)) cluster="id_"
+
+    time=rbind(time,prepare=proc.time())
 
     ############### 3 Discretize Z, D and Y into subsets ###############33
     ##TODO: ALLOW FOR WEIGHTED QUANTILES
@@ -221,7 +224,7 @@
 
     ##group common tree argments
     forest_opts=list(num.trees=max(50,num.trees/4),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
-    forest_optsC=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
+    time=rbind(time,discretize=proc.time())
 
     ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
     if (stack==TRUE) {
@@ -244,7 +247,7 @@
             x_names = X,
             margins = margins,
             weight_name = weight,
-            forest_opts = Zparameters
+            forest_opts = c(forest_opts,Zparameters)
           )
         } else {
           data[,(paste0(Z,".hat")):=(mean(get(..Z))*.N-get(..Z))/(.N-1),by=c("sample",margins)] ##leave one out mean
@@ -276,7 +279,7 @@
           x_names = X,
           margins = margins,
           weight_name = weight,
-          forest_opts = Yparameters
+          forest_opts = c(forest_opts,Yparameters)
         )
         data[,paste0(Y,".res"):=Y-paste0(Y,".hat"),env=list(Y=Y)]
 
@@ -302,7 +305,7 @@
           x_names = X,
           margins = margins,
           weight_name = weight,
-          forest_opts = Zparameters
+          forest_opts = c(forest_opts,Dparameters)
         )
         }
 
@@ -373,7 +376,7 @@
             x_names = X,
             margins = margins,
             weight_name = weight,
-            forest_opts = Qparameters
+            forest_opts = c(forest_opts,Qparameters)
           )
         }
 
@@ -396,7 +399,10 @@
             data[condition=="BPK",condition:=test[test %in% c("BP","K")],by=c("id",margins)]
         }
 
+      time=rbind(time,stack_nuisance=proc.time())
+
     ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
+      forest_opts=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
 
       if (sum(test %in% c("simple","BP"))>0) {
         if (length(test)>1) i=which(data$condition %in% c("simple","BP")) else i=NULL
@@ -410,7 +416,7 @@
               margins = margins,
               weight_name = weight,
               cluster_name = cluster,
-              forest_opts = Cparameters,
+              forest_opts = c(forest_opts,Cparameters),
               aipw_clip=aipw_clip)
       }
 
@@ -426,7 +432,7 @@
                    margins = margins,
                    weight_name = weight,
                    cluster_name = cluster,
-                   forest_opts = Cparameters,
+                   forest_opts = c(forest_opts,Cparameters),
                    aipw_clip=aipw_clip)
       }
 
@@ -441,7 +447,7 @@
                    margins = margins,
                    weight_name = weight,
                    cluster_name = cluster,
-                   forest_opts = Cparameters,
+                   forest_opts = c(forest_opts,Cparameters),
                    aipw_clip=aipw_clip)
       }
 
@@ -458,11 +464,12 @@
                    margins = margins,
                    weight_name = weight,
                    cluster_name = cluster,
-                   forest_opts = Cparameters,
+                   forest_opts = c(forest_opts,Cparameters),
                    aipw_clip=aipw_clip)
       }
 
 
+       time=rbind(time,causal_forest=proc.time())
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
         res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,pool=pool,gridpoints=gridpoints)
 
@@ -505,7 +512,9 @@
         marginsmat[,share_all:=N.y/sum(N.y), by=sample]
         marginsmat[,share:=ifelse(is.na(N.x),0,N.x)/sum(N.x,na.rm=TRUE), by=sample]
         marginsmat[,c("N.x","N.y"):=NULL]
+        time=rbind(time,find_and_test=proc.time())
     }
+
 
     ######################## 6b loop over margins and estimate CART or FOREST approach ################
     else {
@@ -656,7 +665,10 @@
         }
       }
 
-      time=proc.time()-time
+
+      time=rbind(time,finalize=proc.time())
+      time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
+      time=time[,1:3]
       return=list(results=res,global=global,minsample=minsample,minp=minp,time=time,margins=marginsmat,Xmeans_all=Xmeans_all,XSD=XSD,Xmeans=Xmeans)
       return(return)
   }
