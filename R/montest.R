@@ -277,6 +277,7 @@
           i=i,
           y_name = Y,
           x_names = X,
+          folds=foldname,
           margins = margins,
           weight_name = weight,
           forest_opts = c(forest_opts,Yparameters)
@@ -303,6 +304,7 @@
           i=i,
           y_name = D,
           x_names = X,
+          folds=foldname,
           margins = margins,
           weight_name = weight,
           forest_opts = c(forest_opts,Dparameters)
@@ -374,6 +376,7 @@
             i=i,
             y_name = "Q",
             x_names = X,
+            folds=foldname,
             margins = margins,
             weight_name = weight,
             forest_opts = c(forest_opts,Qparameters)
@@ -386,6 +389,7 @@
             data,
             i=i,
             y_name = "Q",
+            folds=foldname,
             x_names = c(X,paste0(Y,".res")),
             margins = margins,
             weight_name = weight,
@@ -934,6 +938,204 @@
 
  # ========= Helper: Predict nuissance using regression-forest - cross-fit across sample parts =========
  crossfit_hat <- function(DT,
+                                  i = NULL,
+                                  y_name,
+                                  x_names,
+                                  margins = NULL,
+                                  weight_name = NULL,
+                                  folds = NULL,              # NEW: name of fold-id column (within-sample crossfit)
+                                  forest_opts = list(),
+                                  hat_suffix = ".hat",
+                                  verbose = FALSE) {
+
+   stopifnot(data.table::is.data.table(DT))
+   stopifnot(is.character(y_name), length(y_name) == 1L)
+   stopifnot(is.character(x_names), length(x_names) >= 1L)
+   stopifnot("sample" %chin% names(DT))
+   stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
+
+   if (!is.null(folds)) {
+     stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
+   }
+
+   if (is.null(i)) i <- DT[, .I]
+   stopifnot(is.integer(i) || is.numeric(i))
+   i <- as.integer(i)
+   n_i <- length(i)
+   if (n_i == 0L) return(invisible(DT))
+
+   if (is.null(margins)) margins <- character()
+   grp_cols <- as.character(margins)
+
+   missing_cols <- setdiff(
+     c("sample", y_name, x_names, grp_cols,
+       if (!is.null(weight_name)) weight_name,
+       if (!is.null(folds)) folds),
+     names(DT)
+   )
+   if (length(missing_cols)) stop("Missing columns: ", paste(missing_cols, collapse = ", "))
+
+   hat_col <- paste0(y_name, hat_suffix)
+   if (!(hat_col %chin% names(DT))) DT[, (hat_col) := NA_real_]
+
+   # ---- Precompute X for rows i ONCE ----
+   X_all <- as.matrix(DT[i, ..x_names])
+
+   # rowid within i subset for fast X indexing
+   rid_col <- ".__rid__"
+   DT[i, (rid_col) := seq_len(n_i)]
+   getX <- function(idx) X_all[DT[[rid_col]][idx], , drop = FALSE]
+
+   # pull vectors once
+   sample_all <- DT[["sample"]]
+   y_all <- DT[[y_name]]
+   w_all <- if (!is.null(weight_name)) DT[[weight_name]] else NULL
+   f_all <- if (!is.null(folds)) DT[[folds]] else NULL
+
+   # output buffer aligned with i
+   preds_buf <- rep(NA_real_, n_i)
+
+   # map DT-row indices -> position in buffer
+   pos_map <- function(idx) match(idx, i)
+
+   # Fit on idx_tr, predict on idx_te
+   fit_predict_idx <- function(idx_tr, idx_te) {
+     n_te <- length(idx_te)
+     preds <- rep(NA_real_, n_te)
+
+     y_tr <- as.numeric(y_all[idx_tr])
+     w_tr <- if (is.null(w_all)) NULL else as.numeric(w_all[idx_tr])
+
+     # fallback: too few training rows
+     if (length(y_tr) < 2L) {
+       mu <- if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
+       preds[] <- mu
+       return(preds)
+     }
+
+     # fallback: constant outcome (ignore non-finite)
+     y_fin <- y_tr[is.finite(y_tr)]
+     if (length(unique(y_fin)) < 2L) {
+       preds[] <- y_fin[1L]
+       return(preds)
+     }
+
+     rf <- do.call(
+       grf::regression_forest,
+       c(list(
+         X = getX(idx_tr),
+         Y = y_tr,
+         sample.weights = w_tr
+       ), forest_opts)
+     )
+
+     preds[] <- as.numeric(predict(rf, getX(idx_te))$predictions)
+     preds
+   }
+
+   # Within-sample K-fold predictions for one (sample, margins-cell) subset
+   within_pred_idx <- function(idx_s) {
+     n <- length(idx_s)
+     if (n == 0L) return(numeric())
+
+     # if no folds, fit once and predict in-sample (used only in across-sample mode for convenience)
+     if (is.null(f_all)) {
+       fit <- do.call(
+         grf::regression_forest,
+         c(list(
+           X = getX(idx_s),
+           Y = as.numeric(y_all[idx_s]),
+           sample.weights = if (is.null(w_all)) NULL else as.numeric(w_all[idx_s])
+         ), forest_opts)
+       )
+       return(as.numeric(predict(fit, getX(idx_s))$predictions))
+     }
+
+     f <- f_all[idx_s]
+     u <- unique(f)
+     # if effectively 1 fold, can't crossfit -> fit once and predict in-sample
+     if (length(u) < 2L) {
+       fit <- do.call(
+         grf::regression_forest,
+         c(list(
+           X = getX(idx_s),
+           Y = as.numeric(y_all[idx_s]),
+           sample.weights = if (is.null(w_all)) NULL else as.numeric(w_all[idx_s])
+         ), forest_opts)
+       )
+       return(as.numeric(predict(fit, getX(idx_s))$predictions))
+     }
+
+     Xs <- getX(idx_s)
+     p <- rep(NA_real_, n)
+
+     for (k in u) {
+       te_pos <- which(f == k)
+       tr_pos <- which(f != k)
+
+       # if training set too small, fallback to mean
+       idx_tr <- idx_s[tr_pos]
+       idx_te <- idx_s[te_pos]
+
+       p[te_pos] <- fit_predict_idx(idx_tr, idx_te)
+     }
+     p
+   }
+
+   # ---- Build group index lists once ----
+   idx_all <- i
+   if (length(grp_cols) == 0L) {
+     group_list <- list(idx_all)
+   } else {
+     group_dt <- DT[i, ..grp_cols]
+     gid <- data.table::frankv(group_dt, ties.method = "dense")
+     group_list <- split(idx_all, gid)
+   }
+
+   # ---- Main loop over groups ----
+   for (g in seq_along(group_list)) {
+     idx_g <- group_list[[g]]
+     if (length(idx_g) == 0L) next
+
+     idx1 <- idx_g[sample_all[idx_g] == 1L]
+     idx2 <- idx_g[sample_all[idx_g] == 2L]
+
+     if (is.null(folds)) {
+       # ACROSS-SAMPLE mode: 1 -> 2 and 2 -> 1 (your current behavior)
+       if (length(idx2) > 0L) {
+         p_12 <- fit_predict_idx(idx1, idx2)
+         preds_buf[pos_map(idx2)] <- p_12
+       }
+       if (length(idx1) > 0L) {
+         p_21 <- fit_predict_idx(idx2, idx1)
+         preds_buf[pos_map(idx1)] <- p_21
+       }
+     } else {
+       # WITHIN-SAMPLE crossfit mode: out-of-fold predictions within each sample part
+       if (length(idx1) > 0L) {
+         p1 <- within_pred_idx(idx1)
+         preds_buf[pos_map(idx1)] <- p1
+       }
+       if (length(idx2) > 0L) {
+         p2 <- within_pred_idx(idx2)
+         preds_buf[pos_map(idx2)] <- p2
+       }
+     }
+
+     if (verbose && (g %% 25L == 0L)) {
+       message(sprintf("crossfit_hat_fast_cf: processed %d/%d groups", g, length(group_list)))
+     }
+   }
+
+   # writeback + cleanup
+   DT[i, (hat_col) := preds_buf]
+   DT[, (rid_col) := NULL]
+
+   invisible(DT)
+ }
+
+
+ crossfit_hat_old <- function(DT,
                                i = NULL,
                                y_name,
                                x_names,
@@ -1059,107 +1261,6 @@
    # single writeback and cleanup
    DT[i, (hat_col) := preds_buf]
    DT[, (rid_col) := NULL]
-
-   invisible(DT)
- }
-
- crossfit_hat_slow <- function(DT,
-                          i = NULL,
-                          y_name,
-                          x_names,
-                          margins = NULL,
-                          weight_name = NULL,
-                          forest_opts = list(),
-                          hat_suffix = ".hat") {
-   stopifnot(data.table::is.data.table(DT))
-   stopifnot(is.character(y_name), length(y_name) == 1L)
-   stopifnot(is.character(x_names), length(x_names) >= 1L)
-   stopifnot("sample" %chin% names(DT))
-   stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
-
-   if (is.null(i)) i <- DT[, .I]
-   stopifnot(is.integer(i) || is.numeric(i))
-   i <- as.integer(i)
-
-   if (is.null(margins)) margins <- character()
-   grp_cols <- as.character(margins)
-
-   missing_cols <- setdiff(
-     c("sample", y_name, x_names, grp_cols, if (!is.null(weight_name)) weight_name),
-     names(DT)
-   )
-   if (length(missing_cols)) stop("Missing columns: ", paste(missing_cols, collapse = ", "))
-
-   hat_col <- paste0(y_name, hat_suffix)
-   if (!(hat_col %chin% names(DT))) DT[, (hat_col) := NA_real_]
-
-   # work on subset, but write back to DT using i
-   subDT <- DT[i]
-
-   fit_predict <- function(train_dt, test_dt) {
-     y_tr <- as.numeric(train_dt[[y_name]])
-     X_tr <- as.matrix(train_dt[, ..x_names])
-     X_te <- as.matrix(test_dt[, ..x_names])
-     w_tr <- if (is.null(weight_name)) NULL else as.numeric(train_dt[[weight_name]])
-
-     preds <- rep(NA_real_, nrow(test_dt))
-
-     # fallback: too few training rows
-     if (length(y_tr) < 2L) {
-       mu <- if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
-       preds[] <- mu
-       return(preds)
-     }
-
-     # fallback: constant outcome
-     if (length(unique(y_tr)) < 2L) {
-       preds[] <- y_tr[1L]
-       return(preds)
-     }
-
-     rf <- do.call(
-       grf::regression_forest,
-       c(list(
-         X = X_tr,
-         Y = y_tr,
-         sample.weights = w_tr
-       ), forest_opts)
-     )
-
-     preds[] <- predict(rf, X_te)$predictions
-     preds
-   }
-
-   # sdcols without NULLs (important inside data.table)
-   sdcols <- c("sample", y_name, x_names, grp_cols)
-   if (!is.null(weight_name)) sdcols <- c(sdcols, weight_name)
-   sdcols <- unique(sdcols)
-
-   if (length(grp_cols) == 0L) {
-     dt1 <- subDT[sample == 1L]
-     dt2 <- subDT[sample == 2L]
-
-     # predictions in subset order
-     preds_sub <- rep(NA_real_, nrow(subDT))
-     preds_sub[subDT[["sample"]] == 2L] <- fit_predict(dt1, dt2)  # 1 -> 2
-     preds_sub[subDT[["sample"]] == 1L] <- fit_predict(dt2, dt1)  # 2 -> 1
-
-     DT[i, (hat_col) := preds_sub]
-   } else {
-     # compute predictions within each margins cell of the subset,
-     # returning a vector aligned with subDT's row order
-     preds_sub <- subDT[, {
-       dt1 <- .SD[sample == 1L]
-       dt2 <- .SD[sample == 2L]
-
-       preds <- rep(NA_real_, .N)
-       if (nrow(dt2) > 0L) preds[.SD[["sample"]] == 2L] <- fit_predict(dt1, dt2)
-       if (nrow(dt1) > 0L) preds[.SD[["sample"]] == 1L] <- fit_predict(dt2, dt1)
-       list(preds = preds)
-     }, by = grp_cols, .SDcols = sdcols][["preds"]]
-
-     DT[i, (hat_col) := preds_sub]
-   }
 
    invisible(DT)
  }
@@ -1395,215 +1496,6 @@
 
    invisible(DT)
  }
-
- fit_models_slow <- function(DT,
-                        i = NULL,
-                        forest_type = c("causal", "regression", "instrumental"),
-                        y_name,
-                        x_names,
-                        margins = NULL,
-                        w_name = NULL,
-                        z_name = NULL,
-                        folds = NULL,              # name of fold-id column (within-sample crossfit for pred only)
-                        weight_name = NULL,
-                        cluster_name = NULL,
-                        forest_opts = NULL,
-                        aipw_clip = 1e-3) {
-
-   stopifnot(data.table::is.data.table(DT))
-   forest_type <- match.arg(forest_type)
-
-   stopifnot("sample" %chin% names(DT))
-   stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
-
-   if (!is.null(folds)) {
-     stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
-   }
-
-   if (is.null(i)) i <- DT[, .I]
-   i <- as.integer(i)
-
-   if (is.null(margins)) margins <- character()
-   grp_cols <- as.character(margins)
-
-   if (is.null(forest_opts)) forest_opts <- list()
-
-   # Output columns (only filled on rows i)
-   if (!("pred"   %chin% names(DT))) DT[, pred   := NA_real_]
-   if (!("pred_o" %chin% names(DT))) DT[, pred_o := NA_real_]
-   if (!("scores" %chin% names(DT))) DT[, scores := NA_real_]
-
-   # Nuisances (must already exist for causal/IV)
-   y_hat <- paste0(y_name, ".hat")
-   w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
-   z_hat <- if (!is.null(z_name)) paste0(z_name, ".hat") else NULL
-
-   if (forest_type %in% c("causal", "instrumental")) {
-     stopifnot(!is.null(w_name), w_name %chin% names(DT))
-     stopifnot(y_hat %chin% names(DT), w_hat %chin% names(DT))
-   }
-   if (forest_type == "instrumental") {
-     stopifnot(!is.null(z_name), z_name %chin% names(DT))
-     stopifnot(z_hat %chin% names(DT))
-   }
-
-   build_forest <- function(type, train_dt) {
-     X <- as.matrix(train_dt[, ..x_names])
-     Y <- as.numeric(train_dt[[y_name]])
-
-     sw <- if (is.null(weight_name)) NULL else as.numeric(train_dt[[weight_name]])
-     cl <- if (is.null(cluster_name)) NULL else train_dt[[cluster_name]]
-
-     if (type == "regression") {
-       do.call(
-         grf::regression_forest,
-         c(list(X = X, Y = Y, sample.weights = sw, clusters = cl), forest_opts)
-       )
-     } else if (type == "causal") {
-       W <- as.numeric(train_dt[[w_name]])
-       do.call(
-         grf::causal_forest,
-         c(list(
-           X = X, Y = Y, W = W,
-           Y.hat = as.numeric(train_dt[[y_hat]]),
-           W.hat = as.numeric(train_dt[[w_hat]]),
-           sample.weights = sw,
-           clusters = cl
-         ), forest_opts)
-       )
-     } else { # instrumental
-       W <- as.numeric(train_dt[[w_name]])
-       Z <- as.numeric(train_dt[[z_name]])
-       do.call(
-         grf::instrumental_forest,
-         c(list(
-           X = X, Y = Y, W = W, Z = Z,
-           Y.hat = as.numeric(train_dt[[y_hat]]),
-           W.hat = as.numeric(train_dt[[w_hat]]),
-           Z.hat = as.numeric(train_dt[[z_hat]]),
-           sample.weights = sw,
-           clusters = cl
-         ), forest_opts)
-       )
-     }
-   }
-
-   # Work on subset
-   subDT <- DT[i]
-
-   # .SDcols without NULLs
-   sdcols <- c("sample", y_name, x_names, grp_cols)
-   if (!is.null(folds)) sdcols <- c(sdcols, folds)
-   if (forest_type %in% c("causal", "instrumental")) sdcols <- c(sdcols, w_name, y_hat, w_hat)
-   if (forest_type == "instrumental") sdcols <- c(sdcols, z_name, z_hat)
-   if (!is.null(weight_name)) sdcols <- c(sdcols, weight_name)
-   if (!is.null(cluster_name)) sdcols <- c(sdcols, cluster_name)
-   sdcols <- unique(sdcols)
-
-   # Within-sample tau prediction: OOB-ish if folds is NULL (via predict on training X),
-   # or explicit K-fold within sample if folds is provided.
-   within_pred <- function(dt_s) {
-     X <- as.matrix(dt_s[, ..x_names])
-
-     if (is.null(folds)) {
-       fit <- build_forest(forest_type, dt_s)
-       return(as.numeric(predict(fit, X)$predictions))
-     }
-
-     f <- dt_s[[folds]]
-     p <- rep(NA_real_, nrow(dt_s))
-     for (k in unique(f)) {
-       te <- (f == k)
-       tr <- !te
-       fit_k <- build_forest(forest_type, dt_s[tr])
-       p[te] <- as.numeric(predict(fit_k, X[te, , drop = FALSE])$predictions)
-     }
-     p
-   }
-
-   # Canonical AIPW score for binary treatment:
-   # psi = tau + W/e*(Y-m1) - (1-W)/(1-e)*(Y-m0)
-   # where m1 = m + (1-e)*tau, m0 = m - e*tau, and m = E[Y|X], e = P(W=1|X).
-   compute_aipw <- function(dt_s, tau_vec) {
-     if (forest_type == "regression") {
-       return(as.numeric(dt_s[[y_name]]))
-     }
-     if (forest_type != "causal") {
-       return(rep(NA_real_, nrow(dt_s)))
-     }
-
-     Y <- as.numeric(dt_s[[y_name]])
-     m <- as.numeric(dt_s[[y_hat]])
-     e <- as.numeric(dt_s[[w_hat]])
-     W <- as.numeric(dt_s[[w_name]])
-
-     # clip propensity
-     #if (is.null(aipw_clip)==FALSE) e <- pmin(pmax(e, aipw_clip), 1 - aipw_clip)
-
-     tau <- as.numeric(tau_vec)
-     m1 <- m + (1 - e) * tau
-     m0 <- m - e * tau
-
-     tau + (W / e) * (Y - m1) - ((1 - W) / (1 - e)) * (Y - m0)
-   }
-
-   compute_group <- function(dtg) {
-     dt1 <- dtg[sample == 1L]
-     dt2 <- dtg[sample == 2L]
-
-     # pred: within-sample (fold crossfit if folds provided)
-     p1 <- if (nrow(dt1)) within_pred(dt1) else numeric()
-     p2 <- if (nrow(dt2)) within_pred(dt2) else numeric()
-
-     # pred_o: across-sample (fit on full sample 1/2 within this margins cell)
-     fit1_full <- if (nrow(dt1)) build_forest(forest_type, dt1) else NULL
-     fit2_full <- if (nrow(dt2)) build_forest(forest_type, dt2) else NULL
-
-     X1 <- if (nrow(dt1)) as.matrix(dt1[, ..x_names]) else NULL
-     X2 <- if (nrow(dt2)) as.matrix(dt2[, ..x_names]) else NULL
-
-     p1_o <- if (!is.null(fit2_full)) as.numeric(predict(fit2_full, X1)$predictions) else numeric() # 2 -> 1
-     p2_o <- if (!is.null(fit1_full)) as.numeric(predict(fit1_full, X2)$predictions) else numeric() # 1 -> 2
-
-     # scores: AIPW, computed using OUT-OF-SAMPLE tau (pred_o)
-     sc1 <- if (nrow(dt1)) compute_aipw(dt1, p1_o) else numeric()
-     sc2 <- if (nrow(dt2)) compute_aipw(dt2, p2_o) else numeric()
-
-     # Align to dtg row order
-     out_pred   <- rep(NA_real_, nrow(dtg))
-     out_pred_o <- rep(NA_real_, nrow(dtg))
-     out_scores <- rep(NA_real_, nrow(dtg))
-
-     s <- dtg[["sample"]]
-     if (nrow(dt1)) {
-       out_pred[s == 1L]   <- p1
-       out_pred_o[s == 1L] <- p1_o
-       out_scores[s == 1L] <- sc1
-     }
-     if (nrow(dt2)) {
-       out_pred[s == 2L]   <- p2
-       out_pred_o[s == 2L] <- p2_o
-       out_scores[s == 2L] <- sc2
-     }
-
-     list(pred = out_pred, pred_o = out_pred_o, scores = out_scores)
-   }
-
-   if (length(grp_cols) == 0L) {
-     res <- compute_group(subDT)
-     DT[i, `:=`(pred = res$pred, pred_o = res$pred_o, scores = res$scores)]
-   } else {
-     res <- subDT[, compute_group(.SD), by = grp_cols, .SDcols = sdcols]
-     DT[i, `:=`(
-       pred   = res[["pred"]],
-       pred_o = res[["pred_o"]],
-       scores = res[["scores"]]
-     )]
-   }
-
-   invisible(DT)
- }
-
 
 
  ####### FIND OPTIMAL CUTOFF AND TEST #############
@@ -1859,289 +1751,6 @@
 
    # optional p-values (one-sided for negative effects): H0: >=0 vs H1:<0
    res_out[, p.raw := stats::pnorm(t)]
-
-   res_out
- }
-
- forest_test_slow <- function(
-    data,
-    cluster = NULL,          # string or NULL
-    weight  = NULL,          # NULL or string (weight column)
-    sample  = "sample",
-    pred    = "pred",
-    pred_o  = "pred_o",
-    scores  = "scores",      # AIPW scores used for BOTH training + testing
-    minsize = 50L,
-    pool = TRUE,
-    gridpoints = NULL        # NULL => all cutoffs; else integer, e.g. 100 (weighted percentiles of pred)
- ) {
-
-   stopifnot(data.table::is.data.table(data))
-
-   # --- freeze column-name arguments to avoid NSE collisions ---
-   sample_col <- sample
-   pred_col   <- pred
-   pred_o_col <- pred_o
-   scores_col <- scores
-   weight_col <- weight
-
-   stopifnot(is.character(sample_col), length(sample_col) == 1L, sample_col %chin% names(data))
-   stopifnot(is.character(pred_col),   length(pred_col)   == 1L, pred_col   %chin% names(data))
-   stopifnot(is.character(pred_o_col), length(pred_o_col) == 1L, pred_o_col %chin% names(data))
-   stopifnot(is.character(scores_col), length(scores_col) == 1L, scores_col %chin% names(data))
-   stopifnot(is.numeric(minsize) && minsize >= 1)
-
-   if (!is.null(weight_col)) {
-     stopifnot(is.character(weight_col), length(weight_col) == 1L, weight_col %chin% names(data))
-   }
-
-   if (!is.null(gridpoints)) {
-     stopifnot(is.numeric(gridpoints), length(gridpoints) == 1L, is.finite(gridpoints), gridpoints >= 2)
-     gridpoints <- as.integer(gridpoints)
-   }
-   grid_on <- !is.null(gridpoints)
-
-   # cluster handling: if NULL, create per-row clusters (iid-like fallback)
-   tmp_cluster <- FALSE
-   if (is.null(cluster)) {
-     cluster_col <- ".__cl__"
-     tmp_cluster <- TRUE
-     data[, (cluster_col) := .I]
-   } else {
-     stopifnot(is.character(cluster), length(cluster) == 1L, cluster %chin% names(data))
-     cluster_col <- cluster
-   }
-
-   # Unique internal columns
-   tau_col   <- ".__tau__"
-   cand_col  <- ".__cand__"
-   wtau_col  <- ".__wtau__"
-   cwtau_col <- ".__cwtau__"
-
-   # ---------------------------
-   # TRAINING: choose cutoff to minimize t-stat of mean(AIPW score)
-   # ---------------------------
-
-   # Order by training predictor within sample
-   data.table::setorderv(data, cols = c(sample_col, pred_col))
-
-   # Running index per sample (for reporting only)
-   data[, N := seq_len(.N), by = sample_col]
-
-   # Weighted contributions for mean(scores)
-   if (!is.null(weight_col)) {
-     data[, `:=`(
-       a = get(weight_col) * get(scores_col),
-       b = get(weight_col)
-     )]
-   } else {
-     data[, `:=`(
-       a = get(scores_col),
-       b = 1.0
-     )]
-   }
-
-   # Within-cluster running totals (per current order)
-   data[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = c(sample_col, cluster_col)]
-
-   # Global running totals and running mean by sample
-   data[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample_col]
-   data[, m := SWY / SW, by = sample_col]
-
-   # Per-row deltas (avoid shifts)
-   data[, `:=`(
-     dTA2 =  WgY^2 - (WgY - a)^2,
-     dTB2 =  Wg^2  - (Wg  - b)^2,
-     dTAB =  WgY*Wg - (WgY - a)*(Wg - b)
-   )]
-
-   # Cumulative aggregates across rows (by sample)
-   data[, `:=`(TA2 = cumsum(dTA2), TB2 = cumsum(dTB2), TAB = cumsum(dTAB)), by = sample_col]
-
-   # Number of unique clusters seen so far (by sample, current order)
-   data[, G := cumsum(!duplicated(get(cluster_col))), by = sample_col]
-
-   # CRV1 (small-sample adj.) SE of weighted mean
-   data[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
-   data[, se := sqrt((G / pmax.int(G - 1L, 1L)) * sumS2)]
-   data[G < 2, se := NA_real_]
-
-   # t-stat for H0: mean = 0
-   data[, t := m / se]
-
-   # ---------------------------
-   # Optional grid restriction: only consider cutoffs at (weighted) percentiles of pred
-   # ---------------------------
-   if (grid_on) {
-     if (!is.null(weight_col)) {
-       data[, (wtau_col) := get(weight_col)]
-     } else {
-       data[, (wtau_col) := 1.0]
-     }
-
-     probs <- (seq_len(gridpoints)) / (gridpoints + 1)  # avoid 0/1 endpoints
-
-     # NOTE: dynamic assignment must use c(colnames) := list(...)
-     data[, c(cwtau_col, cand_col) := {
-       cw <- cumsum(get(wtau_col))
-       n  <- .N
-       cand <- rep(FALSE, n)
-
-       if (n <= gridpoints) {
-         cand[] <- TRUE
-       } else {
-         totw <- cw[n]
-         if (!is.finite(totw) || totw <= 0) {
-           cand[] <- TRUE
-         } else {
-           targets <- probs * totw
-           idx <- vapply(targets, function(tt) which(cw >= tt)[1L], integer(1))
-           idx <- unique(pmin(pmax(idx, 1L), n))
-           cand[idx] <- TRUE
-         }
-       }
-       list(cw, cand)
-     }, by = sample_col]
-   }
-
-   # ---------------------------
-   # Dual-constraint tau ensuring >= minsize clusters in BOTH samples
-   # ---------------------------
-
-   # Train-side cutoff by sample (ordered by pred already)
-   tau_tr <- data[G >= minsize, .(tau_tr = min(get(pred_col), na.rm = TRUE)), by = sample_col]
-
-   # Estimation-side cutoff by sample (order by pred_o, count clusters)
-   data.table::setorderv(data, cols = c(sample_col, pred_o_col))
-   data[, G_est_order := cumsum(!duplicated(get(cluster_col))), by = sample_col]
-   tau_est <- data[G_est_order >= minsize, .(tau_est = min(get(pred_o_col), na.rm = TRUE)), by = sample_col]
-
-   # Combine into cross-sample constraint (assumes exactly two samples coded 1/2)
-   tau_vec <- c(
-     max(as.numeric(c(tau_tr[1, tau_tr], tau_est[2, tau_est]))),
-     max(as.numeric(c(tau_tr[2, tau_tr], tau_est[1, tau_est])))
-   )
-
-   # Create tau column NOW (before any get(tau_col) is called)
-   data[, (tau_col) := fifelse(get(sample_col) == 1L, tau_vec[1], tau_vec[2])]
-
-   # Back to training order for picking best cutoff
-   data.table::setorderv(data, cols = c(sample_col, pred_col))
-
-   # Eligible rows for optimization (and optional grid restriction)
-   elig <- (data[[pred_col]] >= data[[tau_col]]) & (data[["G"]] >= minsize)
-   if (grid_on) elig <- elig & data[[cand_col]]
-
-   # Train-sample optimal cutoff: choose pred that minimizes t among eligible rows
-   res <- data[elig,
-               .SD[which.min(t)],
-               by = sample_col,
-               .SDcols = c("G", "N", "m", "se", "t", pred_col)]
-   res[, train := TRUE]
-   data.table::setcolorder(res, c("train", sample_col))
-
-   # Replace tau by the optimal cutoff from the *other* sample (assumes two samples 1/2)
-   cut1 <- res[get(sample_col) == 1L, get(pred_col)]
-   cut2 <- res[get(sample_col) == 2L, get(pred_col)]
-   data[, (tau_col) := data.table::fifelse(get(sample_col) == 1L, cut2, cut1)]
-
-   # ---------------------------
-   # TESTING: pred_o <= tau (using SAME AIPW scores column)
-   # ---------------------------
-
-   dtest <- data[get(pred_o_col) <= get(tau_col)]
-
-   # Counts on testing set
-   byv <- if (pool) NULL else sample_col
-   GN <- dtest[, .(G.est = data.table::uniqueN(get(cluster_col)), N.est = .N), by = byv]
-
-   cl <- if (!is.null(cluster)) as.formula(paste0("~", cluster)) else NULL
-   wg <- if (!is.null(weight_col)) as.formula(paste0("~", weight_col)) else NULL
-
-   if (!pool) {
-     fml <- stats::as.formula(paste0(scores_col, " ~ i(", sample_col, ") - 1"))
-     fit <- fixest::feols(fml, data = dtest, vcov = cl, weights = wg)
-
-     test <- data.table::as.data.table(cbind(GN, fit$coeftable[, 1:3]))
-     test[, train := FALSE]
-     test[, tau_cutoff := NA_real_]
-     data.table::setcolorder(test, c("train", sample_col))
-   } else {
-     fml <- stats::as.formula(paste0(scores_col, " ~ 1"))
-     fit <- fixest::feols(fml, data = dtest, vcov = cl, weights = wg)
-
-     test <- data.table::data.table(
-       train = FALSE,
-       G = GN$G.est,
-       N = GN$N.est,
-       coef = fit$coeftable[1, 1],
-       stderr = fit$coeftable[1, 2],
-       t = fit$coeftable[1, 3],
-       `tau cutoff` = NA_real_
-     )
-     test[, (sample_col) := NA_integer_]
-     data.table::setcolorder(test, c("train", sample_col))
-   }
-
-   # ---------------------------
-   # OUTPUT ASSEMBLY
-   # ---------------------------
-
-   # Training rows
-   train_out <- res[, .(
-     train = TRUE,
-     G = G,
-     N = N,
-     coef = m,
-     stderr = se,
-     t = t,
-     `tau cutoff` = get(pred_col)
-   )]
-   train_out[, (sample_col) := res[[sample_col]] ]
-   data.table::setcolorder(train_out, c("train", sample_col))
-
-   # Testing rows into same schema
-   if (!pool) {
-     test_out <- test[, .(
-       train = FALSE,
-       G = G.est,
-       N = N.est,
-       coef = Estimate,
-       stderr = `Std. Error`,
-       t = `t value`,
-       `tau cutoff` = NA_real_
-     )]
-     test_out[, (sample_col) := test[[sample_col]] ]
-     data.table::setcolorder(test_out, c("train", sample_col))
-   } else {
-     test_out <- test[, .(
-       train = FALSE,
-       G = G,
-       N = N,
-       coef = coef,
-       stderr = stderr,
-       t = t,
-       `tau cutoff` = `tau cutoff`
-     )]
-     test_out[, (sample_col) := test[[sample_col]] ]
-     data.table::setcolorder(test_out, c("train", sample_col))
-   }
-
-   res_out <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
-
-   # ---------------------------
-   # CLEANUP
-   # ---------------------------
-
-   drop_cols <- c(
-     "N","a","b","WgY","Wg","dTA2","dTB2","dTAB","TA2","TB2","TAB",
-     "sumS2","se","G","t","m","SW","SWY","G_est_order", tau_col
-   )
-   if (grid_on) drop_cols <- c(drop_cols, cand_col, wtau_col, cwtau_col)
-
-   drop_cols <- drop_cols[drop_cols %chin% names(data)]
-   if (length(drop_cols)) data[, (drop_cols) := NULL]
-   if (tmp_cluster) data[, (cluster_col) := NULL]
 
    res_out
  }
