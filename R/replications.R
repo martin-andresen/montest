@@ -29,7 +29,7 @@ feols(r2012~t+left+right+primary_school+med_center+elect+tdist+irr_share+ln_land
 X=c("runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id")
 cols=c(X,"transport_index_andrsn","r2012","t","kernel_tri_ik")
 data=data[,..cols]
-##montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=X,test="simple")
+montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=X,test="simple")
 ##NOT NP ID - fuzzy RD
 
 ##AUTOR 2020a
@@ -298,8 +298,7 @@ X=c("difflnTFP","patents","br","yd")
 cols=c(X,"espionage","exp_inf_gva_old2","weight_workers","branch","c3difflnTFP")
 data=data[,..cols]
 feols(espionage~exp_inf_gva_old2+patents+difflnTFP+i(yd)+i(br),weight=~weight_workers,cluster=~branch,data=data)
-montests[["Glitz2020"]]=montest(data=data,D="espionage",Z="exp_inf_gva_old2",X=X,weight="weight_workers",test="simple")
-##COULDN'T cluster
+usp
 
 #Gregg2020
 data=data.table(read_dta("Gregg2020_data.dta")) ## NO WORK
