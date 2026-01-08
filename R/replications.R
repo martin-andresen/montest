@@ -212,7 +212,7 @@ data=data[,..cols]
 feols(as.formula(paste0(c("thresh~heavysh",X,"i(REGION)"),collapse="+")),data=data) ##NEGATIVE FS
 data[,heavysh:=-heavysh]
 X=c(X,"REGION")
-montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple")
+montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple",inner_folds=NULL)
 #ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
 #MAIN ESTIMATE: table 2, col 81
 

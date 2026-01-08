@@ -133,11 +133,11 @@
     data[,id_:=(1:n)]
 
     ##OUTER SPLIT
-    make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = TRUE)
+    make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE)
 
     ##OPTIONAL INNER SPLIT
     if (is.null(inner.folds)==FALSE) {
-      make_group_folds(data,K = inner.folds,cluster_name = cluster,fold_col = "cf_fold",verbose = TRUE,by_col="sample")
+      make_group_folds(data,K = inner.folds,cluster_name = cluster,fold_col = "cf_fold",verbose = FALSE,by_col="sample")
       foldname="cf_fold"
       } else {
       foldname=NULL
@@ -489,7 +489,7 @@
         tau_map <- res[train == TRUE, c(marginsname, "sample", "tau cutoff"), with = FALSE]
         setnames(tau_map, "tau cutoff", "tau_cutoff")
         tau_map[, sample := fifelse(sample == 1L, 2L, 1L)]
-        join_cols <- if (stack==TRUE) c(margins, "sample") else "sample"
+        if (stack==TRUE) join_cols="sample" else join_cols=c(margins, "sample")
         data[tau_map, tau := i.tau_cutoff, on = join_cols]
 
         Xmeans=data[pred_o <= tau, {
@@ -1101,7 +1101,7 @@
      group_list <- list(idx_all)
    } else {
      group_dt <- DT[i, ..grp_cols]
-     gid <- data.table::groupid(group_dt)
+     gid <-data.table::frankv(group_dt, ties.method = "dense")
      group_list <- split(idx_all, gid)
    }
 
@@ -1309,7 +1309,7 @@
      group_list <- list(idx_all)
    } else {
      group_dt <- DT[i, ..grp_cols]
-     gid <- data.table::groupid(group_dt)
+     gid <- data.table::frankv(group_dt, ties.method = "dense")
      group_list <- split(idx_all, gid)
    }
 

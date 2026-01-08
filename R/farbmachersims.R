@@ -1,4 +1,22 @@
-  #setwd("montest")
+ppool=c()
+p=c()
+pcf=c()
+pnocf=c()
+n=2000
+pb <- txtProgressBar(min = 0, max = 300, style = 3)
+for (r in 1:300) {
+  set.seed(r)
+  data=fct_datasim(setup="A", dgp=2)
+  pnocf=c(pnocf,montest(data=data,D="D",Z="Z",X=c("Xvar1","Xvar2","Xvar3"),test="simple",pool=TRUE,inner.folds=5,crossfit.forest=FALSE)$minp)
+  pcf=c(pcf,montest(data=data,D="D",Z="Z",X=c("Xvar1","Xvar2","Xvar3"),test="simple",pool=TRUE,inner.folds=5)$minp)
+  ppool=c(ppool,montest(data=data,D="D",Z="Z",X=c("Xvar1","Xvar2","Xvar3"),test="simple",pool=TRUE,inner.folds=5)$minp)
+  p=c(p,montest(data=data,D="D",Z="Z",X=c("Xvar1","Xvar2","Xvar3"),test="simple",inner.folds=5,pool=FALSE)$minp[4])
+  setTxtProgressBar(pb, r)
+}
+close(pb)
+
+
+ #setwd("montest")
   #setwd("../")
   #library(devtools)
   #devtools::install()
