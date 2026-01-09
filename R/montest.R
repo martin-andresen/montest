@@ -1759,19 +1759,30 @@
 
        if (length(denom_by) == 0L) {
          tot <- sum(DTsub$w)
+
          out <- DTsub[, .(w_sum = sum(w)), by = by_share]
-         out[, share := data.table::fifelse(tot > 0, w_sum / tot, NA_real_)]
+
+         if (is.finite(tot) && tot > 0) {
+           out[, share := w_sum / tot]
+         } else {
+           out[, share := NA_real_]
+         }
+
          out[, w_sum := NULL]
-         out
+         return(out)
        } else {
          den <- DTsub[, .(den_w = sum(w)), by = denom_by]
          out <- DTsub[, .(w_sum = sum(w)), by = by_share]
          out <- out[den, on = denom_by]
-         out[, share := data.table::fifelse(den_w > 0, w_sum / den_w, NA_real_)]
+
+         # here den_w is a vector, so vectorized ifelse is fine
+         out[, share := ifelse(is.finite(den_w) & den_w > 0, w_sum / den_w, NA_real_)]
+
          out[, c("w_sum", "den_w") := NULL]
-         out
+         return(out)
        }
      }
+
 
      cols_need <- unique(by_share)
      DT_all  <- data[, ..cols_need]
