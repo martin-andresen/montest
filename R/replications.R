@@ -29,7 +29,7 @@ feols(r2012~t+left+right+primary_school+med_center+elect+tdist+irr_share+ln_land
 X=c("runvar","primary_school","med_center","elect","tdist","irr_share","ln_land","pc01_lit_share","pc01_sc_share","bpl_landed_share","bpl_inc_source_sub_share","bpl_inc_250plus","vhg_dist_id")
 cols=c(X,"transport_index_andrsn","r2012","t","kernel_tri_ik")
 data=data[,..cols]
-montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=X,test="simple")
+##montests[["Asher2020"]]=montest(data=data,Z="t",D="r2012",X=X,test="simple")
 ##NOT NP ID - fuzzy RD
 
 ##AUTOR 2020a
@@ -103,7 +103,7 @@ X=c("l_population","unitid","year")
 cols=c(X,"weight","l_state_ap","l_state_app_at_state","l_foreign_fresh","state_of_college")
 data=data[,..cols]
 data[,state_of_college:=as.numeric(as.factor(state_of_college))]
-feols(l_state_ap~l_state_app_at_state+l_population|unitid+year,data=data,weight=~weight)
+feols(l_state_ap~l_state_app_at_state+l_population|unitid+year,data=data,weight=~weight,cluster=~state_of_college)
 montests[["Bound2020"]]=montest(data=data,D="l_state_ap",Z="l_state_app_at_state",X=X,test="simple",weight="weight")
 ##MAIN ESTIMATE: Table 2, col2
 ##OBS cant cluster by state - too few!
@@ -303,7 +303,7 @@ montests[["Glitz2020"]]=montest(data=data,D="espionage",Z="exp_inf_gva_old2",X=X
 ##couldn't cluster
 
 #Gregg2020
-data=data.table(read_dta("Gregg2020_data.dta")) ## NO WORK
+data=data.table(read_dta("Gregg2020_data.dta"))
 data=data[,c("Form","RelRevCPMinus","Industry","PIHerfIndex")]
 data[,Industry:=as.numeric(as.factor(Industry))]
 data=na.omit(data)
@@ -352,3 +352,6 @@ data=data[merge_results12==1]
 data=data[,c("allocated","treatment","stratum_identifier")]
 montests[["Pons2018"]]=montest(data=data,X="stratum_identifier",D="allocated",Z="treatment",test="simple")
 #xtivreg2 prop_turnout_pr12t1_an (allocated = treatment) if merge_results12 == 1, i(stratum_identifier) fe robust
+
+
+minps <- lapply(montests, `[[`, "minp")
