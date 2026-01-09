@@ -467,77 +467,27 @@
        time=rbind(time,causal_forest=proc.time())
 
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
-        if (stack==TRUE) marginsname=NULL else marginsname=margins
-        res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,pool=pool,gridpoints=gridpoints,margins=marginsname)
-
-        ##Global as comp
-        if (is.null(cluster)==FALSE) cl=as.formula(paste0("~",cluster)) else cl=NULL
-        if (is.null(weight)==FALSE) wg=as.formula(paste0("~",weight)) else wg=NULL
-        global=data[,.(.N,uniqueN(id_)),by=sample]
-        global=cbind(global,feols(scores~i(sample)-1,data=data,cluster=cl,weight=wg)$coeftable[,-4])
-        colnames(global)=c("sample","N","G","coef","stderr","t")
-
-        w_vec <- if (is.null(weight)) rep(1, nrow(data)) else data[[weight]]
-        cols <- get0("XW", inherits = TRUE)
-
-        if (pool==TRUE) {
-          if (stack==TRUE) byv=NULL else byv=margins
-        } else {
-          if (stack==TRUE) byv="sample" else byv=c("sample",margins)
-        }
-
-        tau_map <- res[train == TRUE, c(marginsname, "sample", "tau cutoff"), with = FALSE]
-        setnames(tau_map, "tau cutoff", "tau_cutoff")
-        tau_map[, sample := fifelse(sample == 1L, 2L, 1L)]
-        if (stack==TRUE) join_cols="sample" else join_cols=c(margins, "sample")
-        data[tau_map, tau := i.tau_cutoff, on = join_cols]
-
-        Xmeans=data[pred_o <= tau, {
-          w <- ..w_vec[.I]
-          lapply(.SD, weighted.mean, w = w, na.rm = TRUE)
-        }, by = byv, .SDcols = cols]
-
-        Xmeans_all=data[, {
-          w <- ..w_vec[.I]
-          lapply(.SD, weighted.mean, w = w, na.rm = TRUE)
-        }, by = byv, .SDcols = cols]
-
-        XSD=data[pred_o <= tau, {
-          w <- ..w_vec[.I]
-          lapply(.SD, w_sd, w = w, na.rm = TRUE)
-        }, by = byv, .SDcols = cols]
-
-        ###TODO: Y res means if MW,AHS
-        if (sum(test %in% c("AHS","MW"))>0) { ##Add Y or Y to Xmeans
-          data[pred_o<=tau,mean(Y),by=sample,env=list(Y=Y)]
-        }
-        ##SHOULD THESE ALSO BE WEIGHTED? Z==0 and Z==K...?
-        marginsmat_all=data[,.N,by=c("sample",margins)]
-        marginsmat=data[pred_o<=tau,.N,by=c("sample",margins)]
-        marginsmat=merge(marginsmat,marginsmat_all, by=c("sample",margins),all=TRUE)
-        marginsmat[,share_all:=N.y/sum(N.y), by=sample]
-        marginsmat[,share:=ifelse(is.na(N.x),0,N.x)/sum(N.x,na.rm=TRUE), by=sample]
-        marginsmat[,c("N.x","N.y"):=NULL]
+        res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=pool,gridpoints=gridpoints,margins=margins,stack=stack)
         time=rbind(time,find_and_test=proc.time())
 
     ################ 7: Multiple hypothesis testing and output #####################
-      if (nrow(res[train==FALSE])==1) {
-        res[is.na(t)==FALSE,p.raw:=pnorm(t)]
-        minwhere=NA
-        minp=res[is.na(sample)==TRUE,p.raw]
-        } else {
-          res[is.na(t)==FALSE,p.raw:=pnorm(t)]
-          for (m in c("holm","hochberg","BH","BY")) {
-            res[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
-          }
-          minwhere=res[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
-          minp=apply(res[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
-      }
+        res$results[is.na(t)==FALSE,p.raw:=pnorm(t)]
+        if (nrow(res$results[train==FALSE])==1) {
+          minwhere=NA
+          minp=res$results[is.na(sample)==TRUE,p.raw]
+          } else {
+            for (m in c("holm","hochberg","BH","BY")) {
+              res$results[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
+            }
+            if (stack==FALSE) byv=c("sample",margins) else byv=margins
+            minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
+            minp=apply(res$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
+        }
 
-      global[,p.raw:=pnorm(t)]
-      if (nrow(global)>1) {
+      res$global[,p.raw:=pnorm(t)]
+      if (nrow(res$global)>1) {
         for (m in c("holm","hochberg","BH","BY")) {
-        global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+        res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
         }
       }
 
@@ -545,7 +495,8 @@
       time=rbind(time,finalize=proc.time())
       time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
       time=time[,1:3]
-      return=list(results=res,global=global,minwhere=minwhere,minp=minp,time=time,margins=marginsmat,Xmeans_all=Xmeans_all,XSD=XSD,Xmeans=Xmeans)
+      time=rbind(time,total=colSums(time))
+      return=c(res,list(time=time))
       return(return)
   }
 
@@ -1379,6 +1330,487 @@
     pred    = "pred",
     pred_o  = "pred_o",
     scores  = "scores",      # AIPW scores used for BOTH training + testing
+    x_names = NULL,          # character vector of X columns for Xmeans/Xsd outputs
+    minsize = 50L,
+    pool = TRUE,
+    gridpoints = NULL,       # SEARCH: NULL => all admissible cutoffs; else integer k => k weighted-quantile cutoffs
+    margins = NULL,          # NULL or character vector of margin column names
+    stack = TRUE,            # NEW: if TRUE, ignore margins everywhere EXCEPT shares
+    store_grid = TRUE,       # STORE: store (k_store percentile points + chosen cutoff) per sample??(margins if stack=FALSE)
+    verbose = FALSE
+ ) {
+   stopifnot(data.table::is.data.table(data))
+
+   # column name strings
+   sample_col <- sample
+   pred_col   <- pred
+   pred_o_col <- pred_o
+   scores_col <- scores
+   weight_col <- weight
+
+   stopifnot(is.character(sample_col), length(sample_col) == 1L, sample_col %chin% names(data))
+   stopifnot(is.character(pred_col),   length(pred_col)   == 1L, pred_col   %chin% names(data))
+   stopifnot(is.character(pred_o_col), length(pred_o_col) == 1L, pred_o_col %chin% names(data))
+   stopifnot(is.character(scores_col), length(scores_col) == 1L, scores_col %chin% names(data))
+   stopifnot(is.numeric(minsize), length(minsize) == 1L, minsize >= 1L)
+   stopifnot(is.logical(stack), length(stack) == 1L)
+
+   if (!is.null(weight_col)) stopifnot(is.character(weight_col), length(weight_col) == 1L, weight_col %chin% names(data))
+   if (!is.null(cluster))    stopifnot(is.character(cluster), length(cluster) == 1L, cluster %chin% names(data))
+
+   if (is.null(margins)) margins <- character()
+   margins <- as.character(margins)
+   if (length(margins) > 0L) stopifnot(all(margins %chin% names(data)))
+
+   # "effective" margins used for everything except shares
+   grp_cols <- if (isTRUE(stack)) character() else margins
+
+   if (!is.null(x_names)) {
+     x_names <- as.character(x_names)
+     stopifnot(length(x_names) >= 1L, all(x_names %chin% names(data)))
+   }
+
+   search_grid_on <- !is.null(gridpoints)
+   if (search_grid_on) {
+     stopifnot(is.numeric(gridpoints), length(gridpoints) == 1L, is.finite(gridpoints), gridpoints >= 2)
+     gridpoints <- as.integer(gridpoints)
+   }
+
+   # grouping for GLOBAL / X summaries (based on effective margins)
+   by_global <- NULL
+   if (length(grp_cols) > 0L) {
+     by_global <- if (!pool) c(grp_cols, sample_col) else grp_cols
+   } else {
+     by_global <- if (!pool) sample_col else NULL
+   }
+
+   # ---------------- helpers ----------------
+
+   w_mean <- function(x, w) {
+     ok <- is.finite(x) & is.finite(w)
+     if (!any(ok)) return(NA_real_)
+     sum(w[ok] * x[ok]) / sum(w[ok])
+   }
+
+   w_sd <- function(x, w) {
+     ok <- is.finite(x) & is.finite(w)
+     if (sum(ok) < 2L) return(NA_real_)
+     mu <- sum(w[ok] * x[ok]) / sum(w[ok])
+     sqrt(sum(w[ok] * (x[ok] - mu)^2) / sum(w[ok]))
+   }
+
+   # CRV1 SE for weighted mean using cluster sums
+   crv1_mean <- function(dsub) {
+     gb <- dsub[, .(U = sum(w * score), W = sum(w)), by = cl]
+     G <- nrow(gb)
+     U <- sum(gb$U)
+     W <- sum(gb$W)
+     theta <- U / W
+
+     ug <- gb$U - theta * gb$W
+     se <- sqrt((G / pmax.int(G - 1L, 1L)) * sum(ug^2)) / abs(W)
+     if (G < 2L || !is.finite(se)) se <- NA_real_
+
+     list(coef = theta, se = se, t = theta / se, G = G, N = nrow(dsub))
+   }
+
+   # indices (in current order) for k weighted-quantile cutoffs of pred using weights w
+   percentile_indices <- function(w, k) {
+     n <- length(w)
+     if (n == 0L) return(integer())
+     if (n <= k) return(seq_len(n))
+
+     w2 <- w
+     w2[!is.finite(w2)] <- 0
+     w2[w2 < 0] <- 0
+
+     totw <- sum(w2)
+     if (!is.finite(totw) || totw <= 0) {
+       return(unique(as.integer(round(seq(1, n, length.out = k)))))
+     }
+
+     cw <- cumsum(w2)
+     probs <- (seq_len(k)) / (k + 1)
+     targets <- probs * cw[n]
+     idx <- vapply(targets, function(tt) which(cw >= tt)[1L], integer(1))
+     idx <- unique(pmin(pmax(idx, 1L), n))
+
+     if (length(idx) < k) {
+       idx2 <- unique(as.integer(round(seq(1, n, length.out = k))))
+       idx <- unique(c(idx, idx2))
+       idx <- sort(idx)[seq_len(min(k, length(idx)))]
+     }
+     idx
+   }
+
+   # row-index in current pred-order for chosen cutoff
+   cutoff_index <- function(pred, cutoff) {
+     if (!is.finite(cutoff) || length(pred) == 0L) return(NA_integer_)
+     j <- which(pred >= cutoff)[1L]
+     if (length(j) == 0L) length(pred) else j
+   }
+
+   # one margins-cell worker; returns results, grid, and row indices for testing subset
+   run_one_cell <- function(df_cell, idx_cell, key_dt = NULL) {
+     dt <- data.table::data.table(
+       sample = as.integer(df_cell[[sample_col]]),
+       pred   = as.numeric(df_cell[[pred_col]]),
+       pred_o = as.numeric(df_cell[[pred_o_col]]),
+       score  = as.numeric(df_cell[[scores_col]])
+     )
+
+     dt[, w := if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, .N)]
+     if (!is.null(cluster)) dt[, cl := as.integer(factor(df_cell[[cluster]], exclude = NULL))] else dt[, cl := .I]
+
+     stopifnot(all(dt$sample %in% c(1L, 2L)))
+
+     # ---- training recursion in pred order ----
+     data.table::setorder(dt, sample, pred)
+
+     dt[, N := seq_len(.N), by = sample]
+     dt[, `:=`(a = w * score, b = w)]
+     dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = .(sample, cl)]
+     dt[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample]
+     dt[, m := SWY / SW, by = sample]
+
+     dt[, `:=`(
+       dTA2 =  WgY^2 - (WgY - a)^2,
+       dTB2 =  Wg^2  - (Wg  - b)^2,
+       dTAB =  WgY * Wg - (WgY - a) * (Wg - b)
+     )]
+     dt[, `:=`(TA2 = cumsum(dTA2), TB2 = cumsum(dTB2), TAB = cumsum(dTAB)), by = sample]
+     dt[, G := cumsum(!duplicated(cl)), by = sample]
+
+     dt[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
+     dt[, se := sqrt((G / pmax.int(G - 1L, 1L)) * sumS2)]
+     dt[G < 2L, se := NA_real_]
+     dt[, t_stat := m / se]
+
+     # ---- dual constraint ----
+     tau_tr <- dt[G >= minsize, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
+
+     dt_est <- dt[, .(sample, pred_o, cl, w)]
+     data.table::setorder(dt_est, sample, pred_o)
+     dt_est[, G_est := cumsum(!duplicated(cl)), by = sample]
+     tau_est <- dt_est[G_est >= minsize, .(tau_est = min(pred_o, na.rm = TRUE)), by = sample]
+
+     if (nrow(tau_tr) < 2L || nrow(tau_est) < 2L) {
+       stop("minsize too large: cannot reach minsize clusters in train or est order for both samples.")
+     }
+
+     tau_vec <- c(
+       max(as.numeric(c(tau_tr[sample == 1L, tau_tr], tau_est[sample == 2L, tau_est]))),
+       max(as.numeric(c(tau_tr[sample == 2L, tau_tr], tau_est[sample == 1L, tau_est])))
+     )
+
+     dt[, tau_constraint := data.table::fifelse(sample == 1L, tau_vec[1], tau_vec[2])]
+
+     # ---- SEARCH candidates (depends on gridpoints) ----
+     if (!search_grid_on) {
+       dt[, cand_search := TRUE]
+     } else {
+       dt[, cand_search := {
+         idx <- percentile_indices(w, gridpoints)
+         cand <- rep(FALSE, .N)
+         cand[idx] <- TRUE
+         cand
+       }, by = sample]
+     }
+
+     elig <- (dt$pred >= dt$tau_constraint) & (dt$G >= minsize) & (dt$cand_search)
+
+     res <- dt[elig, .SD[which.min(t_stat)], by = sample,
+               .SDcols = c("G", "N", "m", "se", "t_stat", "pred")]
+     res[, train := TRUE]
+
+     # robust cutoff extraction (fallback to constraint)
+     cut1 <- res[sample == 1L, pred]
+     cut2 <- res[sample == 2L, pred]
+     if (length(cut1) == 0L || !is.finite(cut1)) cut1 <- tau_vec[1]
+     if (length(cut2) == 0L || !is.finite(cut2)) cut2 <- tau_vec[2]
+
+     # ---- STORED GRID: (k_store percentiles + chosen), independent of search gridpoints; NO padding ----
+     grid_out <- NULL
+     if (store_grid) {
+       k_store <- if (is.null(gridpoints)) 100L else as.integer(gridpoints)
+
+       grid_out <- dt[, {
+         idx_q <- percentile_indices(w, k_store)
+         cut_s <- if (.BY$sample == 1L) cut1 else cut2
+         idx_c <- cutoff_index(pred, cut_s)
+
+         idx_all <- unique(c(idx_q, idx_c))
+         idx_all <- idx_all[is.finite(idx_all)]
+         idx_all <- sort(idx_all)
+
+         out <- data.table::data.table(
+           tau = pred[idx_all],
+           t   = t_stat[idx_all],
+           chosen = FALSE
+         )
+
+         if (is.finite(idx_c) && nrow(out) > 0L) {
+           j <- match(pred[idx_c], out$tau)
+           if (!is.na(j)) out[j, chosen := TRUE]
+         }
+         out
+       }, by = "sample"]
+
+       if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+         for (cc in names(key_dt)) grid_out[, (cc) := key_dt[[cc]][1]]
+         data.table::setcolorder(grid_out, c(names(key_dt), "sample", "t", "tau", "chosen"))
+       } else {
+         data.table::setcolorder(grid_out, c("sample", "t", "tau", "chosen"))
+       }
+     }
+
+     # ---- testing set ----
+     dt[, tau_test := data.table::fifelse(sample == 1L, cut2, cut1)]
+     in_test <- (dt$pred_o <= dt$tau_test)
+     idx_test <- idx_cell[which(in_test)]
+     dtest <- dt[in_test]
+
+     # ---- outputs ----
+     train_out <- data.table::data.table(
+       train = TRUE,
+       sample = res$sample,
+       G = res$G,
+       N = res$N,
+       coef = res$m,
+       stderr = res$se,
+       t = res$t_stat,
+       `tau cutoff` = res$pred
+     )
+
+     if (!pool) {
+       out1 <- crv1_mean(dtest[sample == 1L])
+       out2 <- crv1_mean(dtest[sample == 2L])
+
+       test_out <- data.table::data.table(
+         train = FALSE,
+         sample = c(1L, 2L),
+         G = c(out1$G, out2$G),
+         N = c(out1$N, out2$N),
+         coef = c(out1$coef, out2$coef),
+         stderr = c(out1$se, out2$se),
+         t = c(out1$t, out2$t),
+         `tau cutoff` = NA_real_
+       )
+     } else {
+       out <- crv1_mean(dtest)
+       test_out <- data.table::data.table(
+         train = FALSE,
+         sample = NA_integer_,
+         G = out$G,
+         N = out$N,
+         coef = out$coef,
+         stderr = out$se,
+         t = out$t,
+         `tau cutoff` = NA_real_
+       )
+     }
+
+     out_dt <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
+     out_dt[, p.raw := stats::pnorm(t)]  # one-sided for negative effects
+
+     if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+       for (cc in names(key_dt)) out_dt[, (cc) := key_dt[[cc]][1]]
+       data.table::setcolorder(out_dt, c(names(key_dt), "train", "sample"))
+     } else {
+       data.table::setcolorder(out_dt, c("train", "sample"))
+     }
+
+     list(results = out_dt, grid = grid_out, idx_test = idx_test)
+   }
+
+   # ------------- MAIN RUN (results + grid + idx_test collection) -------------
+
+   if (length(grp_cols) == 0L) {
+     ans <- run_one_cell(data, seq_len(nrow(data)), key_dt = NULL)
+     results_out <- ans$results
+     grid_out <- ans$grid
+     idx_test_all <- ans$idx_test
+   } else {
+     gid <- data.table::frankv(data[, ..grp_cols], ties.method = "dense")
+     idx_list <- split(seq_len(nrow(data)), gid)
+
+     res_list  <- vector("list", length(idx_list))
+     grid_list <- if (store_grid) vector("list", length(idx_list)) else NULL
+     test_idx_list <- vector("list", length(idx_list))
+
+     for (g in seq_along(idx_list)) {
+       idx <- idx_list[[g]]
+       key_dt <- data[idx[1L], ..grp_cols]
+       ans <- run_one_cell(data[idx], idx, key_dt = key_dt)
+       res_list[[g]] <- ans$results
+       if (store_grid) grid_list[[g]] <- ans$grid
+       test_idx_list[[g]] <- ans$idx_test
+       if (verbose && (g %% 25L == 0L)) message(sprintf("forest_test: processed %d/%d margin cells", g, length(idx_list)))
+     }
+
+     results_out <- data.table::rbindlist(res_list, use.names = TRUE, fill = TRUE)
+     grid_out <- if (store_grid) data.table::rbindlist(grid_list, use.names = TRUE, fill = TRUE) else NULL
+     idx_test_all <- unlist(test_idx_list, use.names = FALSE)
+   }
+
+   # ------------- GLOBAL mean of scores (whole sample) -------------
+
+   dt_all <- data.table::data.table(
+     sample = as.integer(data[[sample_col]]),
+     score  = as.numeric(data[[scores_col]]),
+     w      = if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, nrow(data))
+   )
+   if (!is.null(cluster)) dt_all[, cl := as.integer(factor(data[[cluster]], exclude = NULL))] else dt_all[, cl := .I]
+   if (length(grp_cols) > 0L) for (cc in grp_cols) dt_all[, (cc) := data[[cc]]]
+
+   global_dt <- if (is.null(by_global)) {
+     out <- crv1_mean(dt_all)
+     data.table::data.table(
+       train = FALSE,
+       sample = NA_integer_,
+       G = out$G,
+       N = out$N,
+       coef = out$coef,
+       stderr = out$se,
+       t = out$t,
+       `tau cutoff` = NA_real_,
+       p.raw = stats::pnorm(out$t)
+     )
+   } else {
+     gb <- dt_all[, .(out = list(crv1_mean(.SD))),
+                  by = by_global,
+                  .SDcols = c("cl", "w", "score")]
+     global_dt <- gb[, {
+       o <- out[[1]]
+       data.table::data.table(
+         train = FALSE,
+         sample = if (!pool && (sample_col %chin% by_global)) get(sample_col) else NA_integer_,
+         G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+         `tau cutoff` = NA_real_,
+         p.raw = stats::pnorm(o$t)
+       )
+     }, by = by_global]
+   }
+
+   # match columns of results_out
+   want_cols <- names(results_out)
+   for (cc in setdiff(want_cols, names(global_dt))) global_dt[, (cc) := NA]
+   global_dt <- global_dt[, ..want_cols]
+
+   # ------------- X summaries -------------
+   Xmeans <- Xmeans_all <- XSD <- NULL
+
+   if (!is.null(x_names)) {
+     by_x <- by_global
+     if (is.null(by_x)) by_x <- character()
+
+     wvec <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, nrow(data))
+     in_test <- rep(FALSE, nrow(data))
+     if (length(idx_test_all)) in_test[idx_test_all] <- TRUE
+
+     wmeans_dt <- function(df, w, by_cols) {
+       DTtmp <- data.table::as.data.table(df)
+       DTtmp[, w__ := w]
+       if (length(by_cols) > 0L) {
+         DTtmp[, lapply(.SD, function(x) w_mean(as.numeric(x), w__)),
+               by = by_cols, .SDcols = x_names]
+       } else {
+         DTtmp[, lapply(.SD, function(x) w_mean(as.numeric(x), w__)),
+               .SDcols = x_names]
+       }
+     }
+
+     wsds_dt <- function(df, w, by_cols) {
+       DTtmp <- data.table::as.data.table(df)
+       DTtmp[, w__ := w]
+       if (length(by_cols) > 0L) {
+         DTtmp[, lapply(.SD, function(x) w_sd(as.numeric(x), w__)),
+               by = by_cols, .SDcols = x_names]
+       } else {
+         DTtmp[, lapply(.SD, function(x) w_sd(as.numeric(x), w__)),
+               .SDcols = x_names]
+       }
+     }
+
+     cols_need <- unique(c(by_x, x_names))
+     df_all <- data[, ..cols_need]
+     df_tst <- data[in_test, ..cols_need]
+
+     Xmeans <- wmeans_dt(df_tst, wvec[in_test], by_x)
+     Xmeans_all <- wmeans_dt(df_all, wvec, by_x)
+     XSD <- wsds_dt(df_all, wvec, by_x)
+   }
+
+   # ------------- WIDE shares (ONLY when stack=TRUE AND margins non-empty) -------------
+   shares <- NULL
+   if (isTRUE(stack) && length(margins) > 0L) {
+     by_share <- if (!pool) c(margins, sample_col) else margins
+     denom_by <- if (!pool) sample_col else character()
+
+     wvec <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, nrow(data))
+     wvec[!is.finite(wvec)] <- 0
+
+     in_test <- rep(FALSE, nrow(data))
+     if (length(idx_test_all)) in_test[idx_test_all] <- TRUE
+
+     make_share <- function(DTsub, wsub) {
+       DTsub <- data.table::as.data.table(DTsub)
+       DTsub[, w := wsub]
+
+       if (length(denom_by) == 0L) {
+         tot <- sum(DTsub$w)
+         out <- DTsub[, .(w_sum = sum(w)), by = by_share]
+         out[, share := data.table::fifelse(tot > 0, w_sum / tot, NA_real_)]
+         out[, w_sum := NULL]
+         out
+       } else {
+         den <- DTsub[, .(den_w = sum(w)), by = denom_by]
+         out <- DTsub[, .(w_sum = sum(w)), by = by_share]
+         out <- out[den, on = denom_by]
+         out[, share := data.table::fifelse(den_w > 0, w_sum / den_w, NA_real_)]
+         out[, c("w_sum", "den_w") := NULL]
+         out
+       }
+     }
+
+     cols_need <- unique(by_share)
+     DT_all  <- data[, ..cols_need]
+     DT_test <- DT_all[in_test]
+
+     share_dt     <- make_share(DT_test, wvec[in_test])
+     share_all_dt <- make_share(DT_all,  wvec)
+
+     data.table::setnames(share_dt, "share", "share")
+     data.table::setnames(share_all_dt, "share", "share_all")
+
+     shares <- merge(share_dt, share_all_dt, by = by_share, all = TRUE)
+     data.table::setcolorder(shares, c(by_share, "share", "share_all"))
+   }
+
+   # ... later when assembling output:
+   out <- list(
+     results = results_out,
+     grid    = grid_out,
+     global  = global_dt,
+     Xmeans  = Xmeans,
+     Xmeans_all = Xmeans_all,
+     XSD = XSD
+   )
+   if (!is.null(shares)) out$shares <- shares
+   if (!store_grid) out$grid <- NULL
+
+   out
+ }
+
+
+ forest_test_old <- function(
+    data,
+    cluster = NULL,          # string or NULL
+    weight  = NULL,          # NULL or string (weight column)
+    sample  = "sample",
+    pred    = "pred",
+    pred_o  = "pred_o",
+    scores  = "scores",      # AIPW scores used for BOTH training + testing
     minsize = 50L,
     pool = TRUE,
     gridpoints = NULL,       # NULL => all cutoffs; else integer, e.g. 100 (weighted percentiles of pred)
@@ -1617,259 +2049,4 @@
  }
 
 
- forest_test_old <- function(
-    data,
-    cluster = NULL,          # string or NULL
-    weight  = NULL,          # NULL or string (weight column)
-    sample  = "sample",
-    pred    = "pred",
-    pred_o  = "pred_o",
-    scores  = "scores",      # AIPW scores used for BOTH training + testing
-    minsize = 50L,
-    pool = TRUE,
-    gridpoints = NULL        # NULL => all cutoffs; else integer, e.g. 100 (weighted percentiles of pred)
- ) {
-   stopifnot(data.table::is.data.table(data))
-
-   # column name strings
-   sample_col <- sample
-   pred_col   <- pred
-   pred_o_col <- pred_o
-   scores_col <- scores
-   weight_col <- weight
-
-   stopifnot(sample_col %chin% names(data))
-   stopifnot(pred_col   %chin% names(data))
-   stopifnot(pred_o_col %chin% names(data))
-   stopifnot(scores_col %chin% names(data))
-   stopifnot(is.numeric(minsize), length(minsize) == 1L, minsize >= 1L)
-
-   if (!is.null(weight_col)) stopifnot(weight_col %chin% names(data))
-   if (!is.null(cluster))    stopifnot(cluster %chin% names(data))
-
-   if (!is.null(gridpoints)) {
-     stopifnot(is.numeric(gridpoints), length(gridpoints) == 1L, is.finite(gridpoints), gridpoints >= 2)
-     gridpoints <- as.integer(gridpoints)
-   }
-   grid_on <- !is.null(gridpoints)
-
-   # ---- Work on a small DT with only needed columns (major speed + avoids modifying 'data') ----
-   # Use integer cluster id for faster duplicated/uniqueN.
-   dt <- data.table::data.table(
-     sample = as.integer(data[[sample_col]]),
-     pred   = as.numeric(data[[pred_col]]),
-     pred_o = as.numeric(data[[pred_o_col]]),
-     score  = as.numeric(data[[scores_col]])
-   )
-
-   if (!is.null(weight_col)) {
-     dt[, w := as.numeric(data[[weight_col]])]
-   } else {
-     dt[, w := 1.0]
-   }
-
-   if (!is.null(cluster)) {
-     # integerize cluster ids (fast)
-     dt[, cl := as.integer(factor(data[[cluster]], exclude = NULL))]
-   } else {
-     # iid fallback: each row is its own cluster
-     dt[, cl := .I]
-   }
-
-   stopifnot(all(dt$sample %in% c(1L, 2L)))
-
-   # Helpers -------------------------------------------------------------
-
-   # CRV1 SE for weighted mean using cluster sums:
-   # theta = sum_g U_g / sum_g W_g, where U_g = sum_i w_i * score_i, W_g = sum_i w_i
-   # se = sqrt(G/(G-1) * sum_g (U_g - theta W_g)^2) / |sum_g W_g|
-   crv1_mean <- function(dsub) {
-     # cluster sums
-     gb <- dsub[, .(U = sum(w * score), W = sum(w)), by = cl]
-     G <- nrow(gb)
-     U <- sum(gb$U)
-     W <- sum(gb$W)
-     theta <- U / W
-
-     ug <- gb$U - theta * gb$W
-     se <- sqrt((G / pmax.int(G - 1L, 1L)) * sum(ug^2)) / abs(W)
-     if (G < 2L || !is.finite(se)) se <- NA_real_
-
-     list(coef = theta, se = se, t = theta / se, G = G, N = nrow(dsub))
-   }
-
-   # Find (weighted) percentile candidate indices in current order within each sample.
-   # Returns a logical vector cand (same length as dsub) indicating candidate rows.
-   make_grid_candidates <- function(dsub, gridpoints) {
-     n <- nrow(dsub)
-     if (n <= gridpoints) return(rep(TRUE, n))
-
-     cw <- cumsum(dsub$w)
-     totw <- cw[n]
-     if (!is.finite(totw) || totw <= 0) return(rep(TRUE, n))
-
-     probs <- (seq_len(gridpoints)) / (gridpoints + 1)  # avoid 0/1 endpoints
-     targets <- probs * totw
-     idx <- vapply(targets, function(tt) which(cw >= tt)[1L], integer(1))
-     idx <- unique(pmin(pmax(idx, 1L), n))
-
-     cand <- rep(FALSE, n)
-     cand[idx] <- TRUE
-     cand
-   }
-
-   # --------------------------------------------------------------------
-   # TRAINING objective computed as in your current function:
-   # order by (sample, pred), compute running mean + CRV1 SE via cumulative cluster contributions.
-   # --------------------------------------------------------------------
-
-   # Sort once by sample,pred
-   data.table::setorder(dt, sample, pred)
-
-   # Running counts (for reporting)
-   dt[, N := seq_len(.N), by = sample]
-
-   # a = w*score, b = w
-   dt[, `:=`(a = w * score, b = w)]
-
-   # Within-cluster running totals, per sample (in current pred-order)
-   dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = .(sample, cl)]
-
-   # Global running totals per sample
-   dt[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample]
-   dt[, m := SWY / SW, by = sample]
-
-   # Per-row deltas for cluster-robust variance recursion
-   dt[, `:=`(
-     dTA2 =  WgY^2 - (WgY - a)^2,
-     dTB2 =  Wg^2  - (Wg  - b)^2,
-     dTAB =  WgY * Wg - (WgY - a) * (Wg - b)
-   )]
-
-   # Cumulative aggregates per sample
-   dt[, `:=`(TA2 = cumsum(dTA2), TB2 = cumsum(dTB2), TAB = cumsum(dTAB)), by = sample]
-
-   # Number of clusters seen so far (in this pred-order)
-   dt[, G := cumsum(!duplicated(cl)), by = sample]
-
-   # CRV1 SE of weighted mean
-   dt[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
-   dt[, se := sqrt((G / pmax.int(G - 1L, 1L)) * sumS2)]
-   dt[G < 2L, se := NA_real_]
-   dt[, t := m / se]
-
-   # --------------------------------------------------------------------
-   # Grid candidates (optional)
-   # --------------------------------------------------------------------
-   if (grid_on) {
-     dt[, cand := make_grid_candidates(.SD, gridpoints), by = sample]
-   } else {
-     dt[, cand := TRUE]
-   }
-
-   # --------------------------------------------------------------------
-   # Dual constraint tau_vec:
-   #   tau_tr: smallest pred where running clusters >= minsize (train-side)
-   #   tau_est: smallest pred_o where running clusters >= minsize (est-side)
-   # --------------------------------------------------------------------
-
-   # train-side: dt already ordered by pred
-   tau_tr <- dt[G >= minsize, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
-
-   # est-side: order by pred_o within sample and count clusters
-   dt_est <- dt[, .(sample, pred_o, cl, w)]  # small view
-   data.table::setorder(dt_est, sample, pred_o)
-   dt_est[, G_est := cumsum(!duplicated(cl)), by = sample]
-   tau_est <- dt_est[G_est >= minsize, .(tau_est = min(pred_o, na.rm = TRUE)), by = sample]
-
-   # If constraints are missing in a sample, fail early (better than silent NA bugs)
-   if (nrow(tau_tr) < 2L || nrow(tau_est) < 2L) {
-     stop("minsize is too large: cannot reach minsize clusters in train or est order for both samples.")
-   }
-
-   tau_vec <- c(
-     max(as.numeric(c(tau_tr[sample == 1L, tau_tr], tau_est[sample == 2L, tau_est]))),
-     max(as.numeric(c(tau_tr[sample == 2L, tau_tr], tau_est[sample == 1L, tau_est])))
-   )
-
-   # --------------------------------------------------------------------
-   # Choose best cutoff in each sample among eligible rows:
-   # eligible: pred >= tau_constraint, G >= minsize, cand==TRUE
-   # --------------------------------------------------------------------
-
-   # eligibility constraint tau (per sample) for searching within that sample
-   dt[, tau_constraint := data.table::fifelse(sample == 1L, tau_vec[1], tau_vec[2])]
-
-   elig <- (dt$pred >= dt$tau_constraint) & (dt$G >= minsize) & (dt$cand)
-
-   res <- dt[elig, .SD[which.min(t)], by = sample, .SDcols = c("G", "N", "m", "se", "t", "pred")]
-   res[, train := TRUE]
-   data.table::setcolorder(res, c("train", "sample"))
-
-   # robust extraction with fallback to constraint if one side is missing
-   cut1 <- res[sample == 1L, pred]
-   cut2 <- res[sample == 2L, pred]
-   if (length(cut1) == 0L || !is.finite(cut1)) cut1 <- tau_vec[1]
-   if (length(cut2) == 0L || !is.finite(cut2)) cut2 <- tau_vec[2]
-
-   # swapped testing cutoffs: sample1 uses cut2, sample2 uses cut1
-   dt[, tau_test := data.table::fifelse(sample == 1L, cut2, cut1)]
-
-   # --------------------------------------------------------------------
-   # TESTING set and test statistic (FAST; no fixest)
-   # --------------------------------------------------------------------
-   dtest <- dt[pred_o <= tau_test]
-
-   if (!pool) {
-     # per sample
-     out1 <- crv1_mean(dtest[sample == 1L])
-     out2 <- crv1_mean(dtest[sample == 2L])
-
-     test_out <- data.table::data.table(
-       train = FALSE,
-       sample = c(1L, 2L),
-       G = c(out1$G, out2$G),
-       N = c(out1$N, out2$N),
-       coef = c(out1$coef, out2$coef),
-       stderr = c(out1$se, out2$se),
-       t = c(out1$t, out2$t),
-       `tau cutoff` = NA_real_
-     )
-   } else {
-     # pooled
-     out <- crv1_mean(dtest)
-
-     test_out <- data.table::data.table(
-       train = FALSE,
-       sample = NA_integer_,
-       G = out$G,
-       N = out$N,
-       coef = out$coef,
-       stderr = out$se,
-       t = out$t,
-       `tau cutoff` = NA_real_
-     )
-   }
-
-   # --------------------------------------------------------------------
-   # OUTPUT ASSEMBLY (match your schema)
-   # --------------------------------------------------------------------
-   train_out <- data.table::data.table(
-     train = TRUE,
-     sample = res$sample,
-     G = res$G,
-     N = res$N,
-     coef = res$m,
-     stderr = res$se,
-     t = res$t,
-     `tau cutoff` = res$pred
-   )
-
-   res_out <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
-
-   # optional p-values (one-sided for negative effects): H0: >=0 vs H1:<0
-   res_out[, p.raw := stats::pnorm(t)]
-
-   res_out
- }
 

@@ -103,6 +103,7 @@ X=c("l_population","unitid","year")
 cols=c(X,"weight","l_state_ap","l_state_app_at_state","l_foreign_fresh","state_of_college")
 data=data[,..cols]
 data[,state_of_college:=as.numeric(as.factor(state_of_college))]
+feols(l_state_ap~l_state_app_at_state+l_population|unitid+year,data=data,weight=~weight)
 montests[["Bound2020"]]=montest(data=data,D="l_state_ap",Z="l_state_app_at_state",X=X,test="simple",weight="weight")
 ##MAIN ESTIMATE: Table 2, col2
 ##OBS cant cluster by state - too few!
@@ -212,7 +213,7 @@ data=data[,..cols]
 feols(as.formula(paste0(c("thresh~heavysh",X,"i(REGION)"),collapse="+")),data=data) ##NEGATIVE FS
 data[,heavysh:=-heavysh]
 X=c(X,"REGION")
-montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple",inner_folds=NULL)
+montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple")
 #ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
 #MAIN ESTIMATE: table 2, col 81
 
@@ -298,7 +299,8 @@ X=c("difflnTFP","patents","br","yd")
 cols=c(X,"espionage","exp_inf_gva_old2","weight_workers","branch","c3difflnTFP")
 data=data[,..cols]
 feols(espionage~exp_inf_gva_old2+patents+difflnTFP+i(yd)+i(br),weight=~weight_workers,cluster=~branch,data=data)
-usp
+montests[["Glitz2020"]]=montest(data=data,D="espionage",Z="exp_inf_gva_old2",X=X,test="simple",weight="weight_workers")
+##couldn't cluster
 
 #Gregg2020
 data=data.table(read_dta("Gregg2020_data.dta")) ## NO WORK
