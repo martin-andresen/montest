@@ -836,6 +836,8 @@ forest_test <- function(
       score  = as.numeric(df_cell[[scores_col]])
     )
     
+    dt[, rid := seq_len(.N)]
+    
     dt[, w := if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, .N)]
     if (!is.null(cluster_col)) {
       dt[, cl := as.integer(factor(df_cell[[cluster_col]], exclude = NULL))]
@@ -952,7 +954,7 @@ forest_test <- function(
     # ---- apply swapped cutoffs within this cell ----
     dt[, tau_test := data.table::fifelse(sample == 1L, cut2, cut1)]
     in_test <- (dt$pred_o <= dt$tau_test)
-    idx_test <- idx_cell[which(in_test)]
+    idx_test <- idx_cell[ dt$rid[in_test] ]
     
     # ---- training output ----
     train_out <- data.table::data.table(
@@ -967,6 +969,7 @@ forest_test <- function(
       p_raw = stats::pnorm(res$t_stat)
     )
     
+    
     if (!is.null(key_dt) && ncol(key_dt) > 0L) {
       for (cc in names(key_dt)) train_out[, (cc) := key_dt[[cc]][1]]
       data.table::setcolorder(train_out, c(names(key_dt), "train", "sample"))
@@ -978,7 +981,6 @@ forest_test <- function(
   }
   
   # ------------- MAIN RUN: split by cells = cell_cols -------------
-  
   if (length(cell_cols) == 0L) {
     ans <- run_one_cell(data, seq_len(nrow(data)), key_dt = NULL)
     train_out <- ans$train
