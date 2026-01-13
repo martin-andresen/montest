@@ -14,7 +14,7 @@
 
     time=proc.time()
     set.seed(seed)
-    source("functions.R")
+
 
     ################### 1 CHECK INPUT #####################
 

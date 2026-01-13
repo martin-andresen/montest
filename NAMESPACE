@@ -2,3 +2,4 @@
 
 export(montest)
 export(simtypes_fs)
+export(functions)
