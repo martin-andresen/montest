@@ -77,6 +77,7 @@ cols=c(X,"f_prot_1882","kmwittenberg","code_reichstag_wk")
 data=data[,..cols]
 feols(as.formula(paste0(c("f_prot_1882~kmwittenberg",X),collapse="+")),data=data) ##NEGATIVE FS
 data[,kmwittenberg:=-kmwittenberg]
+data[,kmwittenberg:=kmwittenberg-min(kmwittenberg)]
 montests[["Becker2019"]]=montest(data=data,D="f_prot_1882",Z="kmwittenberg",X=X,test="simple",cluster="code_reichstag_wk")
 
 #Bergqquist2020
@@ -212,6 +213,7 @@ cols=c(X,"thresh","heavysh","SWING","REGION")
 data=data[,..cols]
 feols(as.formula(paste0(c("thresh~heavysh",X,"i(REGION)"),collapse="+")),data=data) ##NEGATIVE FS
 data[,heavysh:=-heavysh]
+data[,heavysh:=heavysh-min(heavysh)]
 X=c(X,"REGION")
 montests[["Caprettini2020"]]=montest(data=data,D="thresh",Z="heavysh",X=X,test="simple")
 #ivreg2 SWING (thresh = heavysh) cer log_density agri_share log_sex_ratio log_distel log_distnews _IREGION_* if sample == 1, r first
@@ -272,7 +274,7 @@ data=data[,c("votemarg_post","t_close","ppstaten","vote_admin2000","vote_admin20
 X=c("ppstaten","vote_admin2000","vote_admin2002","vote_admin2004","vote_admin2006","vote_admin2008")
 feols(votemarg_post~t_close+i(ppstaten)+vote_admin2002+vote_admin2004+vote_admin2008,data=data)
 data[,t_close:=-t_close] ##neagtive FS
-montests[["Gerber2020"]]=montest(data=data,D="votemarg_post",Z="t_close",X=X,test="simple")
+#montests[["Gerber2020"]]=montest(data=data,D="votemarg_post",Z="t_close",X=X,test="simple")
 #xi: ivreg2 vote_admin1 (votemarg_post=t_close) i.ppstaten vote_admin2000 vote_admin2002 vote_admin2004 vote_admin2006 vote_admin2008, first savefirst robust
 ##Not np identified - fuzzy RD?
 
@@ -355,3 +357,218 @@ montests[["Pons2018"]]=montest(data=data,X="stratum_identifier",D="allocated",Z=
 
 
 minps <- lapply(montests, `[[`, "minp")
+
+
+
+
+
+
+###OLD APPLICATIONS
+setwd("C:/Users/martiea/Dropbox/Prosjekter/working/testing IV monotonicity/Young (2022)/revised code (22-12-18)")
+
+##Alesina 2011
+#ivreg2 RulLaw ethnicity_I lnpopulation lnGDP_pc protestants muslims catholics latitude LOEnglish LOGerman LOSocialist LOScandin democ mtnall ethnicity_av_size_reg (ethnicity_C2=ethnicity_instrument_C2_thresh), robust
+#Alesina 2011: table 6, cols 2,4,6: Spec no 2,4,6
+data=read_dta("Alesina2011_data.dta")
+data=data.table(data)
+X=c("ethnicity_I","lnpopulation","lnGDP_pc","protestants","muslims","catholics",
+    "latitude","LOEnglish","LOGerman","LOSocialist","LOScandin","democ","mtnall",
+    "ethnicity_av_size_reg")
+keep=c(X,"ethnicity_C2","ethnicity_instrument_C2_thresh","RulLaw")
+data=data[,..keep]
+feols(as.formula(paste0(c("ethnicity_C2~ethnicity_instrument_C2_thresh",X),collapse="+")),data=data)
+montests[["Alesina2011"]]=montest(data=data,X=X,D="ethnicity_C2",Z="ethnicity_instrument_C2_thresh",test="simple")
+
+
+##Acconcia2014
+#ivreg2 Y (G = CD_S1 L1CD_S2) L1G L2G L1Y L2Y L1U1 L1U2 L2U1 L2U2 L2CD L3CD Mafiosi Extortion Corruption1 Corruption2 Murder L1Mafiosi L1Extortion L1Corruption1 L1Corruption2 L1Murder L2Mafiosi L2Extortion L2Corruption1 L2Corruption2 L2Murder [w=Pop] if Year>=1990 & Year<=1999, cluster(Group)
+#Acconcia 2014: Table 4, cols 6, spec 2
+##MULTIPLE IV
+
+
+
+##Acemoglu2008
+#ivreg2 fhpolrigaug yr* cd* (L_lrgdpch=L2_worldincome) if sample==1, cluster(code)
+#Acemoglu 2008: Table 5 col 5, spec 2
+data=read_dta("C:/Users/martiea/Dropbox/Prosjekter/working/testing IV monotonicity/Young (2022)/revised code (22-12-18)/Acemoglu2008_data.dta")
+data=data.table(data)
+data=data[sample==1]
+vars <- paste0("yr", 1:10)
+data[,  year := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+
+vars <- names(data)[startsWith(names(data), "cd")]
+data[,  country := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+X=c("country","year")
+keep=c(X,"fhpolrigaug","L_lrgdpch","L2_worldincome","code")
+data=data[,..keep]
+feols(L_lrgdpch~L2_worldincome|country+year, cluster=~code,data=data)
+data[,code:=as.numeric(as.factor(code))]
+montests[["Acemoglu2008"]]=montest(data=data,X=X,D="L_lrgdpch",Z="L2_worldincome",test="simple",cluster="code")
+
+##Ananat 2011
+#ivreg2 lngini_w (dism1990=herf) lenper, robust
+data=read_dta("Ananat2011_data_1.dta")
+data=data.table(data)
+feols(dism1990~herf+lenper,data=data)
+# montests[["Ananat2011"]]=montest(data=data,X="lenper",D="dism1990",Z="herf",test="simple")
+#Ananat: Table 2 cols 3+4, specs 1-4
+#--table 5, row 2, spec 66-72
+
+
+##Autor 2013
+#ivreg2 d_sh_empl_mfg (d_tradeusch_pw=d_tradeotch_pw_lag) t2000 [aw=timepwt48] if yr>=1990, cluster(statefip)
+#Autor: Table 2, col 3, spec 3
+data=read_dta("Autor2013_data_1.dta")
+data=data.table(data)
+data=data[yr>=1990]
+keep=c("d_sh_empl_mfg","d_tradeusch_pw","d_tradeotch_pw_lag","t2000","timepwt48","statefip")
+data=data[,..keep]
+feols(d_tradeusch_pw~d_tradeotch_pw_lag+t2000, weight=~timepwt48,cluster=~statefip,data=data)
+montests[["Autor2013"]]=montest(data=data,X="t2000",D="d_tradeusch_pw",Z="d_tradeotch_pw_lag",test="simple",cluster="statefip")
+##Too few clusters
+
+
+#Becker 2011
+#Becker et al: Table 1, col 6, spec 1
+#-- Table 8, col 9, spec 41
+#ivreg2 fac1849_total_pc (edu1849_adult_yos = edu1816_pri_enrol) pop1849_young pop1849_old area1816_qkm, cluster(max_kreiskey1800)
+data=read_dta("Becker2011_data_1.dta")
+data=data.table(data)
+X=c("pop1849_young","pop1849_old","area1816_qkm")
+keep=c(X,"fac1849_total_pc","edu1849_adult_yos","edu1816_pri_enrol","max_kreiskey1800")
+data=data[,..keep]
+feols(as.formula(paste0(c("edu1849_adult_yos~edu1816_pri_enrol",X),collapse="+")),data=data,cluster=~max_kreiskey1800)
+montests[["Becker2011"]]=montest(data=data,X=X,D="edu1849_adult_yos",Z="edu1816_pri_enrol",test="simple",cluster="max_kreiskey1800")
+
+#Bedard 2006
+#ivreg2 smoke100 (vet=myb21-myb39) black edcat2-edcat4 D* married A* Y* S*, robust
+#Bedard: Table 5, col 3-4, spec 1-2
+data=read_dta("Bedard2006_data_1.dta")
+data=data.table(data)
+#multiple ins.
+
+#Bleakley2010 ## NB LARGE DATA!!!
+#ivreg2 marriedpresent (eng = idvar) agearr1-agearr14 dumage* female black asianpi other multi hispdum dbpld* [aw=perwt2], cluster(bpld)
+#Bleakley: Table 3, col2, all rows - spec 1-12
+data=read_dta("Bleakley2010_data_1.dta")
+data=data.table(data)
+
+vars=paste0("agearr",1:14)
+data[,  agearr := {
+  m <- as.matrix(.SD)
+  out <- max.col(m, ties.method = "first")
+  out[is.na(rowSums(m)) == TRUE] <- 0
+  out
+}, .SDcols = vars]
+
+keep=c(X,"marriedpresent","perwt2","bpld","eng","idvar")
+data=data[,..keep]
+X=c("agearr","age","female","black","asianpi","other","multi","hispdum","bpld")
+ix=c("age","agearr","bpld")
+feols(as.formula(paste0(c("eng~idvar",X,paste0("i(",ix,")")),collapse="+")),data=data,weight=~perwt2,cluster~bpld)
+##NEGATIVE FS!
+data[,idvar:=-idvar]
+data[,idvar:=idvar+min(idvar)]
+montests[["Bleakley2010"]]=montest(data=data,X=X,D="eng",Z="idvar",test="simple",cluster="bpld",weight="perwt2")
+
+##Brown 2012
+#Brown: tbale 3, col2, spec 1
+#ivreg2 retire (lag_retire_o55_totalminusi = lag_PW_IV_o55_totalminusi) ac_year_1999 PK_10k PW_0_100k age53 age54 age56-age65 age_over_65 service serv_sqr salary_10k sex age_aug_31_o55_minusi service_o55_minusi pupilteachratio elementary middle high allgrades specialed pct_maplus pct_feml qmathmeanss retire_o55_sizeminusi fte_teach if non_mover_2yr==1, cluster(schoolcode)
+data=read_dta("Brown2012_data.dta")
+data=data.table(data)
+data=data[non_mover_2yr==1]
+
+X=c("ac_year_1999","PK_10k","PW_0_100k","age53","age54","age_over_65","service",
+  "serv_sqr","salary_10k","sex","age_aug_31_o55_minusi","service_o55_minusi",
+  "pupilteachratio","elementary","middle","high","allgrades","specialed",
+  "pct_maplus","pct_feml","qmathmeanss","retire_o55_sizeminusi","fte_teach")
+
+data[,age66:=age_over_65]
+ages <- c(52:54, 56:66)
+vars <- paste0("age", ages)
+
+data[, age := {
+  m <- as.matrix(.SD)
+  idx <- max.col(m, ties.method = "first")
+
+  out <- ages[idx]                 # map column index ??? age value
+  out[is.na(rowSums(m))] <- 55      # fallback when all missing
+
+  out
+}, .SDcols = vars]
+
+keep=c(X,"lag_retire_o55_totalminusi","lag_PW_IV_o55_totalminusi","schoolcode","age")
+data=data[,..keep]
+feols(as.formula(paste0(c("lag_retire_o55_totalminusi~lag_PW_IV_o55_totalminusi",X,"i(age)"),collapse="+")),data=data,cluster=~schoolcode)
+montests[["Brown2012"]]=montest(data=data,X=X,D="lag_retire_o55_totalminusi",Z="lag_PW_IV_o55_totalminusi",test="simple",cluster="schoolcode")
+
+
+##Burke 2012
+#xtivreg2 demchangeevent (laggrowthpercapita=l_precipitationinteract l2_precipitationinteract l_tempdevnew1interact l2_tempdevnew1interact l_dlogpriceindexinteracted) develop4_1 l2grosssecondcombinedextra l2old lpolity ldurable L_regsharedemocracy Y* if sample2001==1 & lpolity<8 & avgdpp6_1<=765.5, fe fuller(1) cluster(ccode)
+#Burke: Table 3, col2, panel B, spec 19
+#Multiple ins
+
+##Chalfin 2015
+#ivreg2 dlogpc_murder (dmexfb_alt = dins) deduc* dblack dage* demployed dusbirths dfbnonmex dushisp grp_* [aweight=popweight], cluster(FMSA)
+# Chalfin: Table 2, panel B, spec 1-7
+data=read_dta("Chalfin2015_data.dta")
+data=data.table(data)
+
+
+
+
+
+CHodorow: Talbe 3, col 6. spec 11
+Chou: Table 5, panel C, cols 1-4. Spec 1-4
+Collins: Table 3, panel A, spec 1-4
+Decarolis: table 8, panel B, col 1, spec 1
+Dinkelman: table 4 col 8, table 5 col 8. Spec 4 and 8
+Draca: Table 2, panel C, col 4, spec 2
+Guryan: Talbe 3, col 2, all rows. Spec 1-5
+Hornung: Table 5, col 3. spec 3
+Hunt: Table 7, panel H, spec 8
+James: Talbe 3, col 3, spec 1
+Kraay	Table 4, panel B, column 1, spec 1
+Lipscomb: Table 7, col 6, spec 6
+Moser: Table 4, column 2, spec 2
+Oreoupoulos: table 4, column 2, row 1,4,6,8, spec 10
+-- Table 2, panel A, col 2, spec 19
+-- Table 2, panel A, col 2, spec 25
+-- Table 2, panel A, col 2, spec 29
+Saiz: Table 1, column 4, spec 1
+Stephens: Table 1, column 4, spec 4
+Thornton: TAble 8, col 2 - spec 1-2
+Young: Table 2, panel A, col 2, spec 1
+-- Table 4, panel A, col 1 spec 41
+-- Table 4, panel A, col 2 spec 42
+-- Table 4, panel A, col 3 spec 43
+-- Table 4, panel A, col 4 spec 44
+
+
+
+
+data=read_dta("C:/Users/martiea/Dropbox/Prosjekter/working/testing IV monotonicity/Young (2022)/bedardtmp.dta")
+data=data.table(data)
+data=data[,.(division,smoke100,vet,ins,edcat,sex,yob,black,age,married)]
+data=na.omit(data)
+data=data[sample(nrow(data),size=10000,replace=F)]
+test=montest(data=data,Y="smoke100",Z="ins3",D="vet",X=c("division","edcat","sex","yob","black","age","married"),test="simple")
+test=montest(data=data,Y="smoke100",Z="ins",D="vet",X=c("division","edcat","sex","yob","black","age","married"),test="MW")
+
+
+data=read_dta("C:/Users/martiea/Dropbox/Prosjekter/working/testing IV monotonicity/Young (2022)/revised code (22-12-18)/Becker2011_data_2.dta")
+setDT(data)
+data=data[,.(ind_t_tot,edu_t,edu_lag,pop_young_t,pop_old_t,ind_lag_tot,kreiskey1849,t)]
+data=na.omit(data)
+test=montest(data=data,Y="ind_t_tot",D="edu_t",Z="edu_lag",X=c("pop_young_t","pop_old_t","ind_lag_tot","t","kreiskey1849"),test="simple")
+
