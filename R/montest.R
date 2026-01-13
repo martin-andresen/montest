@@ -193,11 +193,11 @@
         else {
           data[,(paste0(Yno,".bin")):={
             w <- if (is.na(..wvar)) NULL else get(..wvar)
-            as.integer(cut(get(..Yno),breaks=c(-Inf,unique(weighted_quantile(get(..Yno),w=w,probs=(1:(Ysubsets-1))/Ysubsets)),Inf)))-1
+            as.integer(cut(get(..Yno),breaks=c(-Inf,unique(weighted_quantile(get(..Yno),w=w,probs=(1:(Ysubsets-1))/Ysubsets)),Inf)))
           }]
         }
       } else {
-        data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno),breaks=length(unique(get(..Yno)))))-1]
+        data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno),breaks=length(unique(get(..Yno)))))]
         }
       maxlevs=c(maxlevs,max(data[,get(..Yno)]))
       Ybin=c(Ybin,paste0(Yno,".bin"))
