@@ -472,7 +472,6 @@
         time=rbind(time,find_and_test=proc.time())
 
     ################ 7: Multiple hypothesis testing and output #####################
-        res$results[is.na(t)==FALSE,p.raw:=pnorm(t)]
         if (nrow(res$results[train==FALSE])==1) {
           minwhere=NA
           minp=res$results[is.na(sample)==TRUE,p.raw]

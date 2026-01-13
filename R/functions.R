@@ -1015,7 +1015,7 @@ forest_test <- function(
       stderr = res$se,
       t = res$t_stat,
       tau_cutoff = res$pred,
-      p_raw = stats::pnorm(res$t_stat)
+      p.raw = stats::pnorm(res$t_stat)
     )
     
     if (!is.null(key_dt) && ncol(key_dt) > 0L) {
@@ -1065,7 +1065,7 @@ forest_test <- function(
       sample = NA_integer_,
       G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
       tau_cutoff = NA_real_,
-      p_raw = stats::pnorm(o$t)
+      p.raw = stats::pnorm(o$t)
     )
   } else {
     test_out <- dt_test[, {
@@ -1074,7 +1074,7 @@ forest_test <- function(
         train = FALSE,
         G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
         tau_cutoff = NA_real_,
-        p_raw = stats::pnorm(o$t)
+        p.raw = stats::pnorm(o$t)
       )
     }, by = test_by]
     if (!(sample_col %in% names(test_out))) test_out[, (sample_col) := NA_integer_]
@@ -1093,7 +1093,7 @@ forest_test <- function(
       sample = NA_integer_,
       G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
       tau_cutoff = NA_real_,
-      p_raw = stats::pnorm(o$t)
+      p.raw = stats::pnorm(o$t)
     )
   } else {
     global_dt <- dt_all[, {
@@ -1102,7 +1102,7 @@ forest_test <- function(
         train = FALSE,
         G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
         tau_cutoff = NA_real_,
-        p_raw = stats::pnorm(o$t)
+        p.raw = stats::pnorm(o$t)
       )
     }, by = test_by]
     if (!(sample_col %in% names(global_dt))) global_dt[, (sample_col) := NA_integer_]
