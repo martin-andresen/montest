@@ -468,7 +468,8 @@
 
         ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
         poolmargins=pool[pool %in% c(margins,"sample")]
-        res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
+        if (treetype=="forest") res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
+        if (treetype=="CART") res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = TRUE,  minsize = minsize,preselect=preselect) {
         time=rbind(time,find_and_test=proc.time())
 
     ################ 7: Multiple hypothesis testing and output #####################

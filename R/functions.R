@@ -1,47 +1,291 @@
 
 
 ##################################################### HELPER FUNCTIONS ######################################
-
-# THIS FUNCTION ESTIMATES A TREE USING CART, TEST IN EACH NODE, DETERMINE relevance and perform the test in the other sample
-esttree=function(data,testsample,cp,maxrankcp,alpha,prune,minsize,preselect){
-  tree=rpart(scores~.,data=as.data.frame(data[sample==testsample,!c("id_","sample")]),method="anova",cp=cp,minbucket=minsize,weights=weight) # run tree with transformed outcome
+CART_test <- function(
+    data,
+    sample  = "sample",       # string: sample split column (must be 1/2)
+    scores  = "scores",       # string: score column
+    x_names,                  # character: predictors used in CART
+    margins = NULL,           # NULL or character vector of margin column names
+    weight  = NULL,           # NULL or string: weight column (optional)
+    # rpart / pruning controls
+    cp = 0.0,
+    maxrankcp = 10L,
+    alpha = 0.05,
+    prune = TRUE,
+    minsize = 50L,            # rpart minbucket; also minimum N for reporting/tests
+    preselect = c("none", "minimum", "negative", "nonpositive"),
+    store_trees = FALSE,      # store fitted trees in output? can be big with many margin cells
+    verbose = FALSE
+) {
+  stopifnot(data.table::is.data.table(data))
+  preselect <- match.arg(preselect)
   
-  maxrankcp=min(maxrankcp, length(tree$cp[, 4]))
-  maxcp=tree$cp[maxrankcp, 1]
+  # --- column name strings (no NSE surprises) ---
+  sample_col <- as.character(sample)
+  scores_col <- as.character(scores)
+  stopifnot(length(sample_col) == 1L, sample_col %chin% names(data))
+  stopifnot(length(scores_col) == 1L, scores_col %chin% names(data))
   
-  if (prune==TRUE){ #prune the tree based on cross-validation
-    opcpid=which.min(tree$cp[, 4])
-    opcp=tree$cp[opcpid, 1]
-    tree=prune(tree, cp = max(maxcp,opcp))
-  }      else { # prune the tree based on maximum complexity parameter only (no cross-validation)
-    tree=prune(tree, cp = maxcp)
+  x_names <- as.character(x_names)
+  stopifnot(length(x_names) >= 1L, all(x_names %chin% names(data)))
+  
+  if (is.null(margins)) margins <- character()
+  margins <- as.character(margins)
+  if (length(margins) > 0L) stopifnot(all(margins %chin% names(data)))
+  
+  weight_col <- if (is.null(weight)) NULL else as.character(weight)
+  if (!is.null(weight_col)) stopifnot(length(weight_col) == 1L, weight_col %chin% names(data))
+  
+  stopifnot(is.numeric(minsize), length(minsize) == 1L, is.finite(minsize), minsize >= 1)
+  minsize <- as.integer(minsize)
+  
+  stopifnot(is.numeric(alpha), length(alpha) == 1L, is.finite(alpha), alpha > 0, alpha < 1)
+  stopifnot(is.numeric(cp), length(cp) == 1L, is.finite(cp), cp >= 0)
+  stopifnot(is.numeric(maxrankcp), length(maxrankcp) == 1L, is.finite(maxrankcp), maxrankcp >= 1)
+  maxrankcp <- as.integer(maxrankcp)
+  
+  # sample must be 1/2
+  svec <- as.integer(data[[sample_col]])
+  stopifnot(all(svec %in% c(1L, 2L)))
+  
+  # ---------------- helpers ----------------
+  
+  # HC1 robust SE for (weighted) mean via intercept-only WLS:
+  # beta = sum(w y)/sum(w)
+  # Var_HC0(beta) = sum(w^2 * u^2) / (sum(w))^2, where u = y - beta
+  # HC1 factor: n/(n-1)
+  mean_test_hc1 <- function(y, w = NULL) {
+    y <- as.numeric(y)
+    n <- length(y)
+    if (n == 0L) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L))
+    
+    if (is.null(w)) {
+      ok <- is.finite(y)
+      y <- y[ok]
+      n <- length(y)
+      if (n == 0L) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L))
+      mu <- mean(y)
+      u <- y - mu
+      # HC0 for mean with X=1 reduces to sum(u^2)/n^2; HC1 -> n/(n-1)
+      v0 <- sum(u^2) / (n^2)
+      v1 <- if (n > 1L) (n / (n - 1L)) * v0 else NA_real_
+      se <- sqrt(v1)
+      list(coef = mu, se = se, t = mu / se, N = n)
+    } else {
+      w <- as.numeric(w)
+      ok <- is.finite(y) & is.finite(w) & (w >= 0)
+      y <- y[ok]; w <- w[ok]
+      n <- length(y)
+      if (n == 0L) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L))
+      
+      sw <- sum(w)
+      if (!is.finite(sw) || sw <= 0) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=n))
+      
+      mu <- sum(w * y) / sw
+      u <- y - mu
+      v0 <- sum((w^2) * (u^2)) / (sw^2)
+      v1 <- if (n > 1L) (n / (n - 1L)) * v0 else NA_real_
+      se <- sqrt(v1)
+      list(coef = mu, se = se, t = mu / se, N = n)
+    }
   }
-  data[,leaf:=rpart.predict.leaves(tree,newdata=data,type = "where")] # create dummies for leaves (based on predictions))
   
-  ##Drop leaves with no variation in scores
-  if (sum(data[sample==1,sd(scores)==0,by=leaf][,V1])>0) data[sample==1&(leaf %in% data[sample==1,sd(scores)==0,by=leaf][V1==TRUE,leaf]),leaf:=NA]
-  if (sum(data[sample==2,sd(scores)==0,by=leaf][,V1])>0) data[sample==2&(leaf %in% data[sample==2,sd(scores)==0,by=leaf][V1==TRUE,leaf]),leaf:=NA]
-  
-  data[,sample:=ifelse(sample==testsample,"train","est")]
-  if (is.null(cluster)==FALSE) {
-    data[,G:=cumsum(!duplicated(get(cluster))),by=.(leaf,sample)]
-  }else {
-    data[,G:=.N,by=.(leaf,sample)]
+  # choose ???promising??? leaves based on training t-stats (your one-sided negative focus)
+  select_leaves <- function(dt_train_leaf) {
+    # dt_train_leaf must have: leaf, t
+    L <- nrow(dt_train_leaf)
+    if (L == 0L) return(integer())
+    if (preselect == "none" || L == 1L) return(dt_train_leaf$leaf)
+    
+    if (preselect == "minimum") {
+      return(dt_train_leaf[which.min(t), leaf])
+    }
+    
+    if (preselect == "negative") {
+      thr <- stats::qnorm(alpha / L)  # very negative
+      keep <- dt_train_leaf[t <= thr, leaf]
+      if (length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
+      return(keep)
+    }
+    
+    if (preselect == "nonpositive") {
+      # drop leaves that look significantly positive
+      thr_pos <- stats::qnorm(1 - alpha / L)
+      keep <- dt_train_leaf[t < thr_pos, leaf]
+      if (length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
+      return(keep)
+    }
+    
+    dt_train_leaf$leaf
   }
   
-  res=data[is.na(leaf)==FALSE,data.table(cbind(G=max(G),N=.N,feols(scores~1,data=.SD,vcov=clust,weights=weight)$coeftable)),by=.(leaf,sample)]
-  colnames(res)=c("leaf","sample","G","N","coef","stderr","t","p")
-  res=res[,p:=NULL]
-  res=dcast(res,leaf~sample,value.var=c("G","N","coef","stderr","t"))
-  if (preselect!="none"&nrow(res)>1) {
-    if (preselect=="nonpositive") {res[,relevant:=ifelse(t_train>=qnorm(1-alpha/nrow(res))&(t_train>min(t_train)),0,1)]}
-    else if (preselect=="negative") {res[,relevant:=ifelse(t_train>=qnorm(alpha/nrow(res))&(t_train>min(t_train)),0,1)]}
-    else if (preselect=="minimum") {res[,relevant:=ifelse(t_train>min(t_train),0,1)]}
-  } else {res[,relevant:=1]}
-  res[relevant==0,c("coef_est","stderr_est","t_est"):=NA]
-  setcolorder(res, c("leaf","G_train","N_train","coef_train","stderr_train","t_train","relevant","G_est","N_est","coef_est","stderr_est","t_est"))
-  return(list(tree=tree,res=res))
+  # fit + prune rpart in one sample within a cell; predict leaves to the whole cell
+  fit_one_tree_cell <- function(df_cell, train_sample) {
+    dtr <- df_cell[df_cell[[sample_col]] == train_sample]
+    if (nrow(dtr) < 2L) return(NULL)
+    
+    cols_tr <- c(scores_col, x_names)
+    df_tr <- as.data.frame(dtr[, ..cols_tr])
+    
+    w_tr <- if (!is.null(weight_col)) as.numeric(dtr[[weight_col]]) else NULL
+    fml <- stats::as.formula(paste0(scores_col, " ~ ", paste(x_names, collapse = " + ")))
+    
+    tree <- rpart::rpart(
+      formula = fml,
+      data = df_tr,
+      method = "anova",
+      weights = w_tr,
+      control = rpart::rpart.control(cp = cp, minbucket = minsize)
+    )
+    
+    if (is.null(tree$cp) || nrow(tree$cp) == 0L) {
+      # degenerate tree (single node)
+      df_all <- as.data.frame(df_cell[, ..x_names])
+      leaf_all <- as.integer(predict(tree, newdata = df_all, type = "where"))
+      return(list(tree = tree, leaf_all = leaf_all))
+    }
+    
+    maxrankcp2 <- min(maxrankcp, nrow(tree$cp))
+    maxcp <- tree$cp[maxrankcp2, 1]
+    
+    if (isTRUE(prune)) {
+      opcpid <- which.min(tree$cp[, 4])  # xerror
+      opcp <- tree$cp[opcpid, 1]
+      tree <- rpart::prune(tree, cp = max(maxcp, opcp))
+    } else {
+      tree <- rpart::prune(tree, cp = maxcp)
+    }
+    
+    df_all <- as.data.frame(df_cell[, ..x_names])
+    leaf_all <- as.integer(predict(tree, newdata = df_all, type = "where"))
+    list(tree = tree, leaf_all = leaf_all)
+  }
+  
+  # one cell worker (returns results DT and optionally trees)
+  run_one_cell <- function(df_cell, key_dt = NULL) {
+    out_rows <- list()
+    trees_cell <- NULL
+    if (store_trees) trees_cell <- vector("list", 2L)
+    
+    # For each train sample, fit tree in that sample, then test train leaves + test leaves in other sample
+    for (train_s in c(1L, 2L)) {
+      est_s <- if (train_s == 1L) 2L else 1L
+      
+      fit <- fit_one_tree_cell(df_cell, train_s)
+      if (is.null(fit)) next
+      
+      if (store_trees) trees_cell[[train_s]] <- fit$tree
+      
+      leaf <- fit$leaf_all
+      dt0 <- data.table::data.table(
+        sample = as.integer(df_cell[[sample_col]]),
+        leaf = leaf,
+        score = as.numeric(df_cell[[scores_col]]),
+        w = if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else 1.0
+      )
+      
+      # TRAIN leaf tests (within train_s)
+      dt_train <- dt0[sample == train_s & !is.na(leaf)]
+      train_leaf <- dt_train[, {
+        if (.N < minsize) {
+          list(G = .N, N = .N, coef = NA_real_, stderr = NA_real_, t = NA_real_)
+        } else {
+          o <- mean_test_hc1(score, w)
+          list(G = .N, N = .N, coef = o$coef, stderr = o$se, t = o$t)
+        }
+      }, by = leaf]
+      
+      train_leaf[, `:=`(
+        train = TRUE,
+        tree_sample = train_s,
+        sample = train_s
+      )]
+      train_leaf[, p.raw := stats::pnorm(t)]  # one-sided for negative effects
+      
+      # preselect promising leaves based on training
+      prom <- select_leaves(train_leaf[is.finite(t), .(leaf, t)])
+      prom <- as.integer(prom)
+      
+      train_leaf[, relevant := as.integer(leaf %in% prom)]
+      
+      # TEST leaf tests (in other sample, restricted to prom leaves)
+      dt_test <- dt0[sample == est_s & leaf %in% prom & !is.na(leaf)]
+      test_leaf <- dt_test[, {
+        if (.N < minsize) {
+          list(G = .N, N = .N, coef = NA_real_, stderr = NA_real_, t = NA_real_)
+        } else {
+          o <- mean_test_hc1(score, w)
+          list(G = .N, N = .N, coef = o$coef, stderr = o$se, t = o$t)
+        }
+      }, by = leaf]
+      
+      test_leaf[, `:=`(
+        train = FALSE,
+        tree_sample = train_s,
+        sample = est_s,
+        relevant = 1L
+      )]
+      test_leaf[, p.raw := stats::pnorm(t)]
+      
+      out_rows[[length(out_rows) + 1L]] <- train_leaf
+      out_rows[[length(out_rows) + 1L]] <- test_leaf
+    }
+    
+    res <- data.table::rbindlist(out_rows, use.names = TRUE, fill = TRUE)
+    
+    # attach margins keys
+    if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+      for (cc in names(key_dt)) res[, (cc) := key_dt[[cc]][1]]
+      data.table::setcolorder(res, c(names(key_dt), "train", "tree_sample", "sample", "leaf"))
+    } else {
+      data.table::setcolorder(res, c("train", "tree_sample", "sample", "leaf"))
+    }
+    
+    list(results = res, trees = trees_cell)
+  }
+  
+  # ----------------- dispatch over margin cells -----------------
+  
+  if (length(margins) == 0L) {
+    ans <- run_one_cell(data, key_dt = NULL)
+    results <- ans$results
+    trees <- if (store_trees) list(ans$trees) else NULL
+  } else {
+    gid <- data.table::frankv(data[, ..margins], ties.method = "dense")
+    idx_list <- split(seq_len(nrow(data)), gid)
+    
+    res_list <- vector("list", length(idx_list))
+    trees_list <- if (store_trees) vector("list", length(idx_list)) else NULL
+    
+    for (g in seq_along(idx_list)) {
+      idx <- idx_list[[g]]
+      key_dt <- data[idx[1L], ..margins]
+      ans <- run_one_cell(data[idx], key_dt = key_dt)
+      res_list[[g]] <- ans$results
+      if (store_trees) trees_list[[g]] <- ans$trees
+      if (verbose && (g %% 25L == 0L)) {
+        message(sprintf("CART_test: processed %d/%d margin cells", g, length(idx_list)))
+      }
+    }
+    
+    results <- data.table::rbindlist(res_list, use.names = TRUE, fill = TRUE)
+    trees <- if (store_trees) trees_list else NULL
+  }
+  
+  # final column order and return
+  # Use forest_test-like naming
+  # (G here is just .N in the leaf subset; kept for schema compatibility)
+  base_cols <- c(if (length(margins) > 0L) margins else character(),
+                 "train","tree_sample","sample","leaf","relevant","G","N","coef","stderr","t","p.raw")
+  base_cols <- base_cols[base_cols %chin% names(results)]
+  data.table::setcolorder(results, base_cols)
+  
+  out <- list(results = results)
+  if (store_trees) out$trees <- trees
+  out
 }
+
 
 weighted_quantile <- function(x, w = NULL, probs = c(0.25, 0.5, 0.75),
                               na.rm = TRUE,
