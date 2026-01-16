@@ -18,7 +18,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
 
 
   ################### 1 CHECK INPUT #####################
-
+  if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
   testtype=match.arg(testtype,"forest","CART",several.ok=TRUE)
   if (!is.null(aipw_clip)) {
     stopifnot(

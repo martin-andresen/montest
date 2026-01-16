@@ -36,3 +36,8 @@
 *.7z
 *.stswp
 /.Rproj.user
+.Rproj.user
+.Rhistory
+.RData
+.httr-oauth
+.quarto
