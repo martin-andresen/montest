@@ -1,10 +1,11 @@
-#' @param infile Path to the input file
-#' @return A matrix of the infile
+#' @param data A data.table containing the analysis sample.
+#' @param ... Other arguments (document these properly).
+#' @return A list with components \code{results}, \code{meta}, and optional fitted objects.
 #' @export
 
 montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.forest=TRUE,
                  normalize.Z=TRUE,aipw_clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
-                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",
+                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",sim=FALSE,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all", ##forest opts
                  cp=0,maxrankcp=10L,alpha=0.05,prune=TRUE,preselect="negative", ##CART opts
@@ -19,7 +20,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
 
   ################### 1 CHECK INPUT #####################
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
-  testtype=match.arg(testtype,"forest","CART",several.ok=TRUE)
+  testtype=match.arg(testtype,c("forest","CART"),several.ok=TRUE)
   if (!is.null(aipw_clip)) {
     stopifnot(
       is.numeric(aipw_clip),
@@ -43,6 +44,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   if ("all" %in% test) {
     test=c("simple","BP","MW","AHS")
   }
+  if (length(test)==1) {condition=test} else condition=NULL
 
   if (is.null(Y)==TRUE) {
     if (sum(!test %in% "simple")>0) {
@@ -201,7 +203,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
       } else {
         data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno),breaks=length(unique(get(..Yno)))))]
       }
-      maxlevs=c(maxlevs,max(data[,get(..Yno)]))
+      maxlevs=c(maxlevs,data[, max(get(paste0(Yno, ".bin")))])
       Ybin=c(Ybin,paste0(Yno,".bin"))
     }
   }
@@ -303,6 +305,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
     )
   }
 
+  ##Check for onesided noncompliance
+  os_res <- test_one_sided_noncompliance(data = data, D = D, Z = Z, margins = margins)
+  osmargins=margins
+
   ##Expand multiple conditions for testing (except K + BP, which has same def of Q - expand later)
   if (length(test)>1) {
     if (sum(test %in% c("BP","K"))==2) testexpand=c(test[!test %in% c("BP","K")],"BPK")
@@ -317,12 +323,52 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
     condition="condition"
   } else {condition=test}
 
-  ##Expand to equation=0,1 for BP, K and MW conditions
-  if (sum(test %in% c("MW","BP","K"))>0) {
-    data=data[rep(seq(.N),1+condition %in% c("BPK","MW","BP","K"))]
-    data[condition %in% c("BPK","MW","BP","K"),equation:=seq(.N)-1*(condition %in% c("BPK","MW","BP","K")),by=c("id_",margins)]
-    margins=c(margins,"equation")
+  ## DROP TRIVIALLY SATISFIED ROWS DUE TO ONESIDED NONCOMPLIANCE,
+  ## drop rows with condition="FS" or "AHS" in margins with onesided noncompliance (trivial)
+  ## EXPAND BP,MW rows to equation=0:1 for nontrivially satisfied conditions
+  ## (or keep just the nontrivially satisfied one)
+  ## Expand to equation=0,1 only when BOTH equations are nontrivial
+
+  if (length(osmargins) == 0L) {
+
+    # global one-sided result (os_res should be 1 row)
+    os_one <- isTRUE(os_res[["one_sided"]][1])
+    os_eq  <- os_res[["trivial_equation"]][1]
+
+    data[, `:=`(os_one_sided = os_res[["one_sided"]][1],
+                os_triv_eq   = os_res[["trivial_equation"]][1])]
+
+  } else {
+
+    data[os_res, on = osmargins,
+         `:=`(os_one_sided = i.one_sided,
+              os_triv_eq   = i.trivial_equation)]
+
+    # unmatched cells treated as not one-sided
+    data[is.na(os_one_sided), os_one_sided := FALSE]
   }
+
+  # ------------------------------------------------------------
+  # 2) Drop trivially satisfied SIMPLE/AHS in one-sided cells
+  # ------------------------------------------------------------
+
+  data <- data[!(condition %chin% c("simple","AHS") & os_one_sided)]
+
+  # ------------------------------------------------------------
+  # EXPAND to EQ=0:1
+  # ------------------------------------------------------------
+
+  if (sum(test %in% c("BP","K","BPK","MW"))>0) {
+    data[,expand_n:=1]
+    data[(condition %chin% c("BP","K","BPK","MW")) & os_one_sided==FALSE,expand_n:=2]
+    data=data[rep(seq(.N),expand_n)]
+    data[(condition %chin% c("BP","K","BPK","MW")) & !os_one_sided,equation := seq_len(.N) - 1L,by = c("id_", margins)]
+    data[(condition %chin% c("BP","K","BPK","MW")) & os_one_sided==TRUE,equation:=1-os_triv_eq]
+    margins=c(margins,"equation")
+    data[,expand_n:=NULL]
+    }
+
+  data[, c("os_one_sided", "os_triv_eq") := NULL]
 
   ##Expand to all groups of Ybin for BP, K conditions
   if (sum(test %in% c("BP","K"))>0) {
@@ -334,7 +380,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   ##Create outcome variable Q in stacked data
   if (sum(test %in% c("simple","AHS"))>0) data[condition %in% c("simple","AHS"),Q:=D,env=list(D=D)]
   if (sum(test %in% c("BPK","K","BP"))>0) data[condition %in% c("BPK","BP","K"),Q:=equation*(D*(name==ybin))-(1-equation)*(1-D)*(name==ybin),env=list(D=D,name=paste0(Y,".bin"))]
-  if ("MW" %in% test) data[condition=="MW",Q:=equation*((1-Z.hat)*D*Z-Z.hat*D*(1-Z))+(1-equation)*(Z.hat*(1-D)*(1-Z)-(1-Z.hat)*(1-D)*Z),env=list(Z=Z,D=D)]
+  if ("MW" %in% test) data[condition=="MW",Q:=equation*((1-get(paste0(..Z,".hat")))*D*Z-get(paste0(..Z,".hat"))*D*(1-Z))+(1-equation)*(get(paste0(..Z,".hat"))*(1-D)*(1-Z)-(1-get(paste0(..Z,".hat")))*(1-D)*Z),env=list(Z=Z,D=D)] ##ERROR HERE!!! get(paste0(...))
   if ("K" %in% test) {
     data[condition %in% c("BPK","K"),D.hat:=D.hat*equation+(1-D.hat)*(1-equation)]
     data[condition %in% c("BPK","K"),D:=D*equation+(1-D)*(1-equation),env=list(D=D)]
@@ -470,31 +516,47 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
 
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
   poolmargins=pool[pool %in% c(margins,"sample")]
-  if ("forest" %in% testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
-  if ("CART" %in% testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
+  if (is.null(poolmargins)==TRUE) poolmargins=character(0)
+
+  res=list()
+  if (sim==TRUE) {
+    poollist=list(margins[!margins %in% "condition"],c(margins[!margins %in% "condition"],"sample"),c(margins,"sample"),margins)
+    treelist=c("CART","forest")
+
+    for (p in 1:4) {
+      res[[paste0(c("forest",p),collapse="_")]]=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poollist[[p]],gridpoints=gridpoints,margins=margins)
+      res[[paste0(c("CART",p),collapse="_")]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poollist[[p]])
+    }
+  } else {
+  if ("forest" %in% testtype) res[["forest"]]=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
+  if ("CART" %in% testtype) res[["CART"]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
+  }
   time=rbind(time,find_and_test=proc.time())
 
+
   ################ 7: Multiple hypothesis testing and output #####################
-  if (nrow(res$results[train==FALSE])==1) {
-    minwhere=NA
-    minp=res$results[train==FALSE,p.raw]
-  } else {
-    for (m in c("holm","hochberg","BH","BY")) {
-      res$results[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
+  for (r in 1:length(res)) {
+    if (nrow(res[[r]]$results[train==FALSE])==1) {
+      minwhere=NA
+      minp=res[[r]]$results[train==FALSE,p.raw]
+    } else {
+      for (m in c("holm","hochberg","BH","BY")) {
+        res[[r]]$results[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
+      }
+      byv=c("sample",margins)[!c("sample",margins) %in% pool]
+      minwhere=res[[r]]$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
+      res[[r]]$minp=apply(res[[r]]$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
+      res[[r]]$minp=c(res[[r]]$minp,p.CCT=cct_pvalue(res[[r]]$results[train==FALSE,p.raw]))
     }
-    byv=c("sample",margins)[!c("sample",margins) %in% pool]
-    minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
-    res$minp=apply(res$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
-    res$minp=c(res$minp,p.CCT=cct_pvalue(res$results[train==FALSE,p.raw]))
-  }
 
-  res$global[,p.raw:=pnorm(t)]
-  if (nrow(res$global)>1) {
-    for (m in c("holm","hochberg","BH","BY")) {
-      res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+    res[[r]]$global[,p.raw:=pnorm(t)]
+    if (nrow(res[[r]]$global)>1) {
+      for (m in c("holm","hochberg","BH","BY")) {
+        res[[r]]$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+      }
     }
-  }
 
+  }
 
   time=rbind(time,finalize=proc.time())
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
