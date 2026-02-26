@@ -1872,7 +1872,10 @@ test_one_sided_noncompliance <- function(data, D, Z, margins = character(0)) {
     )
   }
 
-  dt2 <- dt[!is.na(dt[[D]]) & !is.na(dt[[Z]])]
+  Dcol <- D
+  Zcol <- Z
+
+  dt2 <- dt[!is.na(get(Dcol)) & !is.na(get(Zcol))]
 
   if (length(margins) == 0L) {
     res <- data.table::as.data.table(core(dt2))
