@@ -1902,7 +1902,73 @@ test_one_sided_noncompliance <- function(data, D, Z, margins = character(0)) {
   invisible(res)
 }
 
+#####binarize var #######
 
+binarize_var <- function(data,
+                         var,
+                         ngroups,
+                         gridtype = c("equisized", "equidistant"),
+                         wvar = NA_character_,
+                         newvar = NULL) {
+
+  gridtype <- match.arg(gridtype)
+
+  dt <- data.table::as.data.table(data)
+  dt <- data.table::copy(dt)
+
+  if (!var %in% names(dt)) {
+    stop("`var` not found in `data`.")
+  }
+
+  if (!is.na(wvar) && !wvar %in% names(dt)) {
+    stop("`wvar` not found in `data`.")
+  }
+
+  # decide output variable
+  outvar <- if (is.null(newvar)) var else newvar
+
+  vals_nonmiss <- dt[[var]][!is.na(dt[[var]])]
+
+  if (length(unique(vals_nonmiss)) <= ngroups) {
+    if (!identical(outvar, var)) {
+      dt[, (outvar) := get(var)]
+    }
+    return(dt)
+  }
+
+  if (gridtype == "equidistant") {
+
+    rng <- range(dt[[var]], na.rm = TRUE)
+
+    breaks <- seq(
+      from = rng[1] - 0.001,
+      to   = rng[2] + 0.001,
+      length.out = ngroups + 1
+    )
+
+    bins <- as.integer(cut(dt[[var]], breaks = breaks)) - 1L
+
+  } else {
+
+    w <- if (is.na(wvar)) NULL else dt[[wvar]]
+
+    inner_breaks <- unique(
+      weighted_quantile(
+        x     = dt[[var]],
+        w     = w,
+        probs = (1:(ngroups - 1)) / ngroups
+      )
+    )
+
+    breaks <- c(-Inf, inner_breaks, Inf)
+
+    bins <- as.integer(cut(dt[[var]], breaks = breaks)) - 1L
+  }
+
+  dt[, (outvar) := bins]
+
+  dt
+}
 #============ Liu and Xie (2019, JASA) cauchy combination test p-value ============#
 #https://pubmed.ncbi.nlm.nih.gov/33012899/
 cct_pvalue <- function(p, w = NULL,eps=1e-15) {

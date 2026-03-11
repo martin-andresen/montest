@@ -159,51 +159,39 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   ############### 3 Discretize Z, D and Y into subsets ###############33
 
   if (is.null(Dsubsets)==FALSE) { ##bin treatment
-    if (length(unique(data[,get(..D)]))>Dsubsets){
-      if (gridtypeD=="equidistant") {
-        data[,(D):=as.integer(cut(get(..D), breaks = seq(from = min(get(..D)) - 0.001, to = max(get(..D)) + 0.001, length.out = Dsubsets + 1)))-1]
-      }
-      else {
-        data[,(D):={
-          w <- if (is.na(..wvar)) NULL else get(..wvar)
-          as.integer(cut(get(..D),breaks=c(-Inf,unique(weighted_quantile(get(..D),w=w,probs=(1:(Dsubsets-1))/Dsubsets)),Inf)))-1
-        }]
-
-      }
-    }
+    data <- binarize_var(
+      data    = data,
+      var     = D,
+      ngroups = Dsubsets,
+      gridtype = gridtypeD,
+      wvar    = wvar
+    )
   }
 
-  if (is.null(Zsubsets)==FALSE) { ##bin instrument
-    if (length(unique(data[,get(..Z)]))>Zsubsets){
-      if (gridtypeZ=="equidistant") {
-        data[,(Z):=as.integer(cut(get(..Z), breaks = seq(from = min(get(..Z)) - 0.001, to = max(get(..Z)) + 0.001, length.out = Zsubsets + 1)))-1]
-      }
-      else {
-        data[,(Z):={
-          w <- if (is.na(..wvar)) NULL else get(..wvar)
-          as.integer(cut(get(..Z),breaks=c(-Inf,unique(weighted_quantile(get(..Z),w=w,probs=(1:(Zsubsets-1))/Zsubsets)),Inf)))-1
-        }]
-      }
-    }
+  if (is.null(Zsubsets)==FALSE) { ##instrument
+    data <- binarize_var(
+      data    = data,
+      var     = Z,
+      ngroups = Zsubsets,
+      gridtype = gridtypeZ,
+      wvar    = wvar
+    )
   }
+
 
   if (sum(test %in% c("BP","K"))>0) { ##bin outcome(s)
     maxlevs=c();Ybin=c()
     for (Yno in Y) {
-      if (length(unique(data[,get(..Yno)]))>Ysubsets) {
-        if (gridtypeY=="equidistant") {
-          data[,(paste0(Yno,".bin")):=as.integer(cut(get(..Yno), breaks = seq(from = min(get(..Yno)) - 0.001, to = max(get(..Yno)) + 0.001, length.out = Ysubsets + 1)))]
-        }
-        else {
-          data[,(paste0(Yno,".bin")):={
-            w <- if (is.na(..wvar)) NULL else get(..wvar)
-            as.integer(cut(get(..Yno),breaks=c(-Inf,unique(weighted_quantile(get(..Yno),w=w,probs=(1:(Ysubsets-1))/Ysubsets)),Inf)))
-          }]
-        }
-      } else {
-        data[,(paste0(Yno,".bin")):=as.numeric(cut(get(..Yno),breaks=length(unique(get(..Yno)))))]
-      }
-      maxlevs=c(maxlevs,data[, max(get(paste0(Yno, ".bin")))])
+        data <- binarize_var(
+        data    = data,
+        var     = Yno,
+        ngroups = Ysubsets,
+        gridtype = gridtypeY,
+        wvar    = wvar,
+        newvar = paste0(Yno, ".bin")
+      )
+      col <- paste0(Yno, ".bin")
+      maxlevs <- c(maxlevs, max(data[[col]], na.rm = TRUE))
       Ybin=c(Ybin,paste0(Yno,".bin"))
     }
   }
