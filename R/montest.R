@@ -473,7 +473,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
                forest_type = "regression",
                i=i,
                y_name="Q",
-               x_names=X,
+               x_names=c(X,paste0(Y,".res")),
                folds=foldname,
                margins = margins,
                weight_name = weight,
