@@ -287,7 +287,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   if (J>1) { ##Stack data for all margins of D
     rows=rep(seq_len(nrow(data)),each=J)
     data= data[rows]    # replicate each row J times
-    data[,dmargin:=seq_len(J),by=c("id_",margins)]
+    dvals=sort(unique(data[,get(..D)]))
+    data[,dmargin:=..dvals[-1],by=c("id_",margins)]
     data[,D:=D>=dmargin,env=list(D=D)]
     margins=c(margins,"dmargin")
   }
