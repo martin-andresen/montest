@@ -218,12 +218,26 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
 
   ##HANDLE Z STACKS
   if (K>1) { ##Expand to all margins of Z
-    times = 1L + 1L * as.integer(data[[Z]] > 0 & data[[Z]] < K)
+    minZ=min(data[,..Z]);maxZ=max(data[,..Z]);zvals=sort(unique(data[,get(..Z)]))
+    times = 1L + 1L * as.integer(data[[Z]] > minZ & data[[Z]] < maxZ)
     data = data[rep.int(seq_len(nrow(data)), times)]
-    data[,zmargin:=seq(.N)+get(..Z)-1*(get(..Z)>0),by=id_]
+
+    data[, zmargin := {
+      z <- get(Z)
+      k <- match(z[1L], zvals)
+
+      if (k == 1L || k == length(zvals)) {
+        rep(z[1L], .N)
+      } else {
+        c(zvals[k], zvals[k + 1L])[seq_len(.N)]
+      }
+    }, by = "id_"]
     data[,(Z):=get(..Z)>=zmargin]
+
     margins=c(margins,"zmargin")
   }
+
+
 
   ##estimate Z.hat for each margin in stacked data (also if K==1!)
   if (is.null(X)==FALSE) {
