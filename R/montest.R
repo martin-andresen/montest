@@ -19,8 +19,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
 
 
   ################### 1 CHECK INPUT #####################
+  testtype=match.arg(testtype,c("forest","CART"))
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
-  testtype=match.arg(testtype,c("forest","CART"),several.ok=TRUE)
+
   if (!is.null(aipw_clip)) {
     stopifnot(
       is.numeric(aipw_clip),
@@ -521,6 +522,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   poolmargins=pool[pool %in% c(margins,"sample")]
   if (is.null(poolmargins)==TRUE) poolmargins=character(0)
 
+  browser()
+
   res=list()
   if (sim==TRUE) {
     poollist=list(margins[!margins %in% "condition"],c(margins[!margins %in% "condition"],"sample"),c(margins,"sample"),margins)
@@ -531,8 +534,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
       res[[paste0(c("CART",p),collapse="_")]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poollist[[p]])
     }
   } else {
-  if ("forest" %in% testtype) res[["forest"]]=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
-  if ("CART" %in% testtype) res[["CART"]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
+  if ("CART" ==testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
   }
   time=rbind(time,find_and_test=proc.time())
 

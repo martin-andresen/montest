@@ -1,625 +1,646 @@
 
 
 ##################################################### HELPER FUNCTIONS ######################################
-  CART_test <- function(
-      data,
-      sample  = "sample",
-      scores  = "scores",
-      x_names,
-      margins = NULL,
-      weight  = NULL,
-      cluster = NULL,
-      pool = NULL,              # may include sample; affects TESTING only
-      cp = 0.0,
-      maxrankcp = 10L,
-      alpha = 0.05,
-      prune = TRUE,
-      minsize = 50L,
-      preselect = c("none", "minimum", "negative", "nonpositive"),
-      store_trees = FALSE,
-      verbose = FALSE
-  ) {
-    stopifnot(data.table::is.data.table(data))
-    preselect <- match.arg(preselect)
 
-    sample_col <- as.character(sample)
-    scores_col <- as.character(scores)
-    stopifnot(length(sample_col) == 1L, sample_col %chin% names(data))
-    stopifnot(length(scores_col) == 1L, scores_col %chin% names(data))
+CART_test <- function(
+    data,
+    sample  = "sample",
+    scores  = "scores",
+    x_names,
+    margins = NULL,
+    weight  = NULL,
+    cluster = NULL,
+    pool = NULL,              # may include sample; affects TESTING only
+    cp = 0.0,
+    maxrankcp = 10L,
+    alpha = 0.05,
+    prune = TRUE,
+    minsize = 50L,
+    preselect = c("none", "minimum", "negative", "nonpositive"),
+    store_trees = FALSE,
+    verbose = FALSE
+) {
+  stopifnot(data.table::is.data.table(data))
+  preselect <- match.arg(preselect)
 
-    x_names <- as.character(x_names)
-    stopifnot(length(x_names) >= 1L, all(x_names %chin% names(data)))
+  sample_col <- as.character(sample)
+  scores_col <- as.character(scores)
+  stopifnot(length(sample_col) == 1L, sample_col %chin% names(data))
+  stopifnot(length(scores_col) == 1L, scores_col %chin% names(data))
 
-    if (is.null(margins)) margins <- character()
-    margins <- unique(as.character(margins))
-    if (length(margins) > 0L) stopifnot(all(margins %chin% names(data)))
+  x_names <- as.character(x_names)
+  stopifnot(length(x_names) >= 1L, all(x_names %chin% names(data)))
 
-    weight_col <- if (is.null(weight)) NULL else as.character(weight)
-    if (!is.null(weight_col)) stopifnot(length(weight_col) == 1L, weight_col %chin% names(data))
+  if (is.null(margins)) margins <- character()
+  margins <- unique(as.character(margins))
+  if (length(margins) > 0L) stopifnot(all(margins %chin% names(data)))
 
-    cluster_col <- if (is.null(cluster)) NULL else as.character(cluster)
-    if (!is.null(cluster_col)) stopifnot(length(cluster_col) == 1L, cluster_col %chin% names(data))
+  weight_col <- if (is.null(weight)) NULL else as.character(weight)
+  if (!is.null(weight_col)) stopifnot(length(weight_col) == 1L, weight_col %chin% names(data))
 
-    stopifnot(is.numeric(minsize), length(minsize) == 1L, is.finite(minsize), minsize >= 1)
-    minsize <- as.integer(minsize)
+  cluster_col <- if (is.null(cluster)) NULL else as.character(cluster)
+  if (!is.null(cluster_col)) stopifnot(length(cluster_col) == 1L, cluster_col %chin% names(data))
 
-    stopifnot(is.numeric(alpha), length(alpha) == 1L, is.finite(alpha), alpha > 0, alpha < 1)
-    stopifnot(is.numeric(cp), length(cp) == 1L, is.finite(cp), cp >= 0)
-    stopifnot(is.numeric(maxrankcp), length(maxrankcp) == 1L, is.finite(maxrankcp), maxrankcp >= 1)
-    maxrankcp <- as.integer(maxrankcp)
+  stopifnot(is.numeric(minsize), length(minsize) == 1L, is.finite(minsize), minsize >= 1)
+  minsize <- as.integer(minsize)
 
-    svec <- as.integer(data[[sample_col]])
-    stopifnot(all(svec %in% c(1L, 2L)))
+  stopifnot(is.numeric(alpha), length(alpha) == 1L, is.finite(alpha), alpha > 0, alpha < 1)
+  stopifnot(is.numeric(cp), length(cp) == 1L, is.finite(cp), cp >= 0)
+  stopifnot(is.numeric(maxrankcp), length(maxrankcp) == 1L, is.finite(maxrankcp), maxrankcp >= 1)
+  maxrankcp <- as.integer(maxrankcp)
 
-    # ---- pooling setup (testing-only pooling; may include sample) ----
-    allowed_pool <- unique(c(margins, sample_col))
-    if (is.null(pool)) pool <- allowed_pool
-    pool <- unique(as.character(pool))
-    bad_pool <- setdiff(pool, allowed_pool)
-    if (length(bad_pool) > 0L) stop("pool contains invalid names: ", paste(bad_pool, collapse = ", "))
+  svec <- as.integer(data[[sample_col]])
+  stopifnot(all(svec %in% c(1L, 2L)))
 
-    pool_sample  <- sample_col %chin% pool
-    pool_margins <- intersect(pool, margins)
-    cell_cols    <- setdiff(margins, pool_margins)  # non-pooled margins
-    do_pool      <- pool_sample || (length(pool_margins) > 0L)
+  # ---- pooling setup (testing-only pooling; may include sample) ----
+  allowed_pool <- unique(c(margins, sample_col))
+  if (is.null(pool)) pool <- allowed_pool
+  pool <- unique(as.character(pool))
+  bad_pool <- setdiff(pool, allowed_pool)
+  if (length(bad_pool) > 0L) stop("pool contains invalid names: ", paste(bad_pool, collapse = ", "))
 
-    # ---------------- helpers ----------------
+  pool_sample  <- sample_col %chin% pool
+  pool_margins <- intersect(pool, margins)
+  cell_cols    <- setdiff(margins, pool_margins)  # non-pooled margins
+  any_pooling <- pool_sample || (length(pool_margins) > 0L)
 
-    mean_test_crv1 <- function(y, w = NULL, cl = NULL) {
-      y <- as.numeric(y)
-      n <- length(y)
-      if (n == 0L) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L, G=0L))
+  # ---------------- helpers ----------------
 
-      if (is.null(w)) w <- rep(1.0, n) else w <- as.numeric(w)
-      ok <- is.finite(y) & is.finite(w) & (w >= 0)
-      if (!any(ok)) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L, G=0L))
-      y <- y[ok]; w <- w[ok]
+  mean_test_crv1 <- function(y, w = NULL, cl = NULL) {
+    y <- as.numeric(y)
+    n <- length(y)
+    if (n == 0L) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L, G=0L))
 
-      if (is.null(cl)) {
-        cl <- seq_len(length(y))
-      } else {
-        cl <- cl[ok]
-        cl <- as.integer(factor(cl, exclude = NULL))
-      }
+    if (is.null(w)) w <- rep(1.0, n) else w <- as.numeric(w)
+    ok <- is.finite(y) & is.finite(w) & (w >= 0)
+    if (!any(ok)) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L, G=0L))
+    y <- y[ok]
+    w <- w[ok]
 
-      dt0 <- data.table::data.table(y = y, w = w, cl = cl)
-      gb <- dt0[, .(U = sum(w * y), W = sum(w)), by = cl]
-      G <- nrow(gb)
-      U <- sum(gb$U); W <- sum(gb$W)
-      if (!is.finite(W) || W == 0) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=length(y), G=G))
-
-      theta <- U / W
-      ug <- gb$U - theta * gb$W
-      se <- sqrt((G / pmax.int(G - 1L, 1L)) * sum(ug^2)) / abs(W)
-      if (G < 2L || !is.finite(se)) se <- NA_real_
-      list(coef = theta, se = se, t = theta / se, N = length(y), G = G)
+    if (is.null(cl)) {
+      cl <- seq_len(length(y))
+    } else {
+      cl <- cl[ok]
+      cl <- as.integer(factor(cl, exclude = NULL))
     }
 
-    # pool-aware selection for negative/nonpositive: allow empty in pooling mode
-    select_leaves_poolaware <- function(dt_train_leaf, allow_empty) {
-      L <- nrow(dt_train_leaf)
-      if (L == 0L) return(integer())
+    dt0 <- data.table::data.table(y = y, w = w, cl = cl)
+    gb <- dt0[, .(U = sum(w * y), W = sum(w)), by = cl]
+    G <- nrow(gb)
+    U <- sum(gb$U)
+    W <- sum(gb$W)
+    if (!is.finite(W) || W == 0) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=length(y), G=G))
 
-      # "none" really means keep everything (including L==1)
-      if (preselect == "none") return(as.integer(dt_train_leaf$leaf))
+    theta <- U / W
+    ug <- gb$U - theta * gb$W
+    se <- sqrt((G / pmax.int(G - 1L, 1L)) * sum(ug^2)) / abs(W)
+    if (G < 2L || !is.finite(se)) se <- NA_real_
+    list(coef = theta, se = se, t = theta / se, N = length(y), G = G)
+  }
 
-      if (preselect == "minimum") {
-        return(as.integer(dt_train_leaf[which.min(t), leaf]))
-      }
+  # pool-aware selection for negative/nonpositive: allow empty in pooling mode
+  select_leaves_poolaware <- function(dt_train_leaf, allow_empty) {
+    L <- nrow(dt_train_leaf)
+    if (L == 0L) return(integer())
 
-      if (preselect == "negative") {
-        thr <- stats::qnorm(alpha / L)
-        keep <- dt_train_leaf[t <= thr, leaf]
-        if (!allow_empty && length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
-        return(as.integer(keep))
-      }
-
-      if (preselect == "nonpositive") {
-        thr_pos <- stats::qnorm(1 - alpha / L)
-        keep <- dt_train_leaf[t < thr_pos, leaf]
-        if (!allow_empty && length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
-        return(as.integer(keep))
-      }
-
-      as.integer(dt_train_leaf$leaf)
-    }
-
-
-    fit_one_tree_cell <- function(df_cell, train_sample) {
-      dtr <- df_cell[df_cell[[sample_col]] == train_sample]
-      if (nrow(dtr) < 2L) return(NULL)
-
-      cols_tr <- c(scores_col, x_names)
-      df_tr <- as.data.frame(dtr[, ..cols_tr])
-
-      w_tr <- if (!is.null(weight_col)) as.numeric(dtr[[weight_col]]) else NULL
-      fml <- stats::as.formula(paste0(scores_col, " ~ ", paste(x_names, collapse = " + ")))
-
-      tree <- rpart::rpart(
-        formula = fml,
-        data = df_tr,
-        method = "anova",
-        weights = w_tr,
-        control = rpart::rpart.control(cp = cp, minbucket = minsize)
-      )
-
-      if (!is.null(tree$cp) && nrow(tree$cp) > 0L) {
-        maxrankcp2 <- min(maxrankcp, nrow(tree$cp))
-        maxcp <- tree$cp[maxrankcp2, 1]
-        if (isTRUE(prune)) {
-          opcpid <- which.min(tree$cp[, 4])
-          opcp <- tree$cp[opcpid, 1]
-          tree <- rpart::prune(tree, cp = max(maxcp, opcp))
-        } else {
-          tree <- rpart::prune(tree, cp = maxcp)
-        }
-      }
-
-      df_all <- as.data.frame(df_cell[, ..x_names])
-      leaf_all <- as.integer(rpart:::pred.rpart(tree, as.matrix(df_all)))
-      list(tree = tree, leaf_all = leaf_all)
-    }
-
-    global_means_one_cell <- function(df_cell, key_dt) {
-      dtg <- data.table::data.table(
-        sample = as.integer(df_cell[[sample_col]]),
-        score  = as.numeric(df_cell[[scores_col]]),
-        w      = if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
-      )
-      dtg$w[!is.finite(dtg$w)] <- 0
-      if (!is.null(cluster_col)) {
-        dtg[, cl := as.integer(factor(df_cell[[cluster_col]], exclude = NULL))]
-      } else {
-        dtg[, cl := .I]
-      }
-
-      out <- dtg[, {
-        o <- mean_test_crv1(score, w, cl)
-        data.table::data.table(
-          train = FALSE,
-          G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
-          p.raw = stats::pnorm(o$t)
-        )
-      }, by = "sample"]
-
-      if (!is.null(key_dt) && ncol(key_dt) > 0L) {
-        for (cc in names(key_dt)) out[, (cc) := key_dt[[cc]][1]]
-        data.table::setcolorder(out, c(names(key_dt), "train", "sample"))
-      }
-      out
-    }
-
-    # ---------------- build full-margin cells ----------------
-    n <- nrow(data)
-    gid <- if (length(margins) == 0L) rep(1L, n) else data.table::frankv(data[, ..margins], ties.method = "dense")
-    idx_list <- split(seq_len(n), gid)
-    n_cells <- length(idx_list)
-
-    cell_objs <- vector("list", n_cells)
-    global_list <- vector("list", n_cells)
-    trees_list <- if (store_trees) vector("list", n_cells) else NULL
-
-    for (g in seq_len(n_cells)) {
-      idx <- idx_list[[g]]
-      key_dt <- if (length(margins) > 0L) data[idx[1L], ..margins] else NULL
-      df_cell <- data[idx]
-
-      global_list[[g]] <- global_means_one_cell(df_cell, key_dt)
-      if (store_trees) trees_list[[g]] <- vector("list", 2L)
-
-      dirs <- vector("list", 2L)
-
-      for (train_s in c(1L, 2L)) {
-        est_s <- if (train_s == 1L) 2L else 1L
-
-        fit <- fit_one_tree_cell(df_cell, train_s)
-        if (is.null(fit)) {
-          dirs[[train_s]] <- NULL
-          next
-        }
-        if (store_trees) trees_list[[g]][[train_s]] <- fit$tree
-
-        leaf_all <- fit$leaf_all
-        s_cell <- as.integer(df_cell[[sample_col]])
-        score_cell <- as.numeric(df_cell[[scores_col]])
-        w_cell <- if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
-        w_cell[!is.finite(w_cell)] <- 0
-        cl_cell <- if (!is.null(cluster_col)) df_cell[[cluster_col]] else NULL
-
-        dt0 <- data.table::data.table(
-          leaf   = leaf_all,
-          sample = s_cell,
-          score  = score_cell,
-          w      = w_cell
-        )
-        if (!is.null(cluster_col)) {
-          dt0[, cl := as.integer(factor(cl_cell, exclude = NULL))]
-        } else {
-          dt0[, cl := .I]
-        }
-
-        dt_train <- dt0[sample == train_s & !is.na(leaf)]
-        train_leaf <- dt_train[, {
-          G_here <- data.table::uniqueN(cl)
-          N_here <- .N
-          if (G_here < minsize) {
-            list(G = G_here, N = N_here, coef = NA_real_, stderr = NA_real_, t = NA_real_)
-          } else {
-            o <- mean_test_crv1(score, w, cl)
-            list(G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t)
-          }
-        }, by = leaf]
-
-        train_leaf[, `:=`(train = TRUE, sample = train_s)]
-        train_leaf[, p.raw := stats::pnorm(t)]
-
-        # In pooling mode, negative/nonpositive may be empty in a full cell.
-        # For minimum in pooling mode: DO NOT select here; we will select globally per (train_s, nonpooled).
-        prom <- integer()
-        if (!(do_pool && preselect == "minimum")) {
-          prom <- select_leaves_poolaware(train_leaf[is.finite(t), .(leaf, t)], allow_empty = isTRUE(do_pool))
-        }
-
-        # min-t within this full cell (used for group fallback when needed; also used in global "minimum" selection if desired)
-        min_leaf <- NA_integer_
-        min_t <- NA_real_
-        ok <- which(is.finite(train_leaf$t))
-        if (length(ok) > 0L) {
-          j <- ok[which.min(train_leaf$t[ok])]
-          min_leaf <- as.integer(train_leaf$leaf[j])
-          min_t <- as.numeric(train_leaf$t[j])
-        }
-
-        if (!is.null(key_dt) && ncol(key_dt) > 0L) {
-          for (cc in names(key_dt)) train_leaf[, (cc) := key_dt[[cc]][1]]
-        }
-
-        dirs[[train_s]] <- list(
-          idx = idx,
-          key_dt = key_dt,
-          leaf_all = leaf_all,
-          train_leaf = train_leaf,
-          prom = as.integer(prom),
-          min_leaf = min_leaf,
-          min_t = min_t,
-          train_s = train_s,
-          est_s = est_s
-        )
-      }
-
-      cell_objs[[g]] <- dirs
-
-      if (verbose && (g %% 25L == 0L)) {
-        message(sprintf("CART_test: processed %d/%d margin cells", g, n_cells))
-      }
-    }
-
-    global_out <- data.table::rbindlist(global_list, use.names = TRUE, fill = TRUE)
-
-    # ---------------- NO pooling requested ----------------
-    if (!do_pool) {
-      out_list <- list(); kk <- 0L
-      for (g in seq_len(n_cells)) {
-        for (train_s in c(1L, 2L)) {
-          obj <- cell_objs[[g]][[train_s]]
-          if (is.null(obj)) next
-          tl <- data.table::copy(obj$train_leaf)
-          prom2 <- select_leaves_poolaware(tl[is.finite(t), .(leaf, t)], allow_empty = FALSE)
-          tl[, relevant := as.integer(leaf %in% prom2)]
-          kk <- kk + 1L
-          out_list[[kk]] <- tl
-        }
-      }
-      results_out <- data.table::rbindlist(out_list, use.names = TRUE, fill = TRUE)
-      data.table::setorder(results_out,train)
-      out <- list(results = results_out, global = global_out)
-      if (store_trees) out$trees <- trees_list
-      return(out)
-    }
-
-    # ---------------- Pooling mode selection + pooled testing ----------------
-
-    # Build master table of candidate leaves (used for global "minimum" selection)
-    leaf_rows <- list(); lr <- 0L
-    cell_rows <- list(); cr <- 0L
-
-    for (g in seq_len(n_cells)) {
-      for (train_s in c(1L, 2L)) {
-        obj <- cell_objs[[g]][[train_s]]
-        if (is.null(obj)) next
-
-        # full-cell fallback summary (min over leaves in that full cell)
-        r <- data.table::data.table(cell_id = g, train_s = train_s, est_s = obj$est_s,
-                                    min_leaf = obj$min_leaf, min_t = obj$min_t,
-                                    prom_n = length(obj$prom))
-        if (length(cell_cols) > 0L) {
-          for (cc in cell_cols) r[, (cc) := obj$key_dt[[cc]][1]]
-        }
-        cell_rows[[cr <- cr + 1L]] <- r
-
-        # leaf-level table
-        tl <- obj$train_leaf[, .(leaf, t)]
-        tl[, `:=`(cell_id = g, train_s = train_s, est_s = obj$est_s)]
-        if (length(cell_cols) > 0L) {
-          for (cc in cell_cols) tl[, (cc) := obj$key_dt[[cc]][1]]
-        }
-        leaf_rows[[lr <- lr + 1L]] <- tl
-      }
-    }
-
-    cell_tbl <- data.table::rbindlist(cell_rows, use.names = TRUE, fill = TRUE)
-    leaf_tbl <- data.table::rbindlist(leaf_rows, use.names = TRUE, fill = TRUE)
-
-    # Selected leaf definition depends on preselect:
-    #
-    # - preselect=="minimum": select exactly ONE leaf per (train_s, nonpooled margins),
-    #   regardless of whether sample is pooled at testing.
-    #
-    # - otherwise: your earlier rule:
-    #   * if pool_sample: group by nonpooled margins (across both train parts)
-    #   * else: group by (train_s, nonpooled margins)
-    #   * if any promising exists anywhere in group: keep all prom leaves (can be empty per full cell)
-    #   * else: select exactly one (cell,train_s,leaf) with min_t
+    # "none" really means keep everything (including L==1)
+    if (preselect == "none") return(as.integer(dt_train_leaf$leaf))
 
     if (preselect == "minimum") {
-      # group ALWAYS includes train_s (training stage keeps sample parts separate)
-      by_min <- c("train_s", cell_cols)
-      if (length(by_min) == 0L) by_min <- "train_s"
-
-      best_leaf <- leaf_tbl[is.finite(t), .SD[which.min(t)], by = by_min]
-      # best_leaf has: train_s, cell_cols..., cell_id, leaf, t
-
-      # selection lookup: (train_s, cell_cols..., best_cell, best_leaf)
-      sel_key <- best_leaf[, {
-        out <- .SD[1L]
-        out[, `:=`(best_cell = cell_id, best_leaf = leaf)]
-        out[, c("cell_id", "leaf", "t", "est_s") := NULL]
-        out
-      }, by = by_min]
-
-      # build per-(cell_id,train_s) selection decision
-      # (for each row in cell_tbl, match group key and check if it is the best cell)
-      cell_sel <- merge(cell_tbl[, unique(c(by_grp, "cell_id","train_s")), with = FALSE],
-                        grp_has_any, by = by_grp, all.x = TRUE)
-
-
-      # apply selections
-      train_rows <- list(); tr_k <- 0L
-      idx_test_all <- integer()
-      idx_test_s1 <- integer()
-      idx_test_s2 <- integer()
-
-      for (i in seq_len(nrow(cell_sel))) {
-        g <- cell_sel$cell_id[i]
-        tr <- cell_sel$train_s[i]
-        obj <- cell_objs[[g]][[tr]]
-        if (is.null(obj)) next
-
-        sel_leaves <- integer()
-        if (is.finite(cell_sel$best_cell[i]) && cell_sel$best_cell[i] == g && is.finite(cell_sel$best_leaf[i])) {
-          sel_leaves <- as.integer(cell_sel$best_leaf[i])
-        }
-
-        tl <- data.table::copy(obj$train_leaf)
-        tl[, relevant := as.integer(leaf %in% sel_leaves)]
-        train_rows[[tr_k <- tr_k + 1L]] <- tl
-
-        if (length(sel_leaves) > 0L) {
-          leaf_all <- obj$leaf_all
-          idx <- obj$idx
-          est_s <- obj$est_s
-          s_cell <- svec[idx]
-          keep_local <- which(s_cell == est_s & !is.na(leaf_all) & leaf_all %in% sel_leaves)
-          if (length(keep_local) > 0L) {
-            idx_keep <- idx[keep_local]
-            if (pool_sample) idx_test_all <- c(idx_test_all, idx_keep)
-            else if (est_s == 1L) idx_test_s1 <- c(idx_test_s1, idx_keep) else idx_test_s2 <- c(idx_test_s2, idx_keep)
-          }
-        }
-      }
-
-      train_out <- data.table::rbindlist(train_rows, use.names = TRUE, fill = TRUE)
-
-      # build in_test
-      if (pool_sample) {
-        idx_test_all <- unique(idx_test_all)
-        in_test <- rep(FALSE, n); if (length(idx_test_all) > 0L) in_test[idx_test_all] <- TRUE
-      } else {
-        idx_test_s1 <- unique(idx_test_s1); idx_test_s2 <- unique(idx_test_s2)
-        in_test <- rep(FALSE, n)
-        if (length(idx_test_s1) > 0L) in_test[idx_test_s1] <- TRUE
-        if (length(idx_test_s2) > 0L) in_test[idx_test_s2] <- TRUE
-      }
-      if (!any(in_test)) stop("Testing subset is empty (after selection).")
-
-    } else {
-      # non-"minimum": group-level fallback rule (sample pooled at testing may merge the two train parts)
-      by_grp <- if (pool_sample) cell_cols else c("train_s", cell_cols)
-      by_grp <- unique(by_grp)
-
-      if (length(by_grp) == 0L) by_grp <- character()
-
-      if (length(by_grp) == 0L) {
-        has_any <- any(cell_tbl$prom_n > 0L)
-        best_row <- cell_tbl[is.finite(min_t), .SD[which.min(min_t)]]
-        cell_sel <- cell_tbl[, .(cell_id, train_s)]
-        cell_sel[, `:=`(has_any = has_any,
-                        best_cell = best_row$cell_id[1],
-                        best_train_s = best_row$train_s[1],
-                        best_leaf = best_row$min_leaf[1])]
-      } else {
-        grp_has_any <- cell_tbl[, .(has_any = any(prom_n > 0L)), by = by_grp]
-        grp_best <- cell_tbl[is.finite(min_t), .SD[which.min(min_t)], by = by_grp]
-        grp_best <- grp_best[, {
-          out <- .SD[1]
-          out[, `:=`(best_cell = cell_id, best_train_s = train_s, best_leaf = min_leaf)]
-          out[, c("cell_id","train_s","est_s","prom_n","min_leaf","min_t") := NULL]
-          out
-        }, by = by_grp]
-
-        cell_sel <- merge(cell_tbl[, c(by_grp, "cell_id","train_s"), with = FALSE], grp_has_any, by = by_grp, all.x = TRUE)
-        cell_sel[is.na(has_any), has_any := FALSE]
-        cell_sel <- merge(cell_sel, grp_best, by = by_grp, all.x = TRUE)
-      }
-
-      train_rows <- list(); tr_k <- 0L
-      idx_test_all <- integer()
-      idx_test_s1 <- integer()
-      idx_test_s2 <- integer()
-
-      for (i in seq_len(nrow(cell_sel))) {
-        g <- cell_sel$cell_id[i]
-        tr <- cell_sel$train_s[i]
-        obj <- cell_objs[[g]][[tr]]
-        if (is.null(obj)) next
-
-        sel_leaves <- integer()
-        if (isTRUE(cell_sel$has_any[i])) {
-          sel_leaves <- obj$prom
-        } else {
-          if (is.finite(cell_sel$best_cell[i]) &&
-              is.finite(cell_sel$best_train_s[i]) &&
-              g == cell_sel$best_cell[i] &&
-              tr == cell_sel$best_train_s[i] &&
-              is.finite(cell_sel$best_leaf[i])) {
-            sel_leaves <- as.integer(cell_sel$best_leaf[i])
-          }
-        }
-
-        tl <- data.table::copy(obj$train_leaf)
-        tl[, relevant := as.integer(leaf %in% sel_leaves)]
-        train_rows[[tr_k <- tr_k + 1L]] <- tl
-
-        if (length(sel_leaves) > 0L) {
-          leaf_all <- obj$leaf_all
-          idx <- obj$idx
-          est_s <- obj$est_s
-          s_cell <- svec[idx]
-          keep_local <- which(s_cell == est_s & !is.na(leaf_all) & leaf_all %in% sel_leaves)
-          if (length(keep_local) > 0L) {
-            idx_keep <- idx[keep_local]
-            if (pool_sample) idx_test_all <- c(idx_test_all, idx_keep)
-            else if (est_s == 1L) idx_test_s1 <- c(idx_test_s1, idx_keep) else idx_test_s2 <- c(idx_test_s2, idx_keep)
-          }
-        }
-      }
-
-      train_out <- data.table::rbindlist(train_rows, use.names = TRUE, fill = TRUE)
-
-      if (pool_sample) {
-        idx_test_all <- unique(idx_test_all)
-        in_test <- rep(FALSE, n); if (length(idx_test_all) > 0L) in_test[idx_test_all] <- TRUE
-      } else {
-        idx_test_s1 <- unique(idx_test_s1); idx_test_s2 <- unique(idx_test_s2)
-        in_test <- rep(FALSE, n)
-        if (length(idx_test_s1) > 0L) in_test[idx_test_s1] <- TRUE
-        if (length(idx_test_s2) > 0L) in_test[idx_test_s2] <- TRUE
-      }
-      if (!any(in_test)) stop("Testing subset is empty (after selection).")
+      return(as.integer(dt_train_leaf[which.min(t), leaf]))
     }
 
-    # -------- pooled test once per (nonpooled margins) if pool_sample, else per (sample, nonpooled margins)
-    dt_test <- data.table::data.table(
-      sample = svec,
-      score  = as.numeric(data[[scores_col]]),
-      w      = if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
+    if (preselect == "negative") {
+      thr <- stats::qnorm(alpha / L)
+      keep <- dt_train_leaf[t <= thr, leaf]
+      if (!allow_empty && length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
+      return(as.integer(keep))
+    }
+
+    if (preselect == "nonpositive") {
+      thr_pos <- stats::qnorm(1 - alpha / L)
+      keep <- dt_train_leaf[t < thr_pos, leaf]
+      if (!allow_empty && length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
+      return(as.integer(keep))
+    }
+
+    as.integer(dt_train_leaf$leaf)
+  }
+
+  fit_one_tree_cell <- function(df_cell, train_sample) {
+    dtr <- df_cell[df_cell[[sample_col]] == train_sample]
+    if (nrow(dtr) < 2L) return(NULL)
+
+    cols_tr <- c(scores_col, x_names)
+    df_tr <- as.data.frame(dtr[, ..cols_tr])
+
+    w_tr <- if (!is.null(weight_col)) as.numeric(dtr[[weight_col]]) else NULL
+    fml <- stats::as.formula(paste0(scores_col, " ~ ", paste(x_names, collapse = " + ")))
+
+    tree <- rpart::rpart(
+      formula = fml,
+      data = df_tr,
+      method = "anova",
+      weights = w_tr,
+      control = rpart::rpart.control(cp = cp, minbucket = minsize)
     )
-    dt_test$w[!is.finite(dt_test$w)] <- 0
-    if (!is.null(cluster_col)) {
-      dt_test[, cl := as.integer(factor(data[[cluster_col]], exclude = NULL))]
-    } else {
-      dt_test[, cl := seq_len(n)]
+
+    if (!is.null(tree$cp) && nrow(tree$cp) > 0L) {
+      maxrankcp2 <- min(maxrankcp, nrow(tree$cp))
+      maxcp <- tree$cp[maxrankcp2, 1]
+      if (isTRUE(prune)) {
+        opcpid <- which.min(tree$cp[, 4])
+        opcp <- tree$cp[opcpid, 1]
+        tree <- rpart::prune(tree, cp = max(maxcp, opcp))
+      } else {
+        tree <- rpart::prune(tree, cp = maxcp)
+      }
     }
-    if (length(cell_cols) > 0L) dt_test[, (cell_cols) := data[, ..cell_cols]]
-    dt_test <- dt_test[in_test]
 
-    by_test <- if (pool_sample) cell_cols else c("sample", cell_cols)
-    if (length(by_test) == 0L) by_test <- character()
+    df_all <- as.data.frame(df_cell[, ..x_names])
+    leaf_all <- as.integer(rpart:::pred.rpart(tree, as.matrix(df_all)))
+    list(tree = tree, leaf_all = leaf_all)
+  }
 
-    if (length(by_test) == 0L) {
-      o <- mean_test_crv1(dt_test$score, dt_test$w, dt_test$cl)
-      test_out <- data.table::data.table(
+  global_means_one_cell <- function(df_cell, key_dt) {
+    dtg <- data.table::data.table(
+      sample = as.integer(df_cell[[sample_col]]),
+      score  = as.numeric(df_cell[[scores_col]]),
+      w      = if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
+    )
+    dtg$w[!is.finite(dtg$w)] <- 0
+    if (!is.null(cluster_col)) {
+      dtg[, cl := as.integer(factor(df_cell[[cluster_col]], exclude = NULL))]
+    } else {
+      dtg[, cl := .I]
+    }
+
+    out <- dtg[, {
+      o <- mean_test_crv1(score, w, cl)
+      data.table::data.table(
         train = FALSE,
         G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
         p.raw = stats::pnorm(o$t)
       )
-      test_out[, (sample_col) := NA_integer_]
-    } else {
-      test_out <- dt_test[, {
-        o <- mean_test_crv1(score, w, cl)
-        data.table::data.table(
-          train = FALSE,
-          G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
-          p.raw = stats::pnorm(o$t)
-        )
-      }, by = by_test]
-      if (pool_sample) test_out[, (sample_col) := NA_integer_]
+    }, by = "sample"]
+
+    if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+      for (cc in names(key_dt)) out[, (cc) := key_dt[[cc]][1]]
+      data.table::setcolorder(out, c(names(key_dt), "train", "sample"))
     }
-    test_out[, relevant := NA_integer_]
-
-    # ---- shares: JOINT over pooled margins (sum to 1 within denom_by) ----
-    shares <- NULL
-    if (length(pool_margins) > 0L) {
-
-      denom_by <- c(cell_cols, if (!pool_sample) sample_col else character())
-      cols_need <- unique(c(denom_by, pool_margins))
-
-      DT_all <- data[, ..cols_need]
-      DT_tst <- data[in_test, ..cols_need]
-
-      wv <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
-      wv[!is.finite(wv)] <- 0
-
-      make_share_combo <- function(DTsub, wsub) {
-        DTsub <- data.table::as.data.table(DTsub)
-        DTsub[, w := wsub]
-
-        by_num <- unique(c(denom_by, pool_margins))
-
-        num <- DTsub[, .(w_sum = sum(w)), by = by_num]
-
-        if (length(denom_by) == 0L) {
-          num[, den_w := sum(DTsub$w)]
-        } else {
-          den <- DTsub[, .(den_w = sum(w)), by = denom_by]
-          num <- num[den, on = denom_by]
-        }
-
-        num[, share := data.table::fifelse(is.finite(den_w) & den_w > 0, w_sum / den_w, NA_real_)]
-        num[, c("w_sum", "den_w") := NULL]
-        num
-      }
-
-      sh     <- make_share_combo(DT_tst, wv[in_test])
-      sh_all <- make_share_combo(DT_all, wv)
-
-      data.table::setnames(sh,     "share", "share")
-      data.table::setnames(sh_all, "share", "share_all")
-
-      by_merge <- unique(c(denom_by, pool_margins))
-      shares <- merge(sh, sh_all, by = by_merge, all = TRUE)
-
-      # your convention: NA -> 0
-      shares[is.na(share),     share := 0.0]
-      shares[is.na(share_all), share_all := 0.0]
-
-      data.table::setcolorder(shares, c(denom_by, pool_margins, "share", "share_all"))
-    }
-
-    # combine results
-    results_out <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
-    if (!("relevant" %chin% names(results_out))) results_out[, relevant := NA_integer_]
-    results_out[train == FALSE, relevant := NA_integer_]
-    data.table::setorder(results_out,train)
-
-    out <- list(
-      results = results_out,
-      global  = global_out
-    )
-    if (!is.null(shares)) out$shares <- shares
-    if (store_trees) out$trees <- trees_list
     out
   }
+
+  # ---------------- build full-margin cells ----------------
+  n <- nrow(data)
+  gid <- if (length(margins) == 0L) rep(1L, n) else data.table::frankv(data[, ..margins], ties.method = "dense")
+  idx_list <- split(seq_len(n), gid)
+  n_cells <- length(idx_list)
+
+  cell_objs <- vector("list", n_cells)
+  global_list <- vector("list", n_cells)
+  trees_list <- if (store_trees) vector("list", n_cells) else NULL
+
+  for (g in seq_len(n_cells)) {
+    idx <- idx_list[[g]]
+    key_dt <- if (length(margins) > 0L) data[idx[1L], ..margins] else NULL
+    df_cell <- data[idx]
+
+    global_list[[g]] <- global_means_one_cell(df_cell, key_dt)
+    if (store_trees) trees_list[[g]] <- vector("list", 2L)
+
+    dirs <- vector("list", 2L)
+
+    for (train_s in c(1L, 2L)) {
+      est_s <- if (train_s == 1L) 2L else 1L
+
+      fit <- fit_one_tree_cell(df_cell, train_s)
+      if (is.null(fit)) {
+        dirs[[train_s]] <- NULL
+        next
+      }
+      if (store_trees) trees_list[[g]][[train_s]] <- fit$tree
+
+      leaf_all <- fit$leaf_all
+      s_cell <- as.integer(df_cell[[sample_col]])
+      score_cell <- as.numeric(df_cell[[scores_col]])
+      w_cell <- if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
+      w_cell[!is.finite(w_cell)] <- 0
+      cl_cell <- if (!is.null(cluster_col)) df_cell[[cluster_col]] else NULL
+
+      dt0 <- data.table::data.table(
+        leaf   = leaf_all,
+        sample = s_cell,
+        score  = score_cell,
+        w      = w_cell
+      )
+      if (!is.null(cluster_col)) {
+        dt0[, cl := as.integer(factor(cl_cell, exclude = NULL))]
+      } else {
+        dt0[, cl := .I]
+      }
+
+      dt_train <- dt0[sample == train_s & !is.na(leaf)]
+      train_leaf <- dt_train[, {
+        G_here <- data.table::uniqueN(cl)
+        N_here <- .N
+        if (G_here < minsize) {
+          list(G = G_here, N = N_here, coef = NA_real_, stderr = NA_real_, t = NA_real_)
+        } else {
+          o <- mean_test_crv1(score, w, cl)
+          list(G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t)
+        }
+      }, by = leaf]
+
+      train_leaf[, `:=`(train = TRUE, sample = train_s)]
+      train_leaf[, p.raw := stats::pnorm(t)]
+
+      # In pooling mode, negative/nonpositive may be empty in a full cell.
+      # For minimum in pooling mode: DO NOT select here; we will select globally per (train_s, nonpooled).
+      prom <- integer()
+      if (!(any_pooling && preselect == "minimum")) {
+        prom <- select_leaves_poolaware(
+          train_leaf[is.finite(t), .(leaf, t)],
+          allow_empty = any_pooling
+        )
+      }
+
+      # min-t within this full cell
+      min_leaf <- NA_integer_
+      min_t <- NA_real_
+      ok <- which(is.finite(train_leaf$t))
+      if (length(ok) > 0L) {
+        j <- ok[which.min(train_leaf$t[ok])]
+        min_leaf <- as.integer(train_leaf$leaf[j])
+        min_t <- as.numeric(train_leaf$t[j])
+      }
+
+      if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+        for (cc in names(key_dt)) train_leaf[, (cc) := key_dt[[cc]][1]]
+      }
+
+      dirs[[train_s]] <- list(
+        idx = idx,
+        key_dt = key_dt,
+        leaf_all = leaf_all,
+        train_leaf = train_leaf,
+        prom = as.integer(prom),
+        min_leaf = min_leaf,
+        min_t = min_t,
+        train_s = train_s,
+        est_s = est_s
+      )
+    }
+
+    cell_objs[[g]] <- dirs
+
+    if (verbose && (g %% 25L == 0L)) {
+      message(sprintf("CART_test: processed %d/%d margin cells", g, n_cells))
+    }
+  }
+
+  global_out <- data.table::rbindlist(global_list, use.names = TRUE, fill = TRUE)
+
+  # ---------------- Pooling mode selection + pooled testing ----------------
+
+  # Build master table of candidate leaves (used for global "minimum" selection)
+  leaf_rows <- list()
+  lr <- 0L
+  cell_rows <- list()
+  cr <- 0L
+
+  for (g in seq_len(n_cells)) {
+    for (train_s in c(1L, 2L)) {
+      obj <- cell_objs[[g]][[train_s]]
+      if (is.null(obj)) next
+
+      # full-cell fallback summary
+      r <- data.table::data.table(
+        cell_id = g,
+        train_s = train_s,
+        est_s = obj$est_s,
+        min_leaf = obj$min_leaf,
+        min_t = obj$min_t,
+        prom_n = length(obj$prom)
+      )
+      if (length(cell_cols) > 0L) {
+        for (cc in cell_cols) r[, (cc) := obj$key_dt[[cc]][1]]
+      }
+      cell_rows[[cr <- cr + 1L]] <- r
+
+      # leaf-level table
+      tl <- obj$train_leaf[, .(leaf, t)]
+      tl[, `:=`(cell_id = g, train_s = train_s, est_s = obj$est_s)]
+      if (length(cell_cols) > 0L) {
+        for (cc in cell_cols) tl[, (cc) := obj$key_dt[[cc]][1]]
+      }
+      leaf_rows[[lr <- lr + 1L]] <- tl
+    }
+  }
+
+  cell_tbl <- data.table::rbindlist(cell_rows, use.names = TRUE, fill = TRUE)
+  leaf_tbl <- data.table::rbindlist(leaf_rows, use.names = TRUE, fill = TRUE)
+
+  if (preselect == "minimum") {
+    # group ALWAYS includes train_s
+    by_min <- unique(c("train_s", cell_cols))
+    if (length(by_min) == 0L) by_min <- "train_s"
+
+    best_leaf <- leaf_tbl[, {
+      idx <- which(is.finite(t))
+      if (length(idx) == 0L) {
+        NULL   # or .SD[NA] if you want to keep row structure
+      } else {
+        .SD[idx[which.min(t[idx])]]
+      }
+    }, by = by_min]
+
+    # one selected (cell, leaf) per (train_s, nonpooled margins)
+    sel_key <- data.table::copy(best_leaf)
+    sel_key[, `:=`(best_cell = cell_id, best_leaf = leaf)]
+    sel_key[, c("cell_id", "leaf", "t", "est_s") := NULL]
+
+    # build per-(cell_id,train_s) selection decision
+    cell_sel <- merge(
+      cell_tbl[, unique(c(by_min, "cell_id", "train_s")), with = FALSE],
+      sel_key,
+      by = by_min,
+      all.x = TRUE
+    )
+
+    # apply selections
+    train_rows <- list()
+    tr_k <- 0L
+    idx_test_all <- integer()
+    idx_test_s1 <- integer()
+    idx_test_s2 <- integer()
+
+    for (i in seq_len(nrow(cell_sel))) {
+      g <- cell_sel$cell_id[i]
+      tr <- cell_sel$train_s[i]
+      obj <- cell_objs[[g]][[tr]]
+      if (is.null(obj)) next
+
+      sel_leaves <- integer()
+      if (is.finite(cell_sel$best_cell[i]) &&
+          cell_sel$best_cell[i] == g &&
+          is.finite(cell_sel$best_leaf[i])) {
+        sel_leaves <- as.integer(cell_sel$best_leaf[i])
+      }
+
+      tl <- data.table::copy(obj$train_leaf)
+      tl[, relevant := as.integer(leaf %in% sel_leaves)]
+      train_rows[[tr_k <- tr_k + 1L]] <- tl
+
+      if (length(sel_leaves) > 0L) {
+        leaf_all <- obj$leaf_all
+        idx <- obj$idx
+        est_s <- obj$est_s
+        s_cell <- svec[idx]
+        keep_local <- which(s_cell == est_s & !is.na(leaf_all) & leaf_all %in% sel_leaves)
+        if (length(keep_local) > 0L) {
+          idx_keep <- idx[keep_local]
+          if (pool_sample) {
+            idx_test_all <- c(idx_test_all, idx_keep)
+          } else if (est_s == 1L) {
+            idx_test_s1 <- c(idx_test_s1, idx_keep)
+          } else {
+            idx_test_s2 <- c(idx_test_s2, idx_keep)
+          }
+        }
+      }
+    }
+
+    train_out <- data.table::rbindlist(train_rows, use.names = TRUE, fill = TRUE)
+
+    if (pool_sample) {
+      idx_test_all <- unique(idx_test_all)
+      in_test <- rep(FALSE, n)
+      if (length(idx_test_all) > 0L) in_test[idx_test_all] <- TRUE
+    } else {
+      idx_test_s1 <- unique(idx_test_s1)
+      idx_test_s2 <- unique(idx_test_s2)
+      in_test <- rep(FALSE, n)
+      if (length(idx_test_s1) > 0L) in_test[idx_test_s1] <- TRUE
+      if (length(idx_test_s2) > 0L) in_test[idx_test_s2] <- TRUE
+    }
+    if (!any(in_test)) stop("Testing subset is empty (after selection).")
+
+  } else {
+    # non-"minimum": fallback rule
+    by_grp <- if (pool_sample) cell_cols else unique(c("train_s", cell_cols))
+    by_grp <- unique(by_grp)
+
+    if (length(by_grp) == 0L) by_grp <- character()
+
+    if (length(by_grp) == 0L) {
+      has_any <- any(cell_tbl$prom_n > 0L)
+      best_row <- cell_tbl[is.finite(min_t), .SD[which.min(min_t)]]
+      cell_sel <- cell_tbl[, .(cell_id, train_s)]
+      cell_sel[, `:=`(
+        has_any = has_any,
+        best_cell = best_row$cell_id[1],
+        best_train_s = best_row$train_s[1],
+        best_leaf = best_row$min_leaf[1]
+      )]
+    } else {
+      grp_has_any <- cell_tbl[, .(has_any = any(prom_n > 0L)), by = by_grp]
+
+
+      grp_best <- cell_tbl[, {
+        idx <- which(is.finite(min_t))
+        if (length(idx) == 0L) {
+          NULL
+        } else {
+          .SD[idx[which.min(min_t[idx])]]
+        }
+      }, by = by_grp]
+
+      grp_best <- grp_best[, {
+        out <- .SD[1]
+        out[, `:=`(best_cell = cell_id, best_train_s = train_s, best_leaf = min_leaf)]
+        cols_drop <- intersect(c("cell_id","train_s","est_s","prom_n","min_leaf","min_t"), names(out))
+        if (length(cols_drop)) out[, (cols_drop) := NULL]
+        out
+      }, by = by_grp]
+
+      cell_sel <- merge(
+        cell_tbl[, unique(c(by_grp, "cell_id", "train_s")), with = FALSE],
+        grp_has_any,
+        by = by_grp,
+        all.x = TRUE
+      )
+      cell_sel[is.na(has_any), has_any := FALSE]
+      cell_sel <- merge(cell_sel, grp_best, by = by_grp, all.x = TRUE)
+    }
+
+    train_rows <- list()
+    tr_k <- 0L
+    idx_test_all <- integer()
+    idx_test_s1 <- integer()
+    idx_test_s2 <- integer()
+
+    for (i in seq_len(nrow(cell_sel))) {
+      g <- cell_sel$cell_id[i]
+      tr <- cell_sel$train_s[i]
+      obj <- cell_objs[[g]][[tr]]
+      if (is.null(obj)) next
+
+      sel_leaves <- integer()
+      if (isTRUE(cell_sel$has_any[i])) {
+        sel_leaves <- obj$prom
+      } else {
+        if (is.finite(cell_sel$best_cell[i]) &&
+            is.finite(cell_sel$best_train_s[i]) &&
+            g == cell_sel$best_cell[i] &&
+            tr == cell_sel$best_train_s[i] &&
+            is.finite(cell_sel$best_leaf[i])) {
+          sel_leaves <- as.integer(cell_sel$best_leaf[i])
+        }
+      }
+
+      tl <- data.table::copy(obj$train_leaf)
+      tl[, relevant := as.integer(leaf %in% sel_leaves)]
+      train_rows[[tr_k <- tr_k + 1L]] <- tl
+
+      if (length(sel_leaves) > 0L) {
+        leaf_all <- obj$leaf_all
+        idx <- obj$idx
+        est_s <- obj$est_s
+        s_cell <- svec[idx]
+        keep_local <- which(s_cell == est_s & !is.na(leaf_all) & leaf_all %in% sel_leaves)
+        if (length(keep_local) > 0L) {
+          idx_keep <- idx[keep_local]
+          if (pool_sample) {
+            idx_test_all <- c(idx_test_all, idx_keep)
+          } else if (est_s == 1L) {
+            idx_test_s1 <- c(idx_test_s1, idx_keep)
+          } else {
+            idx_test_s2 <- c(idx_test_s2, idx_keep)
+          }
+        }
+      }
+    }
+
+    train_out <- data.table::rbindlist(train_rows, use.names = TRUE, fill = TRUE)
+
+    if (pool_sample) {
+      idx_test_all <- unique(idx_test_all)
+      in_test <- rep(FALSE, n)
+      if (length(idx_test_all) > 0L) in_test[idx_test_all] <- TRUE
+    } else {
+      idx_test_s1 <- unique(idx_test_s1)
+      idx_test_s2 <- unique(idx_test_s2)
+      in_test <- rep(FALSE, n)
+      if (length(idx_test_s1) > 0L) in_test[idx_test_s1] <- TRUE
+      if (length(idx_test_s2) > 0L) in_test[idx_test_s2] <- TRUE
+    }
+    if (!any(in_test)) stop("Testing subset is empty (after selection).")
+  }
+
+  # -------- pooled test once per (nonpooled margins) if pool_sample, else per (sample, nonpooled margins)
+  dt_test <- data.table::data.table(
+    sample = svec,
+    score  = as.numeric(data[[scores_col]]),
+    w      = if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
+  )
+  dt_test$w[!is.finite(dt_test$w)] <- 0
+  if (!is.null(cluster_col)) {
+    dt_test[, cl := as.integer(factor(data[[cluster_col]], exclude = NULL))]
+  } else {
+    dt_test[, cl := seq_len(n)]
+  }
+  if (length(cell_cols) > 0L) dt_test[, (cell_cols) := data[, ..cell_cols]]
+  dt_test <- dt_test[in_test]
+
+  by_test <- if (pool_sample) cell_cols else c("sample", cell_cols)
+  if (length(by_test) == 0L) by_test <- character()
+
+  if (length(by_test) == 0L) {
+    o <- mean_test_crv1(dt_test$score, dt_test$w, dt_test$cl)
+    test_out <- data.table::data.table(
+      train = FALSE,
+      G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+      p.raw = stats::pnorm(o$t)
+    )
+    test_out[, (sample_col) := NA_integer_]
+  } else {
+    test_out <- dt_test[, {
+      o <- mean_test_crv1(score, w, cl)
+      data.table::data.table(
+        train = FALSE,
+        G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+        p.raw = stats::pnorm(o$t)
+      )
+    }, by = by_test]
+    if (pool_sample) test_out[, (sample_col) := NA_integer_]
+  }
+  test_out[, relevant := NA_integer_]
+
+  # ---- shares: JOINT over pooled margins (sum to 1 within denom_by) ----
+  shares <- NULL
+  if (length(pool_margins) > 0L) {
+
+    denom_by <- c(cell_cols, if (!pool_sample) sample_col else character())
+    cols_need <- unique(c(denom_by, pool_margins))
+
+    DT_all <- data[, ..cols_need]
+    DT_tst <- data[in_test, ..cols_need]
+
+    wv <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
+    wv[!is.finite(wv)] <- 0
+
+    make_share_combo <- function(DTsub, wsub) {
+      DTsub <- data.table::as.data.table(DTsub)
+      DTsub[, w := wsub]
+
+      by_num <- unique(c(denom_by, pool_margins))
+
+      num <- DTsub[, .(w_sum = sum(w)), by = by_num]
+
+      if (length(denom_by) == 0L) {
+        num[, den_w := sum(DTsub$w)]
+      } else {
+        den <- DTsub[, .(den_w = sum(w)), by = denom_by]
+        num <- num[den, on = denom_by]
+      }
+
+      num[, share := data.table::fifelse(is.finite(den_w) & den_w > 0, w_sum / den_w, NA_real_)]
+      num[, c("w_sum", "den_w") := NULL]
+      num
+    }
+
+    sh     <- make_share_combo(DT_tst, wv[in_test])
+    sh_all <- make_share_combo(DT_all, wv)
+
+    data.table::setnames(sh, "share", "share")
+    data.table::setnames(sh_all, "share", "share_all")
+
+    by_merge <- unique(c(denom_by, pool_margins))
+    shares <- merge(sh, sh_all, by = by_merge, all = TRUE)
+
+    shares[is.na(share),     share := 0.0]
+    shares[is.na(share_all), share_all := 0.0]
+
+    data.table::setcolorder(shares, c(denom_by, pool_margins, "share", "share_all"))
+  }
+
+  # combine results
+  results_out <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
+  if (!("relevant" %chin% names(results_out))) results_out[, relevant := NA_integer_]
+  results_out[train == FALSE, relevant := NA_integer_]
+  data.table::setorder(results_out, train)
+
+  out <- list(
+    results = results_out,
+    global  = global_out
+  )
+  if (!is.null(shares)) out$shares <- shares
+  if (store_trees) out$trees <- trees_list
+  out
+}
+
+
 
 
 weighted_quantile <- function(x, w = NULL, probs = c(0.25, 0.5, 0.75),
