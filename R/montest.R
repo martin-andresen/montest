@@ -1,6 +1,185 @@
-#' @param data A data.table containing the analysis sample.
-#' @param ... Other arguments (document these properly).
-#' @return A list with components \code{results}, \code{meta}, and optional fitted objects.
+#' Monotonicity and LATE-assumption tests using sample splitting and machine learning
+#'
+#' \code{montest()} searches for violations of monotonicity-related and LATE-type
+#' assumptions in data-adaptive subsets of the sample. It combines sample splitting,
+#' cross-fitting, and generalized random forest or CART-based subset search to identify
+#' regions of the covariate space where test statistics are most negative, and then
+#' evaluates those regions in the held-out sample.
+#'
+#' The function supports several test constructions, including a simple first-stage-style
+#' test and additional tests labeled \code{"BP"}, \code{"MW"}, and \code{"AHS"} in the
+#' implementation. For multivalued instruments, treatments, or outcomes, the data may be
+#' expanded across margins and discretized into bins before estimation. Internal helper
+#' routines estimate nuisance functions, causal/regression/instrumental forests, and
+#' test statistics on selected subsets. See Details.
+#'
+#' @param data A \code{data.frame} or \code{data.table} containing the analysis sample.
+#'   Observations with missing values in any variables used by the call are dropped.
+#' @param D Character scalar giving the name of the treatment variable.
+#' @param Z Character scalar giving the name of the instrument variable.
+#' @param X Optional character vector of covariate names used for subset discovery and
+#'   nuisance estimation.
+#' @param Y Optional character vector of outcome variable names. Required for tests other
+#'   than \code{"simple"}.
+#' @param W Optional character vector of additional controls included alongside
+#'   \code{X} in some preprocessing steps.
+#' @param test Character vector selecting which tests to run. Allowed values are
+#'   \code{"simple"}, \code{"BP"}, \code{"MW"}, \code{"AHS"}, or \code{"all"}.
+#'   If \code{Y} is omitted, only \code{"simple"} is allowed.
+#' @param inner.folds Optional integer giving the number of within-sample folds used for
+#'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
+#'   \code{NULL} to disable the inner split.
+#' @param crossfit.forest Logical; if \code{TRUE}, forest predictions are cross-fitted
+#'   within each sample half when supported.
+#' @param normalize.Z Logical; if \code{TRUE}, estimated instrument propensity scores are
+#'   normalized after estimation.
+#' @param aipw_clip Positive scalar in \code{(0,1)} used to trim estimated propensity
+#'   scores when augmented inverse-probability weighted scores are constructed.
+#' @param weight Optional character scalar naming a nonnegative observation-weight variable.
+#' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
+#'   inference is used in forest-based testing. CART testing currently rejects clustered
+#'   input.
+#' @param num.trees Integer giving the number of trees for the main forest fits.
+#' @param seed Integer random seed.
+#' @param minsize Integer minimum effective sample size or minimum cluster count required
+#'   for subset search and testing.
+#' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
+#'   variables are discretized before stacking. Must be one of \code{"equisized"} or
+#'   \code{"equidistant"}.
+#' @param sim Logical; if \code{TRUE}, the function evaluates several alternative pooling
+#'   schemes and both subset-search methods.
+#' @param Ysubsets,Dsubsets,Zsubsets Integers giving the number of bins used when
+#'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively.
+#' @param Y.res Logical; if \code{TRUE}, outcomes are residualized before tests that use
+#'   outcome on the right hand side (MW,AHS)
+#' @param testtype Character string selecting the subset-search routine. Must be
+#'   \code{"forest"} or \code{"CART"}.
+#' @param gridpoints Optional integer controlling the number of candidate cutoffs searched
+#'   by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.
+#' @param min_n Integer minimum number of treated and untreated instrument observations
+#'   required within each sample half and margin cell.
+#' @param pool Character vector controlling which dimensions are pooled when selecting and
+#'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
+#'   \code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}.
+#' @param cp,maxrankcp,alpha,prune,preselect Tuning parameters for the CART-based search
+#'   routine. See Details.
+#' @param Zparameters,Yparameters,Qparameters,Dparameters,Cparameters Named lists of
+#'   additional arguments passed to the underlying GRF estimation routines for different
+#'   nuisance or target models.
+#' @param tune.Qparameters,tune.Zparameters,tune.Cparameters,tune.Yparameters,tune.Dparameters
+#'   Character vectors selecting which GRF tuning parameters should be tuned. The special
+#'   value \code{"none"} disables tuning.
+#' @param tune.num.trees,tune.num.reps,tune.num.draws Integers controlling GRF tuning.
+#' @param tunetype Character string controlling tuning scope. Currently \code{"one"} or
+#'   \code{"all"}.
+#'
+#' @details
+#' The procedure works in several stages:
+#'
+#' \enumerate{
+#'   \item The data are restricted to the variables used in the call, complete cases are
+#'   kept, and the sample is split into two halves (optionally respecting clusters).
+#'   \item Continuous or multivalued versions of \code{Z}, \code{D}, and selected
+#'   outcomes are discretized into bins.
+#'   \item The data may be stacked across instrument margins, treatment margins, outcomes,
+#'   equations, and test conditions.
+#'   \item Nuisance functions such as \code{Z.hat}, \code{Q.hat}, \code{D.hat}, and, where
+#'   relevant, residualized outcomes are estimated by regression forests or leave-one-out
+#'   means.
+#'   \item A target score is constructed and either a forest-based cutoff search or a
+#'   CART-based leaf search is used to identify a promising subset in one sample half.
+#'   \item The corresponding subset is evaluated in the opposite sample half, and
+#'   p-values are optionally adjusted for multiple testing.
+#' }
+#'
+#' The forest-based routine uses helper functions such as \code{make_group_folds()},
+#' \code{crossfit_hat()}, \code{fit_models()}, and \code{forest_test()}, while the CART
+#' routine relies on \code{CART_test()}. Internal support functions also handle weighted
+#' quantiles, one-sided noncompliance checks, pooled shares, and a Cauchy combination
+#' p-value. These helpers are defined in the package internals rather than exported.
+#'
+#' The exact interpretation of the test labels \code{"BP"}, \code{"MW"}, and \code{"AHS"}
+#' should be documented in the package vignette or paper, since the source code implements
+#' them algorithmically but does not yet provide user-facing descriptions.
+#'
+#' @return
+#' A named list. In the default case, elements correspond to the selected search method,
+#' usually \code{$forest} or \code{$CART}, plus:
+#'
+#' \describe{
+#'   \item{\code{time}}{A matrix of elapsed user, system, and total time by stage.}
+#'   \item{\code{obs}}{A vector containing the number of observations \code{N} and, when
+#'   clustering is used, the number of clusters \code{G}.}
+#' }
+#'
+#' Each method-specific result is itself a list that may contain:
+#'
+#' \describe{
+#'   \item{\code{results}}{Main train/test results by sample and margin cell.}
+#'   \item{\code{global}}{Global mean test statistics over the same stratification.}
+#'   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test, if requested.}
+#'   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
+#'   \item{\code{Xmeans_all}}{Weighted covariate means in the full sample.}
+#'   \item{\code{XSD}}{Weighted covariate standard deviations in the full sample.}
+#'   \item{\code{shares}}{Shares of the testing subset and full sample across pooled
+#'   margins, when applicable.}
+#'   \item{\code{minp}}{Minimum adjusted p-values and the Cauchy combination p-value when
+#'   multiple hypotheses are tested.}
+#' }
+#'
+#' @section CART tuning parameters:
+#' When \code{testtype = "CART"}, subset search is based on regression trees fit to the
+#' score variable. The argument \code{cp} controls tree complexity, \code{maxrankcp}
+#' limits the pruning table rank considered, \code{alpha} enters the preselection rule,
+#' \code{prune} toggles pruning, and \code{preselect} determines which candidate leaves
+#' are retained before testing. Supported preselection rules are \code{"none"},
+#' \code{"minimum"}, \code{"negative"}, and \code{"nonpositive"}.
+#'
+#' @section Reserved names:
+#' The function uses internal variable names such as \code{Q}, \code{*.hat},
+#' \code{sample}, \code{condition}, \code{equation}, \code{ybin}, \code{zmargin}, and
+#' \code{dmargin}. Some of these are created internally, and names conflicting with the
+#' \code{*.hat} conventions are rejected.
+#'
+#' @examples
+#' \dontrun{
+#' # Simple monotonicity-style test
+#' out <- montest(
+#'   data = mydata,
+#'   D = "D",
+#'   Z = "Z",
+#'   X = c("x1", "x2", "x3"),
+#'   test = "simple",
+#'   testtype = "forest"
+#' )
+#'
+#' # Run multiple tests with one outcome
+#' out2 <- montest(
+#'   data = mydata,
+#'   D = "D",
+#'   Z = "Z",
+#'   Y = "Y",
+#'   X = c("x1", "x2"),
+#'   test = c("simple", "BP", "MW"),
+#'   testtype = "forest",
+#'   minsize = 100
+#' )
+#'
+#' # CART-based subset search
+#' out3 <- montest(
+#'   data = mydata,
+#'   D = "D",
+#'   Z = "Z",
+#'   Y = "Y",
+#'   X = c("x1", "x2"),
+#'   test = "simple",
+#'   testtype = "CART",
+#'   preselect = "negative"
+#' )
+#' }
+#'
+#' @seealso montestplot
 #' @export
 
 montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.forest=TRUE,
@@ -137,8 +316,11 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   if (is.null(cluster)==FALSE) {
     G=length(unique(data[,get(..cluster)]))
     if (G<=2*minsize) stop("Number of clusters is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
-  } else if (n<=2*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
-
+  } else {
+    if (n<=2*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
+    G=NA
+    }
+  obs=c(N=n,G=G)
   data[,id_:=(1:n)]
 
 
@@ -236,6 +418,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
     data[,(Z):=get(..Z)>=zmargin]
 
     margins=c(margins,"zmargin")
+  } else { ##MAKE SURE Z is dummy!
+    data[, (Z) := as.integer(get(Z) == max(get(Z), na.rm = TRUE))]
   }
 
 
@@ -310,6 +494,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   }
 
   ##Check for onesided noncompliance
+
   os_res <- test_one_sided_noncompliance(data = data, D = D, Z = Z, margins = margins)
   osmargins=margins
 
@@ -566,6 +751,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
   time=time[,1:3]
   time=rbind(time,total=colSums(time))
-  return=c(res,list(time=time))
+  return=c(res,list(time=time),obs=obs)
   return(return)
 }
