@@ -1,5 +1,5 @@
 #' @import data.table
-#' @importFrom grf
+#' @import grf
 #' @importFrom stats quantile sd var model.matrix
 #' @importFrom graphics barplot
 #' @importFrom rpart rpart
