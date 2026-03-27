@@ -207,39 +207,27 @@ The function uses internal variable names such as \code{Q}, \code{*.hat},
 
 \examples{
 \dontrun{
+
+#Generate data - Simulation DGP from Farbmacher et. al.
+data=fct_datasim(setup="A",dgp=2,n=3000)
+
 # Simple monotonicity-style test
 out <- montest(
-  data = mydata,
+  data = data,
   D = "D",
   Z = "Z",
-  X = c("x1", "x2", "x3"),
+  X = c("Xvar1", "Xvar2", "Xvar3"),
   test = "simple",
-  testtype = "forest"
-)
+  testtype = "forest")
 
 # Run multiple tests with one outcome
 out2 <- montest(
-  data = mydata,
+  data = data,
   D = "D",
   Z = "Z",
-  Y = "Y",
-  X = c("x1", "x2"),
-  test = c("simple", "BP", "MW"),
-  testtype = "forest",
-  minsize = 100
-)
-
-# CART-based subset search
-out3 <- montest(
-  data = mydata,
-  D = "D",
-  Z = "Z",
-  Y = "Y",
-  X = c("x1", "x2"),
-  test = "simple",
-  testtype = "CART",
-  preselect = "negative"
-)
+  Y="Y",
+  X = c("Xvar1", "Xvar2", "Xvar3"),
+  test = c("simple","BP","MW"))
 }
 
 }

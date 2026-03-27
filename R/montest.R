@@ -131,24 +131,22 @@
 #'
 #' # Simple monotonicity-style test
 #' out <- montest(
-#'   data = mydata,
+#'   data = data,
 #'   D = "D",
 #'   Z = "Z",
 #'   X = c("Xvar1", "Xvar2", "Xvar3"),
 #'   test = "simple",
-#'   testtype = "forest"
-#' )
+#'   testtype = "forest")
 #'
 #' # Run multiple tests with one outcome
 #' out2 <- montest(
-#'   data = mydata,
+#'   data = data,
 #'   D = "D",
 #'   Z = "Z",
 #'   Y="Y",
 #'   X = c("Xvar1", "Xvar2", "Xvar3"),
-#'   test = c("simple","BP","MW")
-#' )
-#'
+#'   test = c("simple","BP","MW"))
+#' }
 #'
 #' @seealso montestplot LATEtest
 #' @export
