@@ -138,7 +138,7 @@
 #'   test = "simple",
 #'   testtype = "forest")
 #'
-#' # Run multiple tests with one outcome
+#' # Test multiple conditions, pooling evidence
 #' out2 <- montest(
 #'   data = data,
 #'   D = "D",
