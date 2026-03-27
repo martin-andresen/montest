@@ -58,6 +58,7 @@ Zsubsets, Ysubsets, using conditions that are simpler to test (e.g. test="simple
 test="MW" rather than test="BP"), or reduce the number of inner folds.
 
 The package is developed as part of the paper "Testing the Monotonicity Assumption in Instrumental Variable Models", joint with Tymon S??oczy??ski and Martn Huber
+
 ## Author
 Martin Eckhoff Andresen, Department of Economics, University of Oslo
 
