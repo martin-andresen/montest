@@ -1,59 +1,53 @@
-#' Monotonicity and LATE-assumption tests using sample splitting and machine learning
+#' Monotonicity and LATE assumptions tests using sample splitting and machine learning
 #'
-#' \code{montest()} searches for violations of monotonicity-related and LATE-type
-#' assumptions in data-adaptive subsets of the sample. It combines sample splitting,
-#' cross-fitting, and generalized random forest or CART-based subset search to identify
-#' regions of the covariate space where test statistics are most negative, and then
-#' evaluates those regions in the held-out sample.
-#'
-#' The function supports several test constructions, including a simple first-stage-style
-#' test and additional tests labeled \code{"BP"}, \code{"MW"}, and \code{"AHS"} in the
-#' implementation. For multivalued instruments, treatments, or outcomes, the data may be
-#' expanded across margins and discretized into bins before estimation. Internal helper
-#' routines estimate nuisance functions, causal/regression/instrumental forests, and
-#' test statistics on selected subsets. See Details.
+#' \code{montest()} searches for violations of monotonicity and LATE assumptions in
+#' data-adaptive subsets of the sample. It combines sample splitting,
+#' cross-fitting, and generalized random forest (or CART-based subset search) to identify
+#' regions of the covariate space or margins of the instrument or treatment where test
+#' statistics are most negative, and then evaluates those regions in the held-out sample.
+#' The function supports several testable conditions, including a simple test of whether
+#' the first stage is negative \code{"simple"}, the Balke and Pearl (1997) condition \code{"BP"},
+#' the Mourifie and Wan (2017) conditions  \code{"MW"}, and the first stage conditional on Y-test from
+#' Andresen, Huber and Sloczynski (2026) \code{"AHS"}. Multivalued instruments, treatments and outcomes
+#' are expanded across margins and discretized into bins before estimation. See Details.
 #'
 #' @param data A \code{data.frame} or \code{data.table} containing the analysis sample.
 #'   Observations with missing values in any variables used by the call are dropped.
 #' @param D Character scalar giving the name of the treatment variable.
-#' @param Z Character scalar giving the name of the instrument variable.
+#' @param Z Character scalar giving the name of the instrumental variable.
 #' @param X Optional character vector of covariate names used for subset discovery and
 #'   nuisance estimation.
 #' @param Y Optional character vector of outcome variable names. Required for tests other
 #'   than \code{"simple"}.
-#' @param W Optional character vector of additional controls included alongside
-#'   \code{X} in some preprocessing steps.
-#' @param test Character vector selecting which tests to run. Allowed values are
+#' @param test Character vector selecting which tests to run. Allowed values are any combination of
 #'   \code{"simple"}, \code{"BP"}, \code{"MW"}, \code{"AHS"}, or \code{"all"}.
 #'   If \code{Y} is omitted, only \code{"simple"} is allowed.
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
-#'   \code{NULL} to disable the inner split.
-#' @param crossfit.forest Logical; if \code{TRUE}, forest predictions are cross-fitted
+#'   \code{NULL} to disable the inner split. Defaults to 5.
+#' @param crossfit.forest Logical, default TRUE; if \code{TRUE}, forest predictions are cross-fitted
 #'   within each sample half when supported.
-#' @param normalize.Z Logical; if \code{TRUE}, estimated instrument propensity scores are
+#' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
-#' @param aipw_clip Positive scalar in \code{(0,1)} used to trim estimated propensity
+#' @param aipw_clip Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed.
-#' @param weight Optional character scalar naming a nonnegative observation-weight variable.
+#' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
-#'   inference is used in forest-based testing. CART testing currently rejects clustered
-#'   input.
-#' @param num.trees Integer giving the number of trees for the main forest fits.
-#' @param seed Integer random seed.
+#'   inference is used in forest-based testing. CART testing canot be combined with cluster.
+#' @param num.trees Integer, default 2000 giving the number of trees for the main forest fits.
+#' @param seed Integer random seed,
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
-#'   for subset search and testing.
+#'   for subset search and testing. Default 50.
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
-#' @param sim Logical; if \code{TRUE}, the function evaluates several alternative pooling
-#'   schemes and both subset-search methods.
+#' @param sim Logical; for development and testing
 #' @param Ysubsets,Dsubsets,Zsubsets Integers giving the number of bins used when
 #'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively.
-#' @param Y.res Logical; if \code{TRUE}, outcomes are residualized before tests that use
-#'   outcome on the right hand side (MW,AHS)
+#' @param Y.res Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
+#'   outcome on the right hand side \code{MW,AHS}.
 #' @param testtype Character string selecting the subset-search routine. Must be
-#'   \code{"forest"} or \code{"CART"}.
+#'   \code{"forest"} or \code{"CART"}. Default: Forest.
 #' @param gridpoints Optional integer controlling the number of candidate cutoffs searched
 #'   by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.
 #' @param min_n Integer minimum number of treated and untreated instrument observations
@@ -66,13 +60,7 @@
 #'   routine. See Details.
 #' @param Zparameters,Yparameters,Qparameters,Dparameters,Cparameters Named lists of
 #'   additional arguments passed to the underlying GRF estimation routines for different
-#'   nuisance or target models.
-#' @param tune.Qparameters,tune.Zparameters,tune.Cparameters,tune.Yparameters,tune.Dparameters
-#'   Character vectors selecting which GRF tuning parameters should be tuned. The special
-#'   value \code{"none"} disables tuning.
-#' @param tune.num.trees,tune.num.reps,tune.num.draws Integers controlling GRF tuning.
-#' @param tunetype Character string controlling tuning scope. Currently \code{"one"} or
-#'   \code{"all"}.
+#'   nuisance or target models.See regression_forest and causal_forest for details.
 #'
 #' @details
 #' The procedure works in several stages:
@@ -80,45 +68,35 @@
 #' \enumerate{
 #'   \item The data are restricted to the variables used in the call, complete cases are
 #'   kept, and the sample is split into two halves (optionally respecting clusters).
-#'   \item Continuous or multivalued versions of \code{Z}, \code{D}, and selected
-#'   outcomes are discretized into bins.
-#'   \item The data may be stacked across instrument margins, treatment margins, outcomes,
+#'   \item Continuous or multivalued instruments, treatments and outcomes discretized into bins.
+#'   \item The data is stacked across instrument margins, treatment margins, outcomes,
 #'   equations, and test conditions.
-#'   \item Nuisance functions such as \code{Z.hat}, \code{Q.hat}, \code{D.hat}, and, where
-#'   relevant, residualized outcomes are estimated by regression forests or leave-one-out
-#'   means.
-#'   \item A target score is constructed and either a forest-based cutoff search or a
-#'   CART-based leaf search is used to identify a promising subset in one sample half.
-#'   \item The corresponding subset is evaluated in the opposite sample half, and
-#'   p-values are optionally adjusted for multiple testing.
+#'   \item Nuisance functions such as \code{Z.hat}, \code{Q.hat} are estimated and outcomes are residualized
+#'   using regression forests within margins and and cross-fitted within sample halves.
+#'   \item Separate causal forests of the outcome \code{Q}, which depends on the condition being tested, on
+#'   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
+#'   treatment effects are predicted in and out of sample and scores constructed
+#'   \item Each sample part (optionally within margins, depending on the options in code{pool}) is sorted
+#'   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
+#'   in predicted treatment effects. Select the cutoff with the smallest t-statistic on themean of scores
+#'   Alterantively, subset selection can be done using a CART algorithm.
+#'   \item The corresponding subset is evaluated in the opposite sample half. If performing multiple tests,
+#'   depending on the option  \cite{pool}, p-values are optionally adjusted for multiple testing.
 #' }
 #'
-#' The forest-based routine uses helper functions such as \code{make_group_folds()},
-#' \code{crossfit_hat()}, \code{fit_models()}, and \code{forest_test()}, while the CART
-#' routine relies on \code{CART_test()}. Internal support functions also handle weighted
-#' quantiles, one-sided noncompliance checks, pooled shares, and a Cauchy combination
-#' p-value. These helpers are defined in the package internals rather than exported.
+#' \code{montest} supports weights and clustering, and allow for multivalued treatments and instruments
+#' by binarizing instruments and treatments into quantile or equisized bins. The command also tests for
+#' one-sided monotonicity (within margins of the treatment and instrument) and if found, warns the user
+#' and skips testing any trivially satisified conditions.
 #'
-#' The exact interpretation of the test labels \code{"BP"}, \code{"MW"}, and \code{"AHS"}
-#' should be documented in the package vignette or paper, since the source code implements
-#' them algorithmically but does not yet provide user-facing descriptions.
 #'
 #' @return
-#' A named list. In the default case, elements correspond to the selected search method,
-#' usually \code{$forest} or \code{$CART}, plus:
+#' A named list:
 #'
 #' \describe{
-#'   \item{\code{time}}{A matrix of elapsed user, system, and total time by stage.}
-#'   \item{\code{obs}}{A vector containing the number of observations \code{N} and, when
-#'   clustering is used, the number of clusters \code{G}.}
-#' }
-#'
-#' Each method-specific result is itself a list that may contain:
-#'
-#' \describe{
-#'   \item{\code{results}}{Main train/test results by sample and margin cell.}
+#'   \item{\code{results}}{A Matrix of ain train/test results by sample and margin cell.}
 #'   \item{\code{global}}{Global mean test statistics over the same stratification.}
-#'   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test, if requested.}
+#'   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
 #'   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
 #'   \item{\code{Xmeans_all}}{Weighted covariate means in the full sample.}
 #'   \item{\code{XSD}}{Weighted covariate standard deviations in the full sample.}
@@ -126,6 +104,9 @@
 #'   margins, when applicable.}
 #'   \item{\code{minp}}{Minimum adjusted p-values and the Cauchy combination p-value when
 #'   multiple hypotheses are tested.}
+#'    \item{\code{time}}{A matrix of elapsed user, system, and total time by stage.}
+#'   \item{\code{obs}}{A vector containing the number of observations \code{N} and, when
+#'   clustering is used, the number of clusters \code{G}.}
 #' }
 #'
 #' @section CART tuning parameters:
@@ -144,12 +125,16 @@
 #'
 #' @examples
 #' \dontrun{
+#'
+#' #Generate data - Simulation DGP from Farbmacher et. al.
+#' data=fct_datasim(setup="A",dgp=2,n=3000)
+#'
 #' # Simple monotonicity-style test
 #' out <- montest(
 #'   data = mydata,
 #'   D = "D",
 #'   Z = "Z",
-#'   X = c("x1", "x2", "x3"),
+#'   X = c("Xvar1", "Xvar2", "Xvar3"),
 #'   test = "simple",
 #'   testtype = "forest"
 #' )
@@ -159,30 +144,16 @@
 #'   data = mydata,
 #'   D = "D",
 #'   Z = "Z",
-#'   Y = "Y",
-#'   X = c("x1", "x2"),
-#'   test = c("simple", "BP", "MW"),
-#'   testtype = "forest",
-#'   minsize = 100
+#'   Y="Y",
+#'   X = c("Xvar1", "Xvar2", "Xvar3"),
+#'   test = c("simple","BP","MW")
 #' )
 #'
-#' # CART-based subset search
-#' out3 <- montest(
-#'   data = mydata,
-#'   D = "D",
-#'   Z = "Z",
-#'   Y = "Y",
-#'   X = c("x1", "x2"),
-#'   test = "simple",
-#'   testtype = "CART",
-#'   preselect = "negative"
-#' )
-#' }
 #'
-#' @seealso montestplot
+#' @seealso montestplot LATEtest
 #' @export
 
-montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.forest=TRUE,
+montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=TRUE,
                  normalize.Z=TRUE,aipw_clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",sim=FALSE,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
@@ -307,7 +278,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   if (sum(c("MW","AHS") %in% test)>0) {XWY=c(X,W,Y)} else {XWY=XW}
 
   data=data.table(data)
-  allvars=c(X,W,Y,D,Z,weight,cluster)
+  allvars=c(X,Y,D,Z,weight,cluster)
   data=data[,..allvars]
   dropped=sum(!complete.cases(data))
   if (dropped>0) message(paste("Note: dropped ",dropped," observations with missing data on one or more input variables."))
@@ -419,7 +390,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
 
     margins=c(margins,"zmargin")
   } else { ##MAKE SURE Z is dummy!
-    data[, (Z) := as.integer(get(Z) == max(get(Z), na.rm = TRUE))]
+    data[, (Z) := as.integer(get(..Z) == max(get(..Z), na.rm = TRUE))]
   }
 
 
@@ -707,45 +678,46 @@ montest=function(data,D,Z,X=NULL,Y=NULL,W=NULL,test=NULL,inner.folds=5,crossfit.
   poolmargins=pool[pool %in% c(margins,"sample")]
   if (is.null(poolmargins)==TRUE) poolmargins=character(0)
 
-  res=list()
-  if (sim==TRUE) {
-    poollist=list(character(0),margins[!margins %in% "condition"],c(margins[!margins %in% "condition"],"sample"),c(margins,"sample"),margins)
-    treelist=c("CART","forest")
+  ##res=list()
+  ##if (sim==TRUE) {
+  ##  poollist=list(character(0),margins[!margins %in% "condition"],c(margins[!margins %in% "condition"],"sample"),c(margins,"sample"),margins)
+  ##  treelist=c("CART","forest")
+  ##
+  ##  for (p in 1:5) {
+  ##    res[[paste0(c("forest",p),collapse="_")]]=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poollist[[p]],gridpoints=gridpoints,margins=margins)
+  ##    res[[paste0(c("CART",p),collapse="_")]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poollist[[p]])
+  ##  }
+  ##} else {   ##}
 
-    for (p in 1:5) {
-      res[[paste0(c("forest",p),collapse="_")]]=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poollist[[p]],gridpoints=gridpoints,margins=margins)
-      res[[paste0(c("CART",p),collapse="_")]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poollist[[p]])
-    }
-  } else {
-  if ("forest" == testtype) res[["forest"]]=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
-  if ("CART" == testtype) res[["CART"]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
-  }
+
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
+  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
+
+
   time=rbind(time,find_and_test=proc.time())
 
 
   ################ 7: Multiple hypothesis testing and output #####################
-  for (r in 1:length(res)) {
-    if (nrow(res[[r]]$results[train==FALSE])==1) {
+    if (nrow(res$results[train==FALSE])==1) {
       minwhere=NA
-      minp=res[[r]]$results[train==FALSE,p.raw]
+      minp=res$results[train==FALSE,p.raw]
     } else {
       for (m in c("holm","hochberg","BH","BY")) {
-        res[[r]]$results[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
+        res$results[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
       byv=c("sample",margins)[!c("sample",margins) %in% pool]
-      minwhere=res[[r]]$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
-      res[[r]]$minp=apply(res[[r]]$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
-      res[[r]]$minp=c(res[[r]]$minp,p.CCT=cct_pvalue(res[[r]]$results[train==FALSE,p.raw]))
+      minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
+      res$minp=apply(res$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
+      res$minp=c(res$minp,p.CCT=cct_pvalue(res$results[train==FALSE,p.raw]))
     }
 
-    res[[r]]$global[,p.raw:=pnorm(t)]
-    if (nrow(res[[r]]$global)>1) {
+    res$global[,p.raw:=pnorm(t)]
+    if (nrow(res$global)>1) {
       for (m in c("holm","hochberg","BH","BY")) {
-        res[[r]]$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+        res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
     }
 
-  }
 
   time=rbind(time,finalize=proc.time())
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
