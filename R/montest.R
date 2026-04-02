@@ -29,7 +29,7 @@
 #'   within each sample half when supported.
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
-#' @param aipw_clip Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
+#' @param aipw.clip Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
@@ -38,6 +38,7 @@
 #' @param seed Integer random seed,
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
+#' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default=FALSE
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
@@ -52,10 +53,14 @@
 #'   by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.
 #' @param min_n Integer minimum number of treated and untreated instrument observations
 #'   required within each sample half and margin cell.
-#' @param pool Character vector controlling which dimensions are pooled when selecting and
+#' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
 #'   \code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}.
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#' @param select Character vector controlling which dimensions are selected over when finding testing subsets
+#'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
+#'   \code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param cp,maxrankcp,alpha,prune,preselect Tuning parameters for the CART-based search
 #'   routine. See Details.
 #' @param Zparameters,Yparameters,Qparameters,Dparameters,Cparameters Named lists of
@@ -152,10 +157,10 @@
 #' @export
 
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=TRUE,
-                 normalize.Z=TRUE,aipw_clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
+                 normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",sim=FALSE,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool="all", ##forest opts
+                 gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=FALSE, ##forest opts
                  cp=0,maxrankcp=10L,alpha=0.05,prune=TRUE,preselect="negative", ##CART opts
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list(),
                  tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
@@ -170,13 +175,13 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   testtype=match.arg(testtype,c("forest","CART"))
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
 
-  if (!is.null(aipw_clip)) {
+  if (!is.null(aipw.clip)) {
     stopifnot(
-      is.numeric(aipw_clip),
-      length(aipw_clip) == 1L,
-      is.finite(aipw_clip),
-      aipw_clip > 0,
-      aipw_clip < 1
+      is.numeric(aipw.clip),
+      length(aipw.clip) == 1L,
+      is.finite(aipw.clip),
+      aipw.clip > 0,
+      aipw.clip < 1
     )
   }
 
@@ -204,10 +209,21 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   if ((Ysubsets<=1)|(Dsubsets<=1)|(Zsubsets<=1)) stop("Ysubsets, Dsubsets and Zsubsets must be integers larger than 1")
 
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
-  if (sum(pool=="all")==1) pool=c("zmargin","dmargin","ybin","condition","equation","outcome","sample")
-  if (sum(pool=="none")==1) pool=c()
-  pool=match.arg(pool,c("zmargin","dmargin","ybin","condition","equation","outcome","sample"),several.ok=TRUE)
+  else if (sum(pool=="all")==1) pool=c("zmargin","dmargin","ybin","condition","equation","outcome","sample")
+  else if (sum(pool=="none")==1) pool=c()
+  else if (is.null(pool)==FALSE) pool=match.arg(pool,c("zmargin","dmargin","ybin","condition","equation","outcome","sample"),several.ok=TRUE)
+
+  if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
+  else if (sum(select=="all")==1) select=c("zmargin","dmargin","ybin","condition","equation","outcome","sample")
+  else if (sum(select=="none")==1) select=c()
+  else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dmargin","ybin","condition","equation","outcome","sample"),several.ok=TRUE)
   #if (testtype=="CART") pool=c()
+
+  overlap <- intersect(pool, select)
+  if (length(overlap) > 0L) {
+    stop("Error: The following names appear in both pool and select: ",
+         paste(overlap, collapse = ", "))
+  }
 
   if (sum(sum(grepl("Z.hat",colnames(data))))) stop("Variable name beginning with Z.hat discovered, reserved for internal use. Please rename.")
   if (sum(sum(grepl("D.hat",colnames(data))))) stop("Variable name beginning with D.hat discovered, reserved for internal use. Please rename.")
@@ -618,7 +634,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw_clip=aipw_clip)
+               aipw.clip=aipw.clip)
   }
 
   if (sum(test == "AHS")>0) {
@@ -634,7 +650,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw_clip=aipw_clip)
+               aipw.clip=aipw.clip)
   }
 
   if (sum(test == "MW")>0) {
@@ -649,7 +665,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw_clip=aipw_clip)
+               aipw.clip=aipw.clip)
   }
 
   if (sum(test == "K")>0) {
@@ -666,7 +682,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw_clip=aipw_clip)
+               aipw.clip=aipw.clip)
   }
 
 
@@ -674,7 +690,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
 
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
   poolmargins=pool[pool %in% c(margins,"sample")]
-  if (is.null(poolmargins)==TRUE) poolmargins=character(0)
+  selectmargins=select[select %in% c(margins,"sample")]
 
   ##res=list()
   ##if (sim==TRUE) {
@@ -687,8 +703,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   ##  }
   ##} else {   ##}
 
-
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,gridpoints=gridpoints,margins=margins)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins)
   if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
 
 
@@ -697,14 +712,14 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
 
   ################ 7: Multiple hypothesis testing and output #####################
     if (nrow(res$results[train==FALSE])==1) {
-      minwhere=NA
-      minp=res$results[train==FALSE,p.raw]
+      res$minwhere=NA
+      res$minp=res$results[train==FALSE,p.raw]
     } else {
       for (m in c("holm","hochberg","BH","BY")) {
         res$results[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
       byv=c("sample",margins)[!c("sample",margins) %in% pool]
-      minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
+      res$minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
       res$minp=apply(res$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
       res$minp=c(res$minp,p.CCT=cct_pvalue(res$results[train==FALSE,p.raw]))
     }
@@ -715,6 +730,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
         res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
     }
+    if (length(res$minp)>1) res$p=res$minp[5] else res$p=res$minp
 
 
   time=rbind(time,finalize=proc.time())

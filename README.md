@@ -29,8 +29,7 @@ out <- montest(
    D = "D",
    Z = "Z",
    X = c("Xvar1", "Xvar2", "Xvar3"),
-   test = "simple",
-   testtype = "forest")
+   test = "simple")
    
 # Test multiple conditions, pooling evidence
  out2 <- montest(
