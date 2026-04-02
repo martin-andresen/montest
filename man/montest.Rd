@@ -14,7 +14,7 @@ montest(
   inner.folds = 5,
   crossfit.forest = TRUE,
   normalize.Z = TRUE,
-  aipw_clip = 0.001,
+  aipw.clip = 0.001,
   weight = NULL,
   cluster = NULL,
   num.trees = 2000,
@@ -32,6 +32,8 @@ montest(
   gridpoints = NULL,
   min_n = 1L,
   pool = "all",
+  select = "none",
+  shrink = FALSE,
   cp = 0,
   maxrankcp = 10L,
   alpha = 0.05,
@@ -81,7 +83,7 @@ within each sample half when supported.}
 \item{normalize.Z}{Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 normalized after estimation.}
 
-\item{aipw_clip}{Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
+\item{aipw.clip}{Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
 scores when augmented inverse-probability weighted scores are constructed.}
 
 \item{weight}{Optional character scalar naming a nonnegative weight variable.}
@@ -117,10 +119,17 @@ by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.}
 \item{min_n}{Integer minimum number of treated and untreated instrument observations
 required within each sample half and margin cell.}
 
-\item{pool}{Character vector controlling which dimensions are pooled when selecting and
+\item{pool}{Character vector controlling which dimensions are pooled when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
 \code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
-\code{"sample"}, \code{"all"}, and \code{"none"}.}
+\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+
+\item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
+testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
+\code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
+\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+
+\item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default=FALSE}
 
 \item{cp, maxrankcp, alpha, prune, preselect}{Tuning parameters for the CART-based search
 routine. See Details.}
@@ -220,7 +229,7 @@ out <- montest(
   test = "simple",
   testtype = "forest")
 
-# Run multiple tests with one outcome
+# Test multiple conditions, pooling evidence
 out2 <- montest(
   data = data,
   D = "D",

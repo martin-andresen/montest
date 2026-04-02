@@ -287,9 +287,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   time=rbind(start=time,checks=proc.time())
 
   ###################### 2 Prepare data #########################3
-  XW=c(X,W)
+  XW=X
 
-  if (sum(c("MW","AHS") %in% test)>0) {XWY=c(X,W,Y)} else {XWY=XW}
+  if (sum(c("MW","AHS") %in% test)>0) {XWY=c(X,Y)} else {XWY=XW}
 
   data=data.table(data)
   allvars=c(X,Y,D,Z,weight,cluster)
@@ -370,12 +370,12 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
 
   if (J>1&(sum(test %in% "simple")!=length(test))) stop("Multivalued treatments and testable conditions other than simple not supported")
 
-  if (J==1&K==1&is.null(X)==TRUE&is.null(W)==TRUE&is.null(Y)==TRUE) {
+  if (J==1&K==1&is.null(X)==TRUE&is.null(Y)==TRUE) {
     stop("Nothing to test with a binary treatment, a binary instrument and no other variables in data.")
   }
 
-  XW=c(X,W)
-  XWY=c(X,W,Y)
+  XW=X
+  XWY=c(X,Y)
 
   ##group common tree argments
   forest_opts=list(num.trees=max(50,num.trees/4),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)

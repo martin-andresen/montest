@@ -7,7 +7,7 @@ Tools for detecting violations of monotonicity and LATE assumptions using machin
 You can install the development version from GitHub:
 
 ```r
-install.packages("devtools")"
+install.packages("devtools")
 devtools::install_github("martin-andresen/montest")
 ```
 
