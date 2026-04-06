@@ -42,3 +42,4 @@
 .httr-oauth
 .quarto
 inst/doc
+newsims.rds

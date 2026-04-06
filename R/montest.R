@@ -692,6 +692,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
+
   ##res=list()
   ##if (sim==TRUE) {
   ##  poollist=list(character(0),margins[!margins %in% "condition"],c(margins[!margins %in% "condition"],"sample"),c(margins,"sample"),margins)
@@ -704,7 +705,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   ##} else {   ##}
 
   if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins)
-  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poolmargins)
+  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,select=selectmargins)
 
 
   time=rbind(time,find_and_test=proc.time())
@@ -730,7 +731,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
         res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
     }
-    if (length(res$minp)>1) res$p=res$minp[5] else res$p=res$minp
+    if (length(res$minp)>1) res$p=res$minp[6] else res$p=res$minp
 
 
   time=rbind(time,finalize=proc.time())
