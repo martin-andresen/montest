@@ -1,48 +1,121 @@
 
 
 ##################################################### HELPER FUNCTIONS ######################################
-shrink_te <- function(data, te, te_se, margins=NULL, out = NULL) {
+shrink_te_crossfit <- function(data,
+                               pred,
+                               pred_var,
+                               pred_out,
+                               pred_out_var,
+                               margins = NULL,
+                               sample = "sample",
+                               weight = NULL,
+                               gamma = 1,
+                               out_pred = pred,
+                               out_pred_out = pred_out) {
+
   stopifnot(data.table::is.data.table(data))
 
-  te <- as.character(te)
-  te_se <- as.character(te_se)
-  margins <- as.character(margins)
+  pred_col         <- as.character(pred)
+  pred_var_col     <- as.character(pred_var)
+  pred_out_col     <- as.character(pred_out)
+  pred_out_var_col <- as.character(pred_out_var)
+  sample_col       <- as.character(sample)
+  margins          <- as.character(margins)
+  out_pred_col     <- as.character(out_pred)
+  out_pred_out_col <- as.character(out_pred_out)
+  if (!is.null(weight)) weight_col <- as.character(weight) else weight_col <- NULL
 
-  stopifnot(length(te) == 1L, te %in% names(data))
-  stopifnot(length(te_se) == 1L, te_se %in% names(data))
+  stopifnot(length(pred_col) == 1L, pred_col %in% names(data))
+  stopifnot(length(pred_var_col) == 1L, pred_var_col %in% names(data))
+  stopifnot(length(pred_out_col) == 1L, pred_out_col %in% names(data))
+  stopifnot(length(pred_out_var_col) == 1L, pred_out_var_col %in% names(data))
+  stopifnot(length(sample_col) == 1L, sample_col %in% names(data))
   if (length(margins) > 0L) stopifnot(all(margins %in% names(data)))
+  if (!is.null(weight_col)) stopifnot(length(weight_col) == 1L, weight_col %in% names(data))
 
-  if (is.null(out)) out <- paste0(te, "_shrink")
-  out <- as.character(out)
-  stopifnot(length(out) == 1L)
+  stopifnot(is.numeric(gamma), length(gamma) == 1L, is.finite(gamma), gamma >= 0, gamma <= 1)
 
-  te_var <- paste0(out, "_var")
-  mu_col <- paste0(out, "_mu")
-  A_col  <- paste0(out, "_A")
-  lam_col <- paste0(out, "_lambda")
+  if (!all(data[[sample_col]] %in% c(1L, 2L, 1, 2))) {
+    stop("sample indicator must take values 1 and 2.")
+  }
 
-  data[, (te_var) := pmax(as.numeric(get(te_se))^2, 0)]
+  DT <- data
+  byvars <- c(margins, sample_col)
 
-  # margin-specific mean and excess signal variance
-  data[, (mu_col) := mean(as.numeric(get(te)), na.rm = TRUE), by = margins]
+  wmean <- function(x, w) sum(w * x) / sum(w)
 
-  data[, (A_col) := {
-    te_num <- as.numeric(get(te))
-    v_obs <- stats::var(te_num, na.rm = TRUE)
-    v_noise <- mean(get(te_var), na.rm = TRUE)
-    pmax(v_obs - v_noise, 0)
-  }, by = margins]
+  wvar_pop <- function(x, w) {
+    mu <- wmean(x, w)
+    sum(w * (x - mu)^2) / sum(w)
+  }
 
-  # observation-specific shrinkage toward the margin mean
-  data[, (lam_col) := fifelse(
-    is.finite(get(A_col)) & is.finite(get(te_var)) & (get(A_col) + get(te_var) > 0),
-    get(A_col) / (get(A_col) + get(te_var)),
-    0
-  )]
+  eb_pars <- DT[, {
+    y <- get(pred_col)
+    v <- get(pred_var_col)
+    ww <- if (is.null(weight_col)) rep(1, .N) else get(weight_col)
 
-  data[, (out) := get(mu_col) + get(lam_col) * (as.numeric(get(te)) - get(mu_col))]
+    ok <- is.finite(y) & is.finite(v) & v >= 0 & is.finite(ww) & ww > 0
+    y  <- y[ok]
+    v  <- v[ok]
+    ww <- ww[ok]
 
-  invisible(data)
+    if (length(y) == 0L) {
+      .(eb_mu = NA_real_, eb_tau2 = NA_real_)
+    } else if (length(y) == 1L) {
+      .(eb_mu = y[1L], eb_tau2 = 0)
+    } else {
+      mu_hat <- wmean(y, ww)
+      v_y    <- wvar_pop(y, ww)
+      m_v    <- wmean(v, ww)
+      tau2   <- max(0, v_y - m_v)
+      .(eb_mu = mu_hat, eb_tau2 = tau2)
+    }
+  }, by = byvars]
+
+  DT[eb_pars, c("..eb_mu", "..eb_tau2") := .(i.eb_mu, i.eb_tau2), on = byvars]
+
+  DT[, (out_pred_col) := {
+    y  <- get(pred_col)
+    v  <- get(pred_var_col)
+    mu <- ..eb_mu
+    t2 <- ..eb_tau2
+
+    out <- y
+    ok <- is.finite(y) & is.finite(v) & v >= 0 & is.finite(mu) & is.finite(t2)
+
+    if (any(ok)) {
+      B  <- t2[ok] / (t2[ok] + v[ok])
+      eb <- mu[ok] + B * (y[ok] - mu[ok])
+      out[ok] <- (1 - gamma) * y[ok] + gamma * eb
+    }
+    out
+  }]
+
+  eb_pars_out <- data.table::copy(eb_pars)
+  eb_pars_out[, (sample_col) := ifelse(get(sample_col) == 1L, 2L, 1L)]
+
+  DT[eb_pars_out, c("..eb_mu_out", "..eb_tau2_out") := .(i.eb_mu, i.eb_tau2), on = byvars]
+
+  DT[, (out_pred_out_col) := {
+    y  <- get(pred_out_col)
+    v  <- get(pred_out_var_col)
+    mu <- ..eb_mu_out
+    t2 <- ..eb_tau2_out
+
+    out <- y
+    ok <- is.finite(y) & is.finite(v) & v >= 0 & is.finite(mu) & is.finite(t2)
+
+    if (any(ok)) {
+      B  <- t2[ok] / (t2[ok] + v[ok])
+      eb <- mu[ok] + B * (y[ok] - mu[ok])
+      out[ok] <- (1 - gamma) * y[ok] + gamma * eb
+    }
+    out
+  }]
+
+  DT[, c("..eb_mu", "..eb_tau2", "..eb_mu_out", "..eb_tau2_out") := NULL]
+
+  invisible(DT)
 }
 
 CART_test <- function(
@@ -1025,6 +1098,7 @@ fit_models <- function(DT,
                        cluster_name = NULL,
                        forest_opts = NULL,
                        aipw.clip = 1e-3,
+                       shrink = FALSE,
                        verbose = FALSE) {
 
   stopifnot(data.table::is.data.table(DT))
@@ -1037,6 +1111,7 @@ fit_models <- function(DT,
   if (!is.null(aipw.clip)) {
     stopifnot(is.numeric(aipw.clip), length(aipw.clip) == 1L, is.finite(aipw.clip), aipw.clip > 0, aipw.clip < 1)
   }
+  stopifnot(is.logical(shrink), length(shrink) == 1L, !is.na(shrink))
 
   if (is.null(i)) i <- DT[, .I]
   i <- as.integer(i)
@@ -1052,6 +1127,10 @@ fit_models <- function(DT,
   if (!("pred"   %chin% names(DT))) DT[, pred   := NA_real_]
   if (!("pred_o" %chin% names(DT))) DT[, pred_o := NA_real_]
   if (!("scores" %chin% names(DT))) DT[, scores := NA_real_]
+  if (shrink) {
+    if (!("pred_var"   %chin% names(DT))) DT[, pred_var   := NA_real_]
+    if (!("pred_o_var" %chin% names(DT))) DT[, pred_o_var := NA_real_]
+  }
 
   # Nuisance names (must exist for causal/IV)
   y_hat <- paste0(y_name, ".hat")
@@ -1073,9 +1152,9 @@ fit_models <- function(DT,
   # rowid within the i-subset (used for both X indexing + output buffers)
   rid_col <- ".__rid__"
   DT[i, (rid_col) := seq_len(n_i)]
-  rid <- DT[[rid_col]]  # local alias
+  rid <- DT[[rid_col]]
 
-  # Pull commonly used vectors once (coerce once where useful)
+  # Pull commonly used vectors once
   sample_all <- DT[["sample"]]
   folds_all  <- if (!is.null(folds)) DT[[folds]] else NULL
   wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
@@ -1102,7 +1181,8 @@ fit_models <- function(DT,
 
     if (type == "regression") {
       do.call(grf::regression_forest,
-              c(list(X = X, Y = Y, sample.weights = sw, clusters = cl, compute.oob.predictions = FALSE), forest_opts))
+              c(list(X = X, Y = Y, sample.weights = sw, clusters = cl,
+                     compute.oob.predictions = FALSE), forest_opts))
     } else if (type == "causal") {
       W <- w_all[idx]
       do.call(grf::causal_forest,
@@ -1110,7 +1190,8 @@ fit_models <- function(DT,
                      Y.hat = yhat_all[idx],
                      W.hat = what_all[idx],
                      sample.weights = sw,
-                     clusters = cl, compute.oob.predictions = FALSE), forest_opts))
+                     clusters = cl,
+                     compute.oob.predictions = FALSE), forest_opts))
     } else { # instrumental
       W <- w_all[idx]
       Z <- z_all[idx]
@@ -1120,33 +1201,58 @@ fit_models <- function(DT,
                      W.hat = what_all[idx],
                      Z.hat = zhat_all[idx],
                      sample.weights = sw,
-                     clusters = cl, compute.oob.predictions = FALSE), forest_opts))
+                     clusters = cl,
+                     compute.oob.predictions = FALSE), forest_opts))
     }
+  }
+
+  # ---- Predict helper ----
+  predict_with_optional_var <- function(fit, X) {
+    if (!shrink) {
+      p <- predict(fit, X)
+      return(list(pred = as.numeric(p$predictions), var = NULL))
+    }
+
+    p <- predict(fit, X, estimate.variance = TRUE)
+    v <- if (!is.null(p$variance.estimates)) {
+      pmax(as.numeric(p$variance.estimates), 0)
+    } else {
+      rep(NA_real_, nrow(X))
+    }
+
+    list(pred = as.numeric(p$predictions), var = v)
   }
 
   # ---- Within-sample predictions (pred) ----
   within_pred_idx <- function(idx_s) {
     n <- length(idx_s)
-    if (n == 0L) return(numeric())
+    if (n == 0L) {
+      if (shrink) return(list(pred = numeric(), var = numeric()))
+      return(numeric())
+    }
 
     Xs <- X_all[rid[idx_s], , drop = FALSE]
 
     # no folds => single fit, in-sample preds
     if (is.null(folds_all)) {
       fit <- build_forest_idx(forest_type, idx_s)
-      return(as.numeric(predict(fit, Xs)$predictions))
+      out <- predict_with_optional_var(fit, Xs)
+      if (shrink) return(out)
+      return(out$pred)
     }
 
     f <- folds_all[idx_s]
     if (data.table::uniqueN(f) < 2L) {
       fit <- build_forest_idx(forest_type, idx_s)
-      return(as.numeric(predict(fit, Xs)$predictions))
+      out <- predict_with_optional_var(fit, Xs)
+      if (shrink) return(out)
+      return(out$pred)
     }
 
-    # precompute positions per fold once; avoid repeated which(f==k)
     pos_by_fold <- split(seq_len(n), f)
 
-    p <- rep(NA_real_, n)
+    p  <- rep(NA_real_, n)
+    vv <- if (shrink) rep(NA_real_, n) else NULL
     tr_mask <- rep.int(TRUE, n)
 
     for (k in names(pos_by_fold)) {
@@ -1155,20 +1261,26 @@ fit_models <- function(DT,
       tr_pos <- which(tr_mask)
       tr_mask[te_pos] <- TRUE
 
-      # if training set too small, fallback to mean Y (weighted if available)
       if (length(tr_pos) < 2L) {
         idx_tr <- idx_s[tr_pos]
         y_tr <- y_all[idx_tr]
         w_tr <- if (is.null(wgt_all)) NULL else wgt_all[idx_tr]
-        mu <- if (length(y_tr) == 0L) NA_real_ else {
+        mu <- if (length(y_tr) == 0L) {
+          NA_real_
+        } else {
           if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
         }
         p[te_pos] <- mu
+        if (shrink) vv[te_pos] <- NA_real_
       } else {
         fit_k <- build_forest_idx(forest_type, idx_s[tr_pos])
-        p[te_pos] <- as.numeric(predict(fit_k, Xs[te_pos, , drop = FALSE])$predictions)
+        out_k <- predict_with_optional_var(fit_k, Xs[te_pos, , drop = FALSE])
+        p[te_pos] <- out_k$pred
+        if (shrink) vv[te_pos] <- out_k$var
       }
     }
+
+    if (shrink) return(list(pred = p, var = vv))
     p
   }
 
@@ -1187,7 +1299,6 @@ fit_models <- function(DT,
 
     W <- as.numeric(W > 0.5)
 
-    # if e not in [0,1], assume logit index and convert
     if (any(e < 0 | e > 1, na.rm = TRUE)) e <- plogis(e)
     if (!is.null(aipw.clip)) e <- pmin(pmax(e, aipw.clip), 1 - aipw.clip)
 
@@ -1200,7 +1311,7 @@ fit_models <- function(DT,
     tau + (W / e) * (Y - m1) - ((1 - W) / (1 - e)) * (Y - m0)
   }
 
-  # ---- Build group index lists once (kept for simplicity) ----
+  # ---- Build group index lists once ----
   idx_all <- i
   if (length(grp_cols) == 0L) {
     group_list <- list(idx_all)
@@ -1215,6 +1326,11 @@ fit_models <- function(DT,
   pred_o_buf <- rep(NA_real_, n_i)
   score_buf  <- rep(NA_real_, n_i)
 
+  if (shrink) {
+    pred_var_buf   <- rep(NA_real_, n_i)
+    pred_o_var_buf <- rep(NA_real_, n_i)
+  }
+
   # ---- Main loop ----
   for (g in seq_along(group_list)) {
     idx_g <- group_list[[g]]
@@ -1224,62 +1340,82 @@ fit_models <- function(DT,
     idx2 <- idx_g[sample_all[idx_g] == 2L]
 
     if (is.null(folds_all)) {
-      # crossfit.forest = FALSE:
-      # fit each sample-half ONCE, reuse for both pred (in-sample) and pred_o (other sample)
-
       fit1 <- if (length(idx1)) build_forest_idx(forest_type, idx1) else NULL
       fit2 <- if (length(idx2)) build_forest_idx(forest_type, idx2) else NULL
 
-      p1 <- if (!is.null(fit1) && length(idx1)) {
-        as.numeric(predict(fit1, X_all[rid[idx1], , drop = FALSE])$predictions)
-      } else numeric()
+      res1 <- if (!is.null(fit1) && length(idx1)) {
+        predict_with_optional_var(fit1, X_all[rid[idx1], , drop = FALSE])
+      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
 
-      p2 <- if (!is.null(fit2) && length(idx2)) {
-        as.numeric(predict(fit2, X_all[rid[idx2], , drop = FALSE])$predictions)
-      } else numeric()
+      res2 <- if (!is.null(fit2) && length(idx2)) {
+        predict_with_optional_var(fit2, X_all[rid[idx2], , drop = FALSE])
+      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
 
-      p1_o <- if (!is.null(fit2) && length(idx1)) {
-        as.numeric(predict(fit2, X_all[rid[idx1], , drop = FALSE])$predictions)
-      } else numeric()
+      res1_o <- if (!is.null(fit2) && length(idx1)) {
+        predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
+      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
 
-      p2_o <- if (!is.null(fit1) && length(idx2)) {
-        as.numeric(predict(fit1, X_all[rid[idx2], , drop = FALSE])$predictions)
-      } else numeric()
+      res2_o <- if (!is.null(fit1) && length(idx2)) {
+        predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
+      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
 
     } else {
-      # crossfit.forest = TRUE:
-      # keep existing behavior for pred, plus one full fit per sample-half for pred_o
-
-      p1 <- if (length(idx1)) within_pred_idx(idx1) else numeric()
-      p2 <- if (length(idx2)) within_pred_idx(idx2) else numeric()
+      res1 <- if (length(idx1)) within_pred_idx(idx1) else {
+        if (shrink) list(pred = numeric(), var = numeric()) else numeric()
+      }
+      res2 <- if (length(idx2)) within_pred_idx(idx2) else {
+        if (shrink) list(pred = numeric(), var = numeric()) else numeric()
+      }
 
       fit1 <- if (length(idx1)) build_forest_idx(forest_type, idx1) else NULL
       fit2 <- if (length(idx2)) build_forest_idx(forest_type, idx2) else NULL
 
-      p1_o <- if (!is.null(fit2) && length(idx1)) {
-        as.numeric(predict(fit2, X_all[rid[idx1], , drop = FALSE])$predictions)
-      } else numeric()
+      res1_o <- if (!is.null(fit2) && length(idx1)) {
+        predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
+      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
 
-      p2_o <- if (!is.null(fit1) && length(idx2)) {
-        as.numeric(predict(fit1, X_all[rid[idx2], , drop = FALSE])$predictions)
-      } else numeric()
+      res2_o <- if (!is.null(fit1) && length(idx2)) {
+        predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
+      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
     }
+
+    if (shrink) {
+      p1  <- res1$pred
+      p2  <- res2$pred
+      v1  <- res1$var
+      v2  <- res2$var
+    } else {
+      p1  <- if (length(idx1)) res1 else numeric()
+      p2  <- if (length(idx2)) res2 else numeric()
+    }
+
+    p1_o <- res1_o$pred
+    p2_o <- res2_o$pred
+    v1_o <- if (shrink) res1_o$var else NULL
+    v2_o <- if (shrink) res2_o$var else NULL
 
     sc1 <- if (length(idx1)) compute_aipw_vec(idx1, p1_o) else numeric()
     sc2 <- if (length(idx2)) compute_aipw_vec(idx2, p2_o) else numeric()
 
-    # write into buffers using rid (no match())
     if (length(idx1)) {
       r1 <- rid[idx1]
       pred_buf[r1]   <- p1
       pred_o_buf[r1] <- p1_o
       score_buf[r1]  <- sc1
+      if (shrink) {
+        pred_var_buf[r1]   <- v1
+        pred_o_var_buf[r1] <- v1_o
+      }
     }
     if (length(idx2)) {
       r2 <- rid[idx2]
       pred_buf[r2]   <- p2
       pred_o_buf[r2] <- p2_o
       score_buf[r2]  <- sc2
+      if (shrink) {
+        pred_var_buf[r2]   <- v2
+        pred_o_var_buf[r2] <- v2_o
+      }
     }
 
     if (verbose && (g %% 25L == 0L)) {
@@ -1288,14 +1424,22 @@ fit_models <- function(DT,
   }
 
   # ---- Single writeback ----
-  DT[i, `:=`(pred = pred_buf, pred_o = pred_o_buf, scores = score_buf)]
+  if (shrink) {
+    DT[i, `:=`(pred = pred_buf,
+               pred_var = pred_var_buf,
+               pred_o = pred_o_buf,
+               pred_o_var = pred_o_var_buf,
+               scores = score_buf)]
+  } else {
+    DT[i, `:=`(pred = pred_buf,
+               pred_o = pred_o_buf,
+               scores = score_buf)]
+  }
 
-  # cleanup
   DT[, (rid_col) := NULL]
 
   invisible(DT)
 }
-
 
 
 ####### FIND OPTIMAL CUTOFF AND TEST #############

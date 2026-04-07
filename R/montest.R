@@ -38,7 +38,7 @@
 #' @param seed Integer random seed,
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
-#' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default=FALSE
+#' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
@@ -160,7 +160,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",sim=FALSE,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=FALSE, ##forest opts
+                 gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
                  cp=0,maxrankcp=10L,alpha=0.05,prune=TRUE,preselect="negative", ##CART opts
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list(),
                  tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
@@ -172,7 +172,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
 
 
   ################### 1 CHECK INPUT #####################
+  stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
+  if (testtype=="CART") shrink=0
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
 
   if (!is.null(aipw.clip)) {
@@ -634,7 +636,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw.clip=aipw.clip)
+               aipw.clip=aipw.clip,
+               shrink=(shrink>0))
   }
 
   if (sum(test == "AHS")>0) {
@@ -650,7 +653,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw.clip=aipw.clip)
+               aipw.clip=aipw.clip,
+               shrink=(shrink>0))
   }
 
   if (sum(test == "MW")>0) {
@@ -665,7 +669,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw.clip=aipw.clip)
+               aipw.clip=aipw.clip,
+               shrink=(shrink>0))
   }
 
   if (sum(test == "K")>0) {
@@ -682,7 +687,24 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                weight_name = weight,
                cluster_name = cluster,
                forest_opts = c(forest_opts,Cparameters),
-               aipw.clip=aipw.clip)
+               aipw.clip=aipw.clip,
+               shrink=(shrink>0))
+  }
+
+  ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
+
+
+  if (shrink>0) {
+    shrink_te_crossfit(
+    data        = data,
+    pred        = "pred",
+    pred_var     = "pred_var",
+    pred_out    = "pred_o",
+    pred_out_var = "pred_o_var",
+    margins     = margins,
+    sample      = "sample",
+    gamma       = shrink
+  )
   }
 
 
