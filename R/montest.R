@@ -168,7 +168,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
 ){
 
   time=proc.time()
-  set.seed(seed)
+  if (is.null(seed)==FALSE) set.seed(seed)
 
 
   ################### 1 CHECK INPUT #####################
