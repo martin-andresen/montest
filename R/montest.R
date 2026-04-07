@@ -714,7 +714,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-
   ##res=list()
   ##if (sim==TRUE) {
   ##  poollist=list(character(0),margins[!margins %in% "condition"],c(margins[!margins %in% "condition"],"sample"),c(margins,"sample"),margins)
@@ -753,7 +752,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
         res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
     }
-    if (length(res$minp)>1) res$p=res$minp[6] else res$p=res$minp
+    if (length(res$minp)>1) res$p=res$minp[4] else res$p=res$minp
 
 
   time=rbind(time,finalize=proc.time())

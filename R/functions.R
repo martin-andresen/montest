@@ -1206,7 +1206,7 @@ fit_models <- function(DT,
     }
   }
 
-  # ---- Predict helper ----
+  # ---- Predict helper: ALWAYS returns a list ----
   predict_with_optional_var <- function(fit, X) {
     if (!shrink) {
       p <- predict(fit, X)
@@ -1223,12 +1223,11 @@ fit_models <- function(DT,
     list(pred = as.numeric(p$predictions), var = v)
   }
 
-  # ---- Within-sample predictions (pred) ----
+  # ---- Within-sample predictions (pred): ALWAYS returns a list ----
   within_pred_idx <- function(idx_s) {
     n <- length(idx_s)
     if (n == 0L) {
-      if (shrink) return(list(pred = numeric(), var = numeric()))
-      return(numeric())
+      return(list(pred = numeric(), var = if (shrink) numeric() else NULL))
     }
 
     Xs <- X_all[rid[idx_s], , drop = FALSE]
@@ -1236,17 +1235,13 @@ fit_models <- function(DT,
     # no folds => single fit, in-sample preds
     if (is.null(folds_all)) {
       fit <- build_forest_idx(forest_type, idx_s)
-      out <- predict_with_optional_var(fit, Xs)
-      if (shrink) return(out)
-      return(out$pred)
+      return(predict_with_optional_var(fit, Xs))
     }
 
     f <- folds_all[idx_s]
     if (data.table::uniqueN(f) < 2L) {
       fit <- build_forest_idx(forest_type, idx_s)
-      out <- predict_with_optional_var(fit, Xs)
-      if (shrink) return(out)
-      return(out$pred)
+      return(predict_with_optional_var(fit, Xs))
     }
 
     pos_by_fold <- split(seq_len(n), f)
@@ -1280,8 +1275,7 @@ fit_models <- function(DT,
       }
     }
 
-    if (shrink) return(list(pred = p, var = vv))
-    p
+    list(pred = p, var = vv)
   }
 
   # ---- AIPW scores using OUT-OF-SAMPLE tau (pred_o) ----
@@ -1361,10 +1355,10 @@ fit_models <- function(DT,
 
     } else {
       res1 <- if (length(idx1)) within_pred_idx(idx1) else {
-        if (shrink) list(pred = numeric(), var = numeric()) else numeric()
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
       res2 <- if (length(idx2)) within_pred_idx(idx2) else {
-        if (shrink) list(pred = numeric(), var = numeric()) else numeric()
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
 
       fit1 <- if (length(idx1)) build_forest_idx(forest_type, idx1) else NULL
@@ -1379,20 +1373,17 @@ fit_models <- function(DT,
       } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
     }
 
-    if (shrink) {
-      p1  <- res1$pred
-      p2  <- res2$pred
-      v1  <- res1$var
-      v2  <- res2$var
-    } else {
-      p1  <- if (length(idx1)) res1 else numeric()
-      p2  <- if (length(idx2)) res2 else numeric()
-    }
-
+    p1   <- res1$pred
+    p2   <- res2$pred
     p1_o <- res1_o$pred
     p2_o <- res2_o$pred
-    v1_o <- if (shrink) res1_o$var else NULL
-    v2_o <- if (shrink) res2_o$var else NULL
+
+    if (shrink) {
+      v1   <- res1$var
+      v2   <- res2$var
+      v1_o <- res1_o$var
+      v2_o <- res2_o$var
+    }
 
     sc1 <- if (length(idx1)) compute_aipw_vec(idx1, p1_o) else numeric()
     sc2 <- if (length(idx2)) compute_aipw_vec(idx2, p2_o) else numeric()
@@ -1440,7 +1431,6 @@ fit_models <- function(DT,
 
   invisible(DT)
 }
-
 
 ####### FIND OPTIMAL CUTOFF AND TEST #############
 forest_test <- function(
