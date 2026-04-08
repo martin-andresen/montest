@@ -43,3 +43,4 @@
 .quarto
 inst/doc
 newsims.rds
+*.rds
