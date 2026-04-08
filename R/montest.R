@@ -735,7 +735,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   ################ 7: Multiple hypothesis testing and output #####################
     if (nrow(res$results[train==FALSE])==1) {
       res$minwhere=NA
-      res$minp=res$results[train==FALSE,p.raw]
+      res$minp=rep(res$results[train==FALSE,p.raw],6)
+      names(res$minp)=paste0("p.",c("raw","holm","hochberg","BH","BY","CCT"))
     } else {
       for (m in c("holm","hochberg","BH","BY")) {
         res$results[train==FALSE&is.na(t)==FALSE,paste0("p.",m):=p.adjust(p.raw,method=m)]
@@ -752,8 +753,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
         res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
     }
-    if (length(res$minp)>1) res$p=res$minp[4] else res$p=res$minp
-
 
   time=rbind(time,finalize=proc.time())
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
