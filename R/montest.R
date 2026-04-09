@@ -156,7 +156,7 @@
 #' @seealso montestplot LATEtest
 #' @export
 
-montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=TRUE,
+montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",sim=FALSE,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
@@ -172,6 +172,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
 
 
   ################### 1 CHECK INPUT #####################
+  crossfit=match.arg(crossfit,c("Z","Q","forest","Y"),several.ok=TRUE)
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
@@ -361,6 +362,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
         newvar = paste0(Yno, ".bin")
       )
       col <- paste0(Yno, ".bin")
+      data[,col:=col+1]
       maxlevs <- c(maxlevs, max(data[[col]], na.rm = TRUE))
       Ybin=c(Ybin,paste0(Yno,".bin"))
     }
@@ -419,7 +421,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
       x_names = X,
       margins = margins,
       weight_name = weight,
-      forest_opts = c(forest_opts,Zparameters)
+      forest_opts = c(forest_opts,Zparameters),
+      mode=if ("Z" %in% crossfit) "across" else "within"
     )
   } else {
     data[,(paste0(Z,".hat")):=(mean(get(..Z))*.N-get(..Z))/(.N-1),by=c("sample",margins)] ##leave one out mean
@@ -450,6 +453,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
       folds=foldname,
       margins = margins,
       weight_name = weight,
+      mode=if ("Y" %in% crossfit) "across" else "within",
       forest_opts = c(forest_opts,Yparameters)
     )
     data[,paste0(Y,".res"):=get(..Y)-get(paste0(..Y,".hat"))]
@@ -476,6 +480,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
       folds=foldname,
       margins = margins,
       weight_name = weight,
+      mode=if ("D" %in% crossfit) "across" else "within",
       forest_opts = c(forest_opts,Dparameters)
     )
   }
@@ -549,7 +554,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
   ##Expand to all groups of Ybin for BP, K conditions
   if (sum(test %in% c("BP","K"))>0) {
     data=data[rep(seq(.N), 1+(maxlevsY-1)*(condition %in% c("BPK","K","BP")))]
-    data[condition %in% c("BP","K","BPK"),ybin:=(1:maxlevsY),by=c("id_",margins)]
+    data[condition %in% c("BP","K","BPK"),ybin:=(1:maxlevsY)-1,by=c("id_",margins)]
     margins=c(margins,"ybin")
   }
 
@@ -593,6 +598,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
       folds=foldname,
       margins = margins,
       weight_name = weight,
+      mode=if ("Q" %in% crossfit) "across" else "within",
       forest_opts = c(forest_opts,Qparameters)
     )
   }
@@ -607,6 +613,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
       x_names = c(X,paste0(Y,".res")),
       margins = margins,
       weight_name = weight,
+      mode=if ("Q" %in% crossfit) "across" else "within",
       forest_opts = Qparameters
     )
   }
@@ -621,7 +628,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
   forest_opts=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
-  if (crossfit.forest==FALSE) foldname=NULL #Do not crossfit causal forest, just the nuissances
+  if ("forest" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances
 
   if (sum(test %in% c("simple","BP"))>0) {
     if (length(test)>1) i=which(data$condition %in% c("simple","BP")) else i=NULL

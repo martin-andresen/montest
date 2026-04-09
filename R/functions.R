@@ -900,9 +900,10 @@ crossfit_hat <- function(DT,
                          x_names,
                          margins = NULL,
                          weight_name = NULL,
-                         folds = NULL,              # name of fold-id column (within-sample crossfit)
+                         folds = NULL,              # NULL => OOB if mode = "within"
                          forest_opts = list(),
                          hat_suffix = ".hat",
+                         mode = c("within", "across"),
                          verbose = FALSE) {
 
   stopifnot(data.table::is.data.table(DT))
@@ -910,6 +911,8 @@ crossfit_hat <- function(DT,
   stopifnot(is.character(x_names), length(x_names) >= 1L)
   stopifnot("sample" %chin% names(DT))
   stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
+
+  mode <- match.arg(mode)
 
   if (!is.null(folds)) {
     stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
@@ -935,24 +938,19 @@ crossfit_hat <- function(DT,
   hat_col <- paste0(y_name, hat_suffix)
   if (!(hat_col %chin% names(DT))) DT[, (hat_col) := NA_real_]
 
-  # ---- Precompute X for rows i ONCE ----
   X_all <- as.matrix(DT[i, ..x_names])
 
-  # rowid within i subset for fast X indexing and preds_buf indexing
   rid_col <- ".__rid__"
   DT[i, (rid_col) := seq_len(n_i)]
-  rid <- DT[[rid_col]]  # local alias for speed
+  rid <- DT[[rid_col]]
 
-  # pull vectors once (and coerce once)
   sample_all <- DT[["sample"]]
   y_all <- as.numeric(DT[[y_name]])
   w_all <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
   f_all <- if (!is.null(folds)) DT[[folds]] else NULL
 
-  # output buffer aligned with i via rid
   preds_buf <- rep(NA_real_, n_i)
 
-  # Fit on idx_tr, predict on idx_te
   fit_predict_idx <- function(idx_tr, idx_te) {
     n_te <- length(idx_te)
     preds <- rep(NA_real_, n_te)
@@ -964,14 +962,12 @@ crossfit_hat <- function(DT,
     y_tr <- y_all[idx_tr]
     w_tr <- if (is.null(w_all)) NULL else w_all[idx_tr]
 
-    # fallback: too few training rows
     if (n_tr < 2L) {
       mu <- if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
       preds[] <- mu
       return(preds)
     }
 
-    # fallback: constant outcome (ignore non-finite) without unique()
     y_fin <- y_tr[is.finite(y_tr)]
     if (length(y_fin) == 0L) return(preds)
     if (!any(y_fin != y_fin[1L])) {
@@ -986,7 +982,7 @@ crossfit_hat <- function(DT,
         X = X_tr,
         Y = y_tr,
         sample.weights = w_tr,
-        compute.oob.predictions=FALSE
+        compute.oob.predictions = FALSE
       ), forest_opts)
     )
 
@@ -995,40 +991,36 @@ crossfit_hat <- function(DT,
     preds
   }
 
-  # Within-sample K-fold predictions for one (sample, margins-cell) subset
   within_pred_idx <- function(idx_s) {
     n <- length(idx_s)
     if (n == 0L) return(numeric())
 
-    # if no folds, fit once and predict in-sample
-    if (is.null(f_all)) {
-      fit <- do.call(
-        grf::regression_forest,
-        c(list(
-          X = X_all[rid[idx_s], , drop = FALSE],
-          Y = y_all[idx_s],
-          sample.weights = if (is.null(w_all)) NULL else w_all[idx_s],
-          compute.oob.predictions=FALSE
-        ), forest_opts)
-      )
-      return(as.numeric(predict(fit, X_all[rid[idx_s], , drop = FALSE])$predictions))
-    }
-
     f <- f_all[idx_s]
     if (data.table::uniqueN(f) < 2L) {
+      y_s <- y_all[idx_s]
+      w_s <- if (is.null(w_all)) NULL else w_all[idx_s]
+
+      if (n < 2L) {
+        mu <- if (is.null(w_s)) mean(y_s) else stats::weighted.mean(y_s, w_s)
+        return(rep(mu, n))
+      }
+
+      y_fin <- y_s[is.finite(y_s)]
+      if (length(y_fin) == 0L) return(rep(NA_real_, n))
+      if (!any(y_fin != y_fin[1L])) return(rep(y_fin[1L], n))
+
       fit <- do.call(
         grf::regression_forest,
         c(list(
           X = X_all[rid[idx_s], , drop = FALSE],
-          Y = y_all[idx_s],
-          sample.weights = if (is.null(w_all)) NULL else w_all[idx_s],
-          compute.oob.predictions=FALSE
+          Y = y_s,
+          sample.weights = w_s,
+          compute.oob.predictions = TRUE
         ), forest_opts)
       )
-      return(as.numeric(predict(fit, X_all[rid[idx_s], , drop = FALSE])$predictions))
+      return(as.numeric(predict(fit)$predictions))
     }
 
-    # precompute positions per fold once; avoid repeated which(f==k)
     pos_by_fold <- split(seq_len(n), f)
 
     p <- rep(NA_real_, n)
@@ -1043,7 +1035,6 @@ crossfit_hat <- function(DT,
       idx_tr <- idx_s[tr_pos]
       idx_te <- idx_s[te_pos]
 
-      # fallback if training too small
       if (length(idx_tr) < 2L) {
         y_tr <- y_all[idx_tr]
         w_tr <- if (is.null(w_all)) NULL else w_all[idx_tr]
@@ -1058,7 +1049,41 @@ crossfit_hat <- function(DT,
     p
   }
 
-  # ---- Build group index lists once (kept as-is; straightforward) ----
+  within_oob_idx <- function(idx_s) {
+    n <- length(idx_s)
+    p <- rep(NA_real_, n)
+    if (n == 0L) return(p)
+
+    y_s <- y_all[idx_s]
+    w_s <- if (is.null(w_all)) NULL else w_all[idx_s]
+
+    if (n < 2L) {
+      mu <- if (is.null(w_s)) mean(y_s) else stats::weighted.mean(y_s, w_s)
+      p[] <- mu
+      return(p)
+    }
+
+    y_fin <- y_s[is.finite(y_s)]
+    if (length(y_fin) == 0L) return(p)
+    if (!any(y_fin != y_fin[1L])) {
+      p[] <- y_fin[1L]
+      return(p)
+    }
+
+    fit <- do.call(
+      grf::regression_forest,
+      c(list(
+        X = X_all[rid[idx_s], , drop = FALSE],
+        Y = y_s,
+        sample.weights = w_s,
+        compute.oob.predictions = TRUE
+      ), forest_opts)
+    )
+
+    p[] <- as.numeric(predict(fit)$predictions)
+    p
+  }
+
   idx_all <- i
   if (length(grp_cols) == 0L) {
     group_list <- list(idx_all)
@@ -1068,7 +1093,6 @@ crossfit_hat <- function(DT,
     group_list <- split(idx_all, gid)
   }
 
-  # ---- Main loop over groups ----
   for (g in seq_along(group_list)) {
     idx_g <- group_list[[g]]
     if (length(idx_g) == 0L) next
@@ -1076,27 +1100,27 @@ crossfit_hat <- function(DT,
     idx1 <- idx_g[sample_all[idx_g] == 1L]
     idx2 <- idx_g[sample_all[idx_g] == 2L]
 
-    if (is.null(folds)) {
-      # ACROSS-SAMPLE mode: train 1 -> predict 2 and train 2 -> predict 1
+    if (mode == "across") {
       if (length(idx1) > 1L && length(idx2) > 0L) {
         preds_buf[rid[idx2]] <- fit_predict_idx(idx1, idx2)
       } else if (length(idx1) == 1L && length(idx2) > 0L) {
-        # 1 training obs: mean fallback
-        mu <- y_all[idx1]
-        preds_buf[rid[idx2]] <- mu
+        preds_buf[rid[idx2]] <- y_all[idx1]
       }
 
       if (length(idx2) > 1L && length(idx1) > 0L) {
         preds_buf[rid[idx1]] <- fit_predict_idx(idx2, idx1)
       } else if (length(idx2) == 1L && length(idx1) > 0L) {
-        mu <- y_all[idx2]
-        preds_buf[rid[idx1]] <- mu
+        preds_buf[rid[idx1]] <- y_all[idx2]
       }
 
     } else {
-      # WITHIN-SAMPLE crossfit mode: out-of-fold predictions within each sample part
-      if (length(idx1) > 0L) preds_buf[rid[idx1]] <- within_pred_idx(idx1)
-      if (length(idx2) > 0L) preds_buf[rid[idx2]] <- within_pred_idx(idx2)
+      if (is.null(folds)) {
+        if (length(idx1) > 0L) preds_buf[rid[idx1]] <- within_oob_idx(idx1)
+        if (length(idx2) > 0L) preds_buf[rid[idx2]] <- within_oob_idx(idx2)
+      } else {
+        if (length(idx1) > 0L) preds_buf[rid[idx1]] <- within_pred_idx(idx1)
+        if (length(idx2) > 0L) preds_buf[rid[idx2]] <- within_pred_idx(idx2)
+      }
     }
 
     if (verbose && (g %% 25L == 0L)) {
@@ -1104,13 +1128,11 @@ crossfit_hat <- function(DT,
     }
   }
 
-  # writeback + cleanup
   DT[i, (hat_col) := preds_buf]
   DT[, (rid_col) := NULL]
 
   invisible(DT)
 }
-
 
 # ========= Helper: Estimate causal/regression/instrumental forests =========
 fit_models <- function(DT,
@@ -1121,7 +1143,7 @@ fit_models <- function(DT,
                        margins = NULL,
                        w_name = NULL,
                        z_name = NULL,
-                       folds = NULL,              # name of fold-id column (within-sample crossfit for pred only)
+                       folds = NULL,              # NULL => within-sample OOB for pred
                        weight_name = NULL,
                        cluster_name = NULL,
                        forest_opts = NULL,
@@ -1151,7 +1173,6 @@ fit_models <- function(DT,
 
   if (is.null(forest_opts)) forest_opts <- list()
 
-  # Output cols
   if (!("pred"   %chin% names(DT))) DT[, pred   := NA_real_]
   if (!("pred_o" %chin% names(DT))) DT[, pred_o := NA_real_]
   if (!("scores" %chin% names(DT))) DT[, scores := NA_real_]
@@ -1160,7 +1181,6 @@ fit_models <- function(DT,
     if (!("pred_o_var" %chin% names(DT))) DT[, pred_o_var := NA_real_]
   }
 
-  # Nuisance names (must exist for causal/IV)
   y_hat <- paste0(y_name, ".hat")
   w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
   z_hat <- if (!is.null(z_name)) paste0(z_name, ".hat") else NULL
@@ -1174,15 +1194,12 @@ fit_models <- function(DT,
     stopifnot(z_hat %chin% names(DT))
   }
 
-  # ---- Precompute X for rows i ONCE ----
   X_all <- as.matrix(DT[i, ..x_names])
 
-  # rowid within the i-subset (used for both X indexing + output buffers)
   rid_col <- ".__rid__"
   DT[i, (rid_col) := seq_len(n_i)]
   rid <- DT[[rid_col]]
 
-  # Pull commonly used vectors once
   sample_all <- DT[["sample"]]
   folds_all  <- if (!is.null(folds)) DT[[folds]] else NULL
   wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
@@ -1200,8 +1217,7 @@ fit_models <- function(DT,
     zhat_all <- as.numeric(DT[[z_hat]])
   }
 
-  # ---- Forest builder taking DT-row indices ----
-  build_forest_idx <- function(type, idx) {
+  build_forest_idx <- function(type, idx, compute.oob.predictions = FALSE) {
     X <- X_all[rid[idx], , drop = FALSE]
     Y <- y_all[idx]
     sw <- if (is.null(wgt_all)) NULL else wgt_all[idx]
@@ -1210,7 +1226,7 @@ fit_models <- function(DT,
     if (type == "regression") {
       do.call(grf::regression_forest,
               c(list(X = X, Y = Y, sample.weights = sw, clusters = cl,
-                     compute.oob.predictions = FALSE), forest_opts))
+                     compute.oob.predictions = compute.oob.predictions), forest_opts))
     } else if (type == "causal") {
       W <- w_all[idx]
       do.call(grf::causal_forest,
@@ -1219,8 +1235,8 @@ fit_models <- function(DT,
                      W.hat = what_all[idx],
                      sample.weights = sw,
                      clusters = cl,
-                     compute.oob.predictions = FALSE), forest_opts))
-    } else { # instrumental
+                     compute.oob.predictions = compute.oob.predictions), forest_opts))
+    } else {
       W <- w_all[idx]
       Z <- z_all[idx]
       do.call(grf::instrumental_forest,
@@ -1230,11 +1246,10 @@ fit_models <- function(DT,
                      Z.hat = zhat_all[idx],
                      sample.weights = sw,
                      clusters = cl,
-                     compute.oob.predictions = FALSE), forest_opts))
+                     compute.oob.predictions = compute.oob.predictions), forest_opts))
     }
   }
 
-  # ---- Predict helper: ALWAYS returns a list ----
   predict_with_optional_var <- function(fit, X) {
     if (!shrink) {
       p <- predict(fit, X)
@@ -1251,7 +1266,22 @@ fit_models <- function(DT,
     list(pred = as.numeric(p$predictions), var = v)
   }
 
-  # ---- Within-sample predictions (pred): ALWAYS returns a list ----
+  predict_oob_with_optional_var <- function(fit, n) {
+    if (!shrink) {
+      p <- predict(fit)
+      return(list(pred = as.numeric(p$predictions), var = NULL))
+    }
+
+    p <- predict(fit, estimate.variance = TRUE)
+    v <- if (!is.null(p$variance.estimates)) {
+      pmax(as.numeric(p$variance.estimates), 0)
+    } else {
+      rep(NA_real_, n)
+    }
+
+    list(pred = as.numeric(p$predictions), var = v)
+  }
+
   within_pred_idx <- function(idx_s) {
     n <- length(idx_s)
     if (n == 0L) {
@@ -1260,16 +1290,10 @@ fit_models <- function(DT,
 
     Xs <- X_all[rid[idx_s], , drop = FALSE]
 
-    # no folds => single fit, in-sample preds
-    if (is.null(folds_all)) {
-      fit <- build_forest_idx(forest_type, idx_s)
-      return(predict_with_optional_var(fit, Xs))
-    }
-
     f <- folds_all[idx_s]
     if (data.table::uniqueN(f) < 2L) {
-      fit <- build_forest_idx(forest_type, idx_s)
-      return(predict_with_optional_var(fit, Xs))
+      fit <- build_forest_idx(forest_type, idx_s, compute.oob.predictions = TRUE)
+      return(predict_oob_with_optional_var(fit, n))
     }
 
     pos_by_fold <- split(seq_len(n), f)
@@ -1296,7 +1320,7 @@ fit_models <- function(DT,
         p[te_pos] <- mu
         if (shrink) vv[te_pos] <- NA_real_
       } else {
-        fit_k <- build_forest_idx(forest_type, idx_s[tr_pos])
+        fit_k <- build_forest_idx(forest_type, idx_s[tr_pos], compute.oob.predictions = FALSE)
         out_k <- predict_with_optional_var(fit_k, Xs[te_pos, , drop = FALSE])
         p[te_pos] <- out_k$pred
         if (shrink) vv[te_pos] <- out_k$var
@@ -1306,7 +1330,15 @@ fit_models <- function(DT,
     list(pred = p, var = vv)
   }
 
-  # ---- AIPW scores using OUT-OF-SAMPLE tau (pred_o) ----
+  within_oob_idx <- function(idx_s) {
+    n <- length(idx_s)
+    if (n == 0L) {
+      return(list(pred = numeric(), var = if (shrink) numeric() else NULL))
+    }
+    fit <- build_forest_idx(forest_type, idx_s, compute.oob.predictions = TRUE)
+    predict_oob_with_optional_var(fit, n)
+  }
+
   compute_aipw_vec <- function(idx_s, tau_vec) {
     n <- length(idx_s)
     if (n == 0L) return(numeric())
@@ -1333,7 +1365,6 @@ fit_models <- function(DT,
     tau + (W / e) * (Y - m1) - ((1 - W) / (1 - e)) * (Y - m0)
   }
 
-  # ---- Build group index lists once ----
   idx_all <- i
   if (length(grp_cols) == 0L) {
     group_list <- list(idx_all)
@@ -1343,7 +1374,6 @@ fit_models <- function(DT,
     group_list <- split(idx_all, gid)
   }
 
-  # ---- Output buffers aligned with rid ----
   pred_buf   <- rep(NA_real_, n_i)
   pred_o_buf <- rep(NA_real_, n_i)
   score_buf  <- rep(NA_real_, n_i)
@@ -1353,7 +1383,6 @@ fit_models <- function(DT,
     pred_o_var_buf <- rep(NA_real_, n_i)
   }
 
-  # ---- Main loop ----
   for (g in seq_along(group_list)) {
     idx_g <- group_list[[g]]
     if (length(idx_g) == 0L) next
@@ -1361,26 +1390,23 @@ fit_models <- function(DT,
     idx1 <- idx_g[sample_all[idx_g] == 1L]
     idx2 <- idx_g[sample_all[idx_g] == 2L]
 
+    fit1 <- if (length(idx1)) build_forest_idx(
+      forest_type, idx1,
+      compute.oob.predictions = is.null(folds_all)
+    ) else NULL
+
+    fit2 <- if (length(idx2)) build_forest_idx(
+      forest_type, idx2,
+      compute.oob.predictions = is.null(folds_all)
+    ) else NULL
+
     if (is.null(folds_all)) {
-      fit1 <- if (length(idx1)) build_forest_idx(forest_type, idx1) else NULL
-      fit2 <- if (length(idx2)) build_forest_idx(forest_type, idx2) else NULL
-
-      res1 <- if (!is.null(fit1) && length(idx1)) {
-        predict_with_optional_var(fit1, X_all[rid[idx1], , drop = FALSE])
-      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
-
-      res2 <- if (!is.null(fit2) && length(idx2)) {
-        predict_with_optional_var(fit2, X_all[rid[idx2], , drop = FALSE])
-      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
-
-      res1_o <- if (!is.null(fit2) && length(idx1)) {
-        predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
-      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
-
-      res2_o <- if (!is.null(fit1) && length(idx2)) {
-        predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
-      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
-
+      res1 <- if (length(idx1)) within_oob_idx(idx1) else {
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      }
+      res2 <- if (length(idx2)) within_oob_idx(idx2) else {
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      }
     } else {
       res1 <- if (length(idx1)) within_pred_idx(idx1) else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
@@ -1388,18 +1414,15 @@ fit_models <- function(DT,
       res2 <- if (length(idx2)) within_pred_idx(idx2) else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
-
-      fit1 <- if (length(idx1)) build_forest_idx(forest_type, idx1) else NULL
-      fit2 <- if (length(idx2)) build_forest_idx(forest_type, idx2) else NULL
-
-      res1_o <- if (!is.null(fit2) && length(idx1)) {
-        predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
-      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
-
-      res2_o <- if (!is.null(fit1) && length(idx2)) {
-        predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
-      } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
     }
+
+    res1_o <- if (!is.null(fit2) && length(idx1)) {
+      predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
+    } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
+
+    res2_o <- if (!is.null(fit1) && length(idx2)) {
+      predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
+    } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
 
     p1   <- res1$pred
     p2   <- res2$pred
@@ -1442,7 +1465,6 @@ fit_models <- function(DT,
     }
   }
 
-  # ---- Single writeback ----
   if (shrink) {
     DT[i, `:=`(pred = pred_buf,
                pred_var = pred_var_buf,
