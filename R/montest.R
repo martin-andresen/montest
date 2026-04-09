@@ -362,7 +362,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
         newvar = paste0(Yno, ".bin")
       )
       col <- paste0(Yno, ".bin")
-      data[,col:=col+1]
       maxlevs <- c(maxlevs, max(data[[col]], na.rm = TRUE))
       Ybin=c(Ybin,paste0(Yno,".bin"))
     }
@@ -553,8 +552,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
   ##Expand to all groups of Ybin for BP, K conditions
   if (sum(test %in% c("BP","K"))>0) {
-    data=data[rep(seq(.N), 1+(maxlevsY-1)*(condition %in% c("BPK","K","BP")))]
-    data[condition %in% c("BP","K","BPK"),ybin:=(1:maxlevsY)-1,by=c("id_",margins)]
+    data=data[rep(seq(.N), 1+maxlevsY*(condition %in% c("BPK","K","BP")))]
+    data[condition %in% c("BP","K","BPK"),ybin:=(0:maxlevsY),by=c("id_",margins)]
     margins=c(margins,"ybin")
   }
 
