@@ -161,7 +161,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit.forest=
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",sim=FALSE,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
-                 cp=0,maxrankcp=10L,alpha=0.05,prune=TRUE,preselect="negative", ##CART opts
+                 cp=0,maxrankcp=10L,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list(),
                  tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
                  tune.num.trees=200,tune.num.reps=50,tune.num.draws=1000,tunetype="one" ##tuning options
