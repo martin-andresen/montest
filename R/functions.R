@@ -1440,8 +1440,8 @@ fit_models <- function(DT,
       v2_o <- res2_o$var
     }
 
-    sc1 <- if (length(idx1)) compute_aipw_vec(idx1, p1_o) else numeric()
-    sc2 <- if (length(idx2)) compute_aipw_vec(idx2, p2_o) else numeric()
+    sc1 <- if (length(idx1)) compute_aipw_vec(idx1, p1) else numeric()
+    sc2 <- if (length(idx2)) compute_aipw_vec(idx2, p2) else numeric()
 
     if (length(idx1)) {
       r1 <- rid[idx1]
