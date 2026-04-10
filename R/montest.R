@@ -25,7 +25,7 @@
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to 5.
-#' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q,"Y","C","D". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used.
+#' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q,"Y","C","D". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
 #' @param aipw.clip Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
@@ -156,7 +156,7 @@
 #' @export
 
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
-                 normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
+                 normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
@@ -171,7 +171,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
 
   ################### 1 CHECK INPUT #####################
-  crossfit=match.arg(crossfit,c("Z","Q","forest","Y"),several.ok=TRUE)
+  crossfit=match.arg(crossfit,c("Z","Q","C","Y"),several.ok=TRUE)
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
@@ -182,7 +182,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       is.numeric(aipw.clip),
       length(aipw.clip) == 1L,
       is.finite(aipw.clip),
-      aipw.clip > 0,
+      aipw.clip >= 0,
       aipw.clip < 1
     )
   }
@@ -626,7 +626,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
   forest_opts=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
-  if ("forest" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances
+  if ("C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances
 
   if (sum(test %in% c("simple","BP"))>0) {
     if (length(test)>1) i=which(data$condition %in% c("simple","BP")) else i=NULL
