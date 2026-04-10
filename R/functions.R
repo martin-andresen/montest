@@ -134,7 +134,9 @@ CART_test <- function(
     minsize = 50L,
     preselect = c("none", "minimum", "negative", "nonpositive", "fgk_relevant"),
     store_trees = FALSE,
-    verbose = FALSE
+    verbose = FALSE,
+    xval=10,
+    rpart_options=NULL
 ) {
   stopifnot(data.table::is.data.table(data))
   preselect <- match.arg(preselect)
@@ -362,21 +364,23 @@ CART_test <- function(
     w_tr <- if (!is.null(weight_col)) as.numeric(dtr[[weight_col]]) else NULL
     fml <- stats::as.formula(paste0(scores_col, " ~ ", paste(x_names, collapse = " + ")))
 
+
     tree <- rpart::rpart(
       formula = fml,
       data = df_tr,
       method = "anova",
       weights = w_tr,
-      control = rpart::rpart.control(cp = cp, minbucket = minsize)
+      control = do.call(rpart::rpart.control, modifyList(rpart_options %||% list(),
+                                                         list(cp = cp, minbucket = minsize)))
     )
 
     if (!is.null(tree$cp) && nrow(tree$cp) > 0L) {
-      maxrankcp2 <- min(maxrankcp, nrow(tree$cp))
+      maxrankcp2 <- min(maxrankcp, nrow(tree$cptable))
       maxcp <- tree$cp[maxrankcp2, 1]
       if (isTRUE(prune)) {
-        opcpid <- which.min(tree$cp[, 4])
-        opcp <- tree$cp[opcpid, 1]
-        tree <- rpart::prune(tree, cp = max(maxcp, opcp))
+        opcpid <- which.min(tree$cptable[, 4])
+        opcp <- tree$cptable[opcpid, 1]
+        tree <- rpart::prune(tree, cp = opcp)
       } else {
         tree <- rpart::prune(tree, cp = maxcp)
       }

@@ -25,8 +25,7 @@
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to 5.
-#' @param crossfit.forest Logical, default TRUE; if \code{TRUE}, forest predictions are cross-fitted
-#'   within each sample half when supported.
+#' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q,"Y","C","D". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used.
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
 #' @param aipw.clip Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
@@ -35,7 +34,7 @@
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing canot be combined with cluster.
 #' @param num.trees Integer, default 2000 giving the number of trees for the main forest fits.
-#' @param seed Integer random seed,
+#' @param seed Integer random seed, default 10101, set to NULL to disable setting seed
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
 #' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
@@ -158,10 +157,10 @@
 
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
-                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",sim=FALSE,
+                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
-                 cp=0,maxrankcp=10L,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
+                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list(),
                  tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
                  tune.num.trees=200,tune.num.reps=50,tune.num.draws=1000,tunetype="one" ##tuning options
@@ -732,7 +731,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   ##} else {   ##}
 
   if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins)
-  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,select=selectmargins)
+  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,select=selectmargins,rpart_options=rpart_options)
 
 
   time=rbind(time,find_and_test=proc.time())
