@@ -777,17 +777,25 @@ make_group_folds <- function(DT,
                              cluster_name = NULL,
                              fold_col = "fold",
                              by_col = NULL,        # NULL = global; else within groups
+                             strat_col = NULL,     # NULL = no stratification
                              diag_prefix = "cf_",
                              verbose = TRUE) {
   stopifnot(data.table::is.data.table(DT))
-  stopifnot(is.numeric(K) && K >= 2)
+  stopifnot(is.numeric(K), length(K) == 1L, K >= 2)
   stopifnot(is.character(fold_col), length(fold_col) == 1L)
 
   if (!is.null(by_col)) {
     stopifnot(is.character(by_col), length(by_col) == 1L, by_col %chin% names(DT))
   }
+  if (!is.null(strat_col)) {
+    stopifnot(is.character(strat_col), length(strat_col) == 1L, strat_col %chin% names(DT))
+  }
   if (!is.null(cluster_name)) {
     stopifnot(is.character(cluster_name), length(cluster_name) == 1L, cluster_name %chin% names(DT))
+  }
+
+  if (!is.null(cluster_name) && !is.null(strat_col)) {
+    stop("make_group_folds(): stratification and clustering cannot currently be used together.")
   }
 
   has_diag <- !is.null(diag_prefix)
@@ -801,7 +809,6 @@ make_group_folds <- function(DT,
   make_one <- function(n, cl = NULL) {
     ok <- rep(TRUE, n)
     n_ok <- n
-
     fold <- rep(NA_integer_, n)
 
     if (!is.null(cl)) {
@@ -850,7 +857,9 @@ make_group_folds <- function(DT,
     fold
   }
 
-  if (is.null(by_col)) {
+  split_by <- c(by_col, strat_col)
+
+  if (length(split_by) == 0L) {
     # ---------- GLOBAL SPLIT ----------
     n <- nrow(DT)
     cl <- if (!is.null(cluster_name)) DT[[cluster_name]] else NULL
@@ -869,32 +878,41 @@ make_group_folds <- function(DT,
     }
 
   } else {
-    # ---------- WITHIN-GROUP SPLIT ----------
+    # ---------- WITHIN-BLOCK SPLIT ----------
     if (has_diag) {
       DT[, c(fold_col, k_col, g_col, n_col) := {
         cl <- if (!is.null(cluster_name)) get(cluster_name) else NULL
         make_one(.N, cl)
-      }, by = by_col]
+      }, by = split_by]
     } else {
       DT[, (fold_col) := {
         cl <- if (!is.null(cluster_name)) get(cluster_name) else NULL
         make_one(.N, cl)
-      }, by = by_col]
+      }, by = split_by]
     }
 
     if (verbose) {
-      message(sprintf(
-        "Cross-fitting folds: created '%s' with up to %d folds within '%s'.",
-        fold_col, K, by_col
-      ))
+      if (!is.null(by_col) && !is.null(strat_col)) {
+        message(sprintf(
+          "Cross-fitting folds: created '%s' with up to %d folds within '%s', stratified by '%s'.",
+          fold_col, K, by_col, strat_col
+        ))
+      } else if (!is.null(by_col)) {
+        message(sprintf(
+          "Cross-fitting folds: created '%s' with up to %d folds within '%s'.",
+          fold_col, K, by_col
+        ))
+      } else {
+        message(sprintf(
+          "Cross-fitting folds: created '%s' with up to %d folds stratified by '%s'.",
+          fold_col, K, strat_col
+        ))
+      }
     }
   }
 
   invisible(DT)
 }
-
-
-
 
 
 # ========= Helper: Predict nuissance using regression-forest - cross-fit across sample parts =========
@@ -1153,6 +1171,423 @@ fit_models <- function(DT,
                        forest_opts = NULL,
                        aipw.clip = 1e-3,
                        shrink = FALSE,
+                       verbose = FALSE,
+                       debug_get_scores = FALSE) {
+
+  stopifnot(data.table::is.data.table(DT))
+  forest_type <- match.arg(forest_type)
+
+  stopifnot("sample" %chin% names(DT))
+  stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
+
+  if (!is.null(folds)) stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
+  if (!is.null(aipw.clip)) {
+    stopifnot(is.numeric(aipw.clip), length(aipw.clip) == 1L, is.finite(aipw.clip), aipw.clip >= 0, aipw.clip < 1)
+  }
+  stopifnot(is.logical(shrink), length(shrink) == 1L, !is.na(shrink))
+  stopifnot(is.logical(debug_get_scores), length(debug_get_scores) == 1L, !is.na(debug_get_scores))
+
+  if (debug_get_scores && !identical(forest_type, "causal")) {
+    warning("debug_get_scores is only implemented for forest_type = 'causal'; ignoring.")
+    debug_get_scores <- FALSE
+  }
+  if (debug_get_scores && !is.null(folds)) {
+    warning("debug_get_scores currently only compares against get_scores() when folds = NULL; ignoring.")
+    debug_get_scores <- FALSE
+  }
+
+  if (is.null(i)) i <- DT[, .I]
+  i <- as.integer(i)
+  n_i <- length(i)
+  if (n_i == 0L) return(invisible(DT))
+
+  if (is.null(margins)) margins <- character()
+  grp_cols <- as.character(margins)
+
+  if (is.null(forest_opts)) forest_opts <- list()
+
+  if (!("pred"   %chin% names(DT))) DT[, pred   := NA_real_]
+  if (!("pred_o" %chin% names(DT))) DT[, pred_o := NA_real_]
+  if (!("scores" %chin% names(DT))) DT[, scores := NA_real_]
+  if (shrink) {
+    if (!("pred_var"   %chin% names(DT))) DT[, pred_var   := NA_real_]
+    if (!("pred_o_var" %chin% names(DT))) DT[, pred_o_var := NA_real_]
+  }
+  if (debug_get_scores) {
+    if (!("scores_grf"       %chin% names(DT))) DT[, scores_grf := NA_real_]
+    if (!("scores_diff"      %chin% names(DT))) DT[, scores_diff := NA_real_]
+    if (!("scores_grf_corr"  %chin% names(DT))) DT[, scores_grf_corr := NA_real_]
+  }
+
+  y_hat <- paste0(y_name, ".hat")
+  w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
+  z_hat <- if (!is.null(z_name)) paste0(z_name, ".hat") else NULL
+
+  if (forest_type %in% c("causal", "instrumental")) {
+    stopifnot(!is.null(w_name), w_name %chin% names(DT))
+    stopifnot(y_hat %chin% names(DT), w_hat %chin% names(DT))
+  }
+  if (forest_type == "instrumental") {
+    stopifnot(!is.null(z_name), z_name %chin% names(DT))
+    stopifnot(z_hat %chin% names(DT))
+  }
+
+  X_all <- as.matrix(DT[i, ..x_names])
+
+  rid_col <- ".__rid__"
+  DT[i, (rid_col) := seq_len(n_i)]
+  rid <- DT[[rid_col]]
+
+  sample_all <- DT[["sample"]]
+  folds_all  <- if (!is.null(folds)) DT[[folds]] else NULL
+  wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
+  cl_all     <- if (!is.null(cluster_name)) DT[[cluster_name]] else NULL
+
+  y_all <- as.numeric(DT[[y_name]])
+
+  if (forest_type %in% c("causal", "instrumental")) {
+    w_all    <- as.numeric(DT[[w_name]])
+    yhat_all <- as.numeric(DT[[y_hat]])
+    what_all <- as.numeric(DT[[w_hat]])
+  }
+  if (forest_type == "instrumental") {
+    z_all    <- as.numeric(DT[[z_name]])
+    zhat_all <- as.numeric(DT[[z_hat]])
+  }
+
+  build_forest_idx <- function(type, idx, compute.oob.predictions = FALSE) {
+    X <- X_all[rid[idx], , drop = FALSE]
+    Y <- y_all[idx]
+    sw <- if (is.null(wgt_all)) NULL else wgt_all[idx]
+    cl <- if (is.null(cl_all)) NULL else cl_all[idx]
+
+    if (type == "regression") {
+      do.call(grf::regression_forest,
+              c(list(X = X, Y = Y, sample.weights = sw, clusters = cl,
+                     compute.oob.predictions = compute.oob.predictions), forest_opts))
+    } else if (type == "causal") {
+      W <- w_all[idx]
+      do.call(grf::causal_forest,
+              c(list(X = X, Y = Y, W = W,
+                     Y.hat = yhat_all[idx],
+                     W.hat = what_all[idx],
+                     sample.weights = sw,
+                     clusters = cl,
+                     compute.oob.predictions = compute.oob.predictions), forest_opts))
+    } else {
+      W <- w_all[idx]
+      Z <- z_all[idx]
+      do.call(grf::instrumental_forest,
+              c(list(X = X, Y = Y, W = W, Z = Z,
+                     Y.hat = yhat_all[idx],
+                     W.hat = what_all[idx],
+                     Z.hat = zhat_all[idx],
+                     sample.weights = sw,
+                     clusters = cl,
+                     compute.oob.predictions = compute.oob.predictions), forest_opts))
+    }
+  }
+
+  predict_with_optional_var <- function(fit, X) {
+    if (!shrink) {
+      p <- predict(fit, X)
+      return(list(pred = as.numeric(p$predictions), var = NULL))
+    }
+
+    p <- predict(fit, X, estimate.variance = TRUE)
+    v <- if (!is.null(p$variance.estimates)) {
+      pmax(as.numeric(p$variance.estimates), 0)
+    } else {
+      rep(NA_real_, nrow(X))
+    }
+
+    list(pred = as.numeric(p$predictions), var = v)
+  }
+
+  predict_oob_with_optional_var <- function(fit, n) {
+    if (!shrink) {
+      p <- predict(fit)
+      return(list(pred = as.numeric(p$predictions), var = NULL))
+    }
+
+    p <- predict(fit, estimate.variance = TRUE)
+    v <- if (!is.null(p$variance.estimates)) {
+      pmax(as.numeric(p$variance.estimates), 0)
+    } else {
+      rep(NA_real_, n)
+    }
+
+    list(pred = as.numeric(p$predictions), var = v)
+  }
+
+  within_pred_idx <- function(idx_s) {
+    n <- length(idx_s)
+    if (n == 0L) {
+      return(list(pred = numeric(), var = if (shrink) numeric() else NULL))
+    }
+
+    Xs <- X_all[rid[idx_s], , drop = FALSE]
+
+    f <- folds_all[idx_s]
+    if (data.table::uniqueN(f) < 2L) {
+      fit <- build_forest_idx(forest_type, idx_s, compute.oob.predictions = TRUE)
+      return(predict_oob_with_optional_var(fit, n))
+    }
+
+    pos_by_fold <- split(seq_len(n), f)
+
+    p  <- rep(NA_real_, n)
+    vv <- if (shrink) rep(NA_real_, n) else NULL
+    tr_mask <- rep.int(TRUE, n)
+
+    for (k in names(pos_by_fold)) {
+      te_pos <- pos_by_fold[[k]]
+      tr_mask[te_pos] <- FALSE
+      tr_pos <- which(tr_mask)
+      tr_mask[te_pos] <- TRUE
+
+      if (length(tr_pos) < 2L) {
+        idx_tr <- idx_s[tr_pos]
+        y_tr <- y_all[idx_tr]
+        w_tr <- if (is.null(wgt_all)) NULL else wgt_all[idx_tr]
+        mu <- if (length(y_tr) == 0L) {
+          NA_real_
+        } else {
+          if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
+        }
+        p[te_pos] <- mu
+        if (shrink) vv[te_pos] <- NA_real_
+      } else {
+        fit_k <- build_forest_idx(forest_type, idx_s[tr_pos], compute.oob.predictions = FALSE)
+        out_k <- predict_with_optional_var(fit_k, Xs[te_pos, , drop = FALSE])
+        p[te_pos] <- out_k$pred
+        if (shrink) vv[te_pos] <- out_k$var
+      }
+    }
+
+    list(pred = p, var = vv)
+  }
+
+  within_oob_idx <- function(idx_s) {
+    n <- length(idx_s)
+    if (n == 0L) {
+      return(list(pred = numeric(), var = if (shrink) numeric() else NULL))
+    }
+    fit <- build_forest_idx(forest_type, idx_s, compute.oob.predictions = TRUE)
+    predict_oob_with_optional_var(fit, n)
+  }
+
+  compute_aipw_vec <- function(idx_s, tau_vec) {
+    n <- length(idx_s)
+    if (n == 0L) return(numeric())
+
+    if (forest_type == "regression") return(y_all[idx_s])
+    if (forest_type != "causal")     return(rep(NA_real_, n))
+
+    Y <- y_all[idx_s]
+    m <- yhat_all[idx_s]
+    e <- what_all[idx_s]
+    W <- w_all[idx_s]
+
+    W <- as.numeric(W > 0.5)
+
+    if (any(e < 0 | e > 1, na.rm = TRUE)) e <- plogis(e)
+    if (!is.null(aipw.clip)) e <- pmin(pmax(e, aipw.clip), 1 - aipw.clip)
+
+    tau <- as.numeric(tau_vec)
+    stopifnot(length(tau) == n)
+
+    m1 <- m + (1 - e) * tau
+    m0 <- m - e * tau
+
+    tau + (W / e) * (Y - m1) - ((1 - W) / (1 - e)) * (Y - m0)
+  }
+
+  idx_all <- i
+  if (length(grp_cols) == 0L) {
+    group_list <- list(idx_all)
+  } else {
+    group_dt <- DT[i, ..grp_cols]
+    gid <- data.table::frankv(group_dt, ties.method = "dense")
+    group_list <- split(idx_all, gid)
+  }
+
+  pred_buf   <- rep(NA_real_, n_i)
+  pred_o_buf <- rep(NA_real_, n_i)
+  score_buf  <- rep(NA_real_, n_i)
+
+  if (debug_get_scores) {
+    score_grf_buf  <- rep(NA_real_, n_i)
+    score_diff_buf <- rep(NA_real_, n_i)
+    score_cor_buf  <- rep(NA_real_, n_i)
+  }
+
+  if (shrink) {
+    pred_var_buf   <- rep(NA_real_, n_i)
+    pred_o_var_buf <- rep(NA_real_, n_i)
+  }
+
+  for (g in seq_along(group_list)) {
+    idx_g <- group_list[[g]]
+    if (length(idx_g) == 0L) next
+
+    idx1 <- idx_g[sample_all[idx_g] == 1L]
+    idx2 <- idx_g[sample_all[idx_g] == 2L]
+
+    fit1 <- if (length(idx1)) build_forest_idx(
+      forest_type, idx1,
+      compute.oob.predictions = is.null(folds_all)
+    ) else NULL
+
+    fit2 <- if (length(idx2)) build_forest_idx(
+      forest_type, idx2,
+      compute.oob.predictions = is.null(folds_all)
+    ) else NULL
+
+    if (is.null(folds_all)) {
+      res1 <- if (length(idx1)) within_oob_idx(idx1) else {
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      }
+      res2 <- if (length(idx2)) within_oob_idx(idx2) else {
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      }
+    } else {
+      res1 <- if (length(idx1)) within_pred_idx(idx1) else {
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      }
+      res2 <- if (length(idx2)) within_pred_idx(idx2) else {
+        list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      }
+    }
+
+    res1_o <- if (!is.null(fit2) && length(idx1)) {
+      predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
+    } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
+
+    res2_o <- if (!is.null(fit1) && length(idx2)) {
+      predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
+    } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
+
+    p1   <- res1$pred
+    p2   <- res2$pred
+    p1_o <- res1_o$pred
+    p2_o <- res2_o$pred
+
+    if (shrink) {
+      v1   <- res1$var
+      v2   <- res2$var
+      v1_o <- res1_o$var
+      v2_o <- res2_o$var
+    }
+
+    sc1 <- if (length(idx1)) compute_aipw_vec(idx1, p1) else numeric()
+    sc2 <- if (length(idx2)) compute_aipw_vec(idx2, p2) else numeric()
+
+    if (debug_get_scores) {
+      grf_sc1 <- if (!is.null(fit1) && length(idx1) && forest_type == "causal" && is.null(folds_all)) {
+        as.numeric(grf::get_scores(fit1))
+      } else numeric()
+      grf_sc2 <- if (!is.null(fit2) && length(idx2) && forest_type == "causal" && is.null(folds_all)) {
+        as.numeric(grf::get_scores(fit2))
+      } else numeric()
+
+      if (length(idx1) && length(grf_sc1) == length(sc1)) {
+        r1 <- rid[idx1]
+        score_grf_buf[r1]  <- grf_sc1
+        score_diff_buf[r1] <- sc1 - grf_sc1
+        cor1 <- suppressWarnings(stats::cor(sc1, grf_sc1, use = "complete.obs"))
+        score_cor_buf[r1]  <- cor1
+        if (verbose) {
+          msg <- sprintf(
+            "group %d sample 1: mean(ours)=%.6f sd(ours)=%.6f mean(grf)=%.6f mean(diff)=%.6f cor=%.4f",
+            g, mean(sc1, na.rm = TRUE),sd(sc1, na.rm = TRUE), mean(grf_sc1, na.rm = TRUE),
+            mean(sc1 - grf_sc1, na.rm = TRUE), cor1
+          )
+          message(msg)
+        }
+      }
+
+      if (length(idx2) && length(grf_sc2) == length(sc2)) {
+        r2 <- rid[idx2]
+        score_grf_buf[r2]  <- grf_sc2
+        score_diff_buf[r2] <- sc2 - grf_sc2
+        cor2 <- suppressWarnings(stats::cor(sc2, grf_sc2, use = "complete.obs"))
+        score_cor_buf[r2]  <- cor2
+        if (verbose) {
+          msg <- sprintf(
+            "group %d sample 2: mean(ours)=%.6f mean(grf)=%.6f mean(diff)=%.6f cor=%.4f",
+            g, mean(sc2, na.rm = TRUE), mean(grf_sc2, na.rm = TRUE),
+            mean(sc2 - grf_sc2, na.rm = TRUE), cor2
+          )
+          message(msg)
+        }
+      }
+    }
+
+    if (length(idx1)) {
+      r1 <- rid[idx1]
+      pred_buf[r1]   <- p1
+      pred_o_buf[r1] <- p1_o
+      score_buf[r1]  <- sc1
+      if (shrink) {
+        pred_var_buf[r1]   <- v1
+        pred_o_var_buf[r1] <- v1_o
+      }
+    }
+    if (length(idx2)) {
+      r2 <- rid[idx2]
+      pred_buf[r2]   <- p2
+      pred_o_buf[r2] <- p2_o
+      score_buf[r2]  <- sc2
+      if (shrink) {
+        pred_var_buf[r2]   <- v2
+        pred_o_var_buf[r2] <- v2_o
+      }
+    }
+
+    if (verbose && (g %% 25L == 0L)) {
+      message(sprintf("fit_models: processed %d/%d groups", g, length(group_list)))
+    }
+  }
+
+  if (shrink) {
+    DT[i, `:=`(pred = pred_buf,
+               pred_var = pred_var_buf,
+               pred_o = pred_o_buf,
+               pred_o_var = pred_o_var_buf,
+               scores = score_buf)]
+  } else {
+    DT[i, `:=`(pred = pred_buf,
+               pred_o = pred_o_buf,
+               scores = score_buf)]
+  }
+
+  if (debug_get_scores) {
+    DT[i, `:=`(scores_grf = score_grf_buf,
+               scores_diff = score_diff_buf,
+               scores_grf_corr = score_cor_buf)]
+  }
+
+  DT[, (rid_col) := NULL]
+
+  invisible(DT)
+}
+
+
+fit_models_old <- function(DT,
+                       i = NULL,
+                       forest_type = c("causal", "regression", "instrumental"),
+                       y_name,
+                       x_names,
+                       margins = NULL,
+                       w_name = NULL,
+                       z_name = NULL,
+                       folds = NULL,              # NULL => within-sample OOB for pred
+                       weight_name = NULL,
+                       cluster_name = NULL,
+                       forest_opts = NULL,
+                       aipw.clip = 0,
+                       shrink = FALSE,
                        verbose = FALSE) {
 
   stopifnot(data.table::is.data.table(DT))
@@ -1163,7 +1598,7 @@ fit_models <- function(DT,
 
   if (!is.null(folds)) stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
   if (!is.null(aipw.clip)) {
-    stopifnot(is.numeric(aipw.clip), length(aipw.clip) == 1L, is.finite(aipw.clip), aipw.clip > 0, aipw.clip < 1)
+    stopifnot(is.numeric(aipw.clip), length(aipw.clip) == 1L, is.finite(aipw.clip), aipw.clip >= 0, aipw.clip < 1)
   }
   stopifnot(is.logical(shrink), length(shrink) == 1L, !is.na(shrink))
 
@@ -1442,6 +1877,7 @@ fit_models <- function(DT,
 
     sc1 <- if (length(idx1)) compute_aipw_vec(idx1, p1) else numeric()
     sc2 <- if (length(idx2)) compute_aipw_vec(idx2, p2) else numeric()
+
 
     if (length(idx1)) {
       r1 <- rid[idx1]

@@ -156,8 +156,8 @@
 #' @export
 
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
-                 normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
-                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",
+                 normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
+                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=NULL,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
@@ -312,11 +312,11 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
 
   ##OUTER SPLIT
-  make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL)
+  make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=stratify)
 
   ##OPTIONAL INNER SPLIT
   if (is.null(inner.folds)==FALSE) {
-    make_group_folds(data,K = inner.folds,cluster_name = cluster,fold_col = "cf_fold",verbose = FALSE,by_col="sample",diag_prefix=NULL)
+    make_group_folds(data,K = inner.folds,cluster_name = cluster,fold_col = "cf_fold",verbose = FALSE,by_col="sample",diag_prefix=NULL,strat_col=stratify)
     foldname="cf_fold"
   } else {
     foldname=NULL
@@ -645,6 +645,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
                shrink=(shrink>0))
   }
 
+
   if (sum(test == "AHS")>0) {
     if (length(test)>1) i=which(data$condition=="AHS") else i=NULL
     fit_models(data,
@@ -695,6 +696,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
                aipw.clip=aipw.clip,
                shrink=(shrink>0))
   }
+
+  mean(data[ybin==0&equation==0&sample==1,scores])
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 

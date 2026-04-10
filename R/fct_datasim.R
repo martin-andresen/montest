@@ -49,6 +49,21 @@ fct_datasim <- function(setup, dgp, n) {
     gamma <- ifelse(X[, 3] < qnorm(0.5), 0.5, -0.5)
 
   } else if (dgp == 6) {
+    # oblique local violation of monotonicity
+    beta_rot <- c(1, 1, 1) / sqrt(3)
+    S <- as.vector(X %*% beta_rot)
+    alpha <- ifelse(S < qnorm(0.15), alpha_lo, alpha_hi)
+    gamma <- rep(0, n)
+
+  } else if (dgp == 7) {
+    # oblique local violation of exclusion restriction
+    a <- 0.2
+    alpha <- rep(a, n)
+
+    beta_exc <- c(1, 1, 1) / sqrt(3)
+    S <- as.vector(X %*% beta_exc)
+    gamma <- ifelse(S > qnorm(0.85), 1.25, 0)
+  } else if (dgp == 8) {
     # radial local violation of monotonicity
     # violating region is the inner 15% ball under ||X||^2 ~ chi^2_3
     r2 <- rowSums(X^2)
@@ -56,14 +71,7 @@ fct_datasim <- function(setup, dgp, n) {
     alpha <- ifelse(r2 < cutoff6, alpha_lo, alpha_hi)
     gamma <- rep(0, n)
 
-  } else if (dgp == 7) {
-    # oblique local violation of monotonicity
-    beta_rot <- c(1, 1, 1) / sqrt(3)
-    S <- as.vector(X %*% beta_rot)
-    alpha <- ifelse(S < qnorm(0.15), alpha_lo, alpha_hi)
-    gamma <- rep(0, n)
-
-  } else if (dgp == 8) {
+  } else if (dgp == 9) {
     # oscillating local violation of monotonicity
     # define violating region as top 15% of oscillation score
     U1 <- pnorm(X[, 1])
@@ -75,20 +83,12 @@ fct_datasim <- function(setup, dgp, n) {
     alpha <- ifelse(V > cutoff8, alpha_lo, alpha_hi)
     gamma <- rep(0, n)
 
-  } else if (dgp == 9) {
+  } else if (dgp == 10) {
     # smooth-index local violation of monotonicity
     beta_idx <- c(1, 1, 1) / sqrt(3)
     S <- as.vector(X %*% beta_idx)
     alpha <- ifelse(S > qnorm(0.85), alpha_lo, alpha_hi)
     gamma <- rep(0, n)
-  } else if (dgp == 10) {
-    # oblique local violation of exclusion restriction
-    a <- 0.2
-    alpha <- rep(a, n)
-
-    beta_exc <- c(1, 1, 1) / sqrt(3)
-    S <- as.vector(X %*% beta_exc)
-    gamma <- ifelse(S > qnorm(0.85), 1.25, 0)
   } else {
     stop("invalid choice of dgp")
   }
