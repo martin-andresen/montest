@@ -312,7 +312,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
 
   ##OUTER SPLIT
-  make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=stratify)
+  if (is.null(stratify)==TRUE) {
+    if (is.null(cluster)==TRUE) strat="Z" else strat=NULL
+  }
+  make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=strat)
 
   ##OPTIONAL INNER SPLIT
   if (is.null(inner.folds)==FALSE) {
@@ -380,7 +383,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   XWY=c(X,Y)
 
   ##group common tree argments
-  forest_opts=list(num.trees=max(50,num.trees/4),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
+  forest_opts=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
   time=rbind(time,discretize=proc.time())
 
   ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
@@ -766,6 +769,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
   time=time[,1:3]
   time=rbind(time,total=colSums(time))
-  return=c(res,list(time=time),obs=obs)
+  return=c(res,list(time=time,obs=obs))
   return(return)
 }
