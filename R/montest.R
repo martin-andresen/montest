@@ -383,7 +383,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   XWY=c(X,Y)
 
   ##group common tree argments
-  forest_opts=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
   time=rbind(time,discretize=proc.time())
 
   ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
@@ -422,7 +421,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       x_names = X,
       margins = margins,
       weight_name = weight,
-      forest_opts = c(forest_opts,Zparameters),
+      forest_opts = Zparameters,
       mode=if ("Z" %in% crossfit) "across" else "within"
     )
   } else {
@@ -455,7 +454,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       margins = margins,
       weight_name = weight,
       mode=if ("Y" %in% crossfit) "across" else "within",
-      forest_opts = c(forest_opts,Yparameters)
+      forest_opts = Yparameters
     )
     data[,paste0(Y,".res"):=get(..Y)-get(paste0(..Y,".hat"))]
   }
@@ -482,7 +481,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       margins = margins,
       weight_name = weight,
       mode=if ("D" %in% crossfit) "across" else "within",
-      forest_opts = c(forest_opts,Dparameters)
+      forest_opts = Dparameters
     )
   }
 
@@ -602,7 +601,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       margins = margins,
       weight_name = weight,
       mode=if ("Q" %in% crossfit) "across" else "within",
-      forest_opts = c(forest_opts,Qparameters)
+      forest_opts = Qparameters
     )
   }
 
@@ -630,7 +629,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   time=rbind(time,stack_nuisance=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
-  forest_opts=list(num.trees=max(50,num.trees),tune.num.trees=tune.num.trees,tune.num.reps=tune.num.reps)
   if ("C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances
 
   if (sum(test %in% c("simple","BP"))>0) {
@@ -645,7 +643,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
                margins = margins,
                weight_name = weight,
                cluster_name = cluster,
-               forest_opts = c(forest_opts,Cparameters),
+               forest_opts = Cparameters,
                aipw.clip=aipw.clip,
                shrink=(shrink>0))
   }
@@ -663,7 +661,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
                margins = margins,
                weight_name = weight,
                cluster_name = cluster,
-               forest_opts = c(forest_opts,Cparameters),
+               forest_opts = Cparameters,
                aipw.clip=aipw.clip,
                shrink=(shrink>0))
   }
@@ -679,7 +677,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
                margins = margins,
                weight_name = weight,
                cluster_name = cluster,
-               forest_opts = c(forest_opts,Cparameters),
+               forest_opts = Cparameters,
                aipw.clip=aipw.clip,
                shrink=(shrink>0))
   }
@@ -697,7 +695,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
                margins = margins,
                weight_name = weight,
                cluster_name = cluster,
-               forest_opts = c(forest_opts,Cparameters),
+               forest_opts = Cparameters,
                aipw.clip=aipw.clip,
                shrink=(shrink>0))
   }
