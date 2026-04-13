@@ -563,7 +563,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   Ybinname=paste0(Y,".bin")
   Dname=D
   if (sum(test %in% c("simple","AHS"))>0) data[condition %in% c("simple","AHS"),Q:=D,env=list(D=D)]
-  if (sum(test %in% c("BPK","K","BP"))>0) data[condition %in% c("BPK","BP","K"),Q:=-(1-equation)*(get(Ybinname)==ybin)*get(Dname)+equation*(get(Ybinname)==ybin)*(1-get(Dname))]
+  if (sum(test %in% c("BPK","K","BP"))>0) data[condition %in% c("BPK","BP","K"),Q:=-(1-equation)*(get(Ybinname)==ybin)*(1-get(Dname))+equation*(get(Ybinname)==ybin)*get(Dname)]
   if ("MW" %in% test) data[condition=="MW",Q:=equation*((1-get(paste0(..Z,".hat")))*D*Z-get(paste0(..Z,".hat"))*D*(1-Z))+(1-equation)*(get(paste0(..Z,".hat"))*(1-D)*(1-Z)-(1-get(paste0(..Z,".hat")))*(1-D)*Z),env=list(Z=Z,D=D)] ##ERROR HERE!!! get(paste0(...))
   if ("K" %in% test) {
     data[condition %in% c("BPK","K"),D.hat:=D.hat*equation+(1-D.hat)*(1-equation)]
