@@ -413,7 +413,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
 
 
-  ##estimate Z.hat for each margin in stacked data (also if K==1!)
+  ##estimate Z.hat for each margin in stacked data
   if (is.null(X)==FALSE) {
     crossfit_hat(
       data,
@@ -629,7 +629,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   time=rbind(time,stack_nuisance=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
-  if ("C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances
+  if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances
 
   if (sum(test %in% c("simple","BP"))>0) {
     if (length(test)>1) i=which(data$condition %in% c("simple","BP")) else i=NULL
