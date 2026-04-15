@@ -157,7 +157,7 @@
 
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
-                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=NULL,
+                 gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,
                  Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
@@ -171,6 +171,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
 
   ################### 1 CHECK INPUT #####################
+  gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
+  gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
+  gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
   crossfit=match.arg(crossfit,c("Z","Q","C","Y"),several.ok=TRUE)
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
@@ -422,7 +425,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       margins = margins,
       weight_name = weight,
       forest_opts = Zparameters,
-      mode=if ("Z" %in% crossfit) "across" else "within"
+      folds=foldname,
+      mode=if ("Z" %in% crossfit & is.null(foldname)==TRUE) "across" else "within"
     )
   } else {
     data[,(paste0(Z,".hat")):=(mean(get(..Z))*.N-get(..Z))/(.N-1),by=c("sample",margins)] ##leave one out mean
@@ -453,7 +457,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       folds=foldname,
       margins = margins,
       weight_name = weight,
-      mode=if ("Y" %in% crossfit) "across" else "within",
+      mode=if ("Y" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
       forest_opts = Yparameters
     )
     data[,paste0(Y,".res"):=get(..Y)-get(paste0(..Y,".hat"))]
@@ -480,7 +484,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       folds=foldname,
       margins = margins,
       weight_name = weight,
-      mode=if ("D" %in% crossfit) "across" else "within",
+      mode=if ("D" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
       forest_opts = Dparameters
     )
   }
@@ -584,6 +588,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   data[,sdsample:=sd(sample),by=margins]
   data=data[sdsample>0]
   data[,sdsample:=NULL]
+  data[, c("nQ", "nZ", "n0", "n1", "sd_res", "bad") := NULL]
 
   if (nrow(data)==0) {
     stop("No observations with variation in Z and Q and overlap remains - identification issue.")
@@ -600,13 +605,13 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       folds=foldname,
       margins = margins,
       weight_name = weight,
-      mode=if ("Q" %in% crossfit) "across" else "within",
+      mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
       forest_opts = Qparameters
     )
   }
 
-  if ("AHS" %in% test) {
-    if (length(test)>1) i=which(data$condition=="AHS") else i=NULL
+  if (sum(c("AHS","MW") %in% test)>0) {
+    if (length(test)>1) i=which(data$condition %in% c("AHS","MW") else i=NULL
     crossfit_hat(
       data,
       i=i,
@@ -615,7 +620,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       x_names = c(X,paste0(Y,".res")),
       margins = margins,
       weight_name = weight,
-      mode=if ("Q" %in% crossfit) "across" else "within",
+      mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
       forest_opts = Qparameters
     )
   }
@@ -629,7 +634,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   time=rbind(time,stack_nuisance=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
-  if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances
+  if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances - use OOB for forest.
 
   if (sum(test %in% c("simple","BP"))>0) {
     if (length(test)>1) i=which(data$condition %in% c("simple","BP")) else i=NULL
@@ -753,7 +758,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       byv=c("sample",margins)[!c("sample",margins) %in% pool]
       res$minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
       res$minp=apply(res$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
-      res$minp=c(res$minp,p.CCT=cct_pvalue(res$results[train==FALSE,p.raw]))
+      res$minp=c(res$minp,p.CCT=cct_pvalue(res$results[train==FALSE&is.na(t)==FALSE,p.raw]))
     }
 
     res$global[,p.raw:=pnorm(t)]
