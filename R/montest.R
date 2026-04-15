@@ -158,7 +158,7 @@
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,
-                 Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=FALSE,testtype="forest",
+                 Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
