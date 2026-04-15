@@ -158,7 +158,7 @@
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,
-                 Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
+                 Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=FALSE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
@@ -610,14 +610,15 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
     )
   }
 
-  if (sum(c("AHS","MW") %in% test)>0) {
-    if (length(test)>1) i=which(data$condition %in% c("AHS","MW") else i=NULL
+  if (("AHS" %in% test)>0) {
+    if (length(test)>1) i=which(data$condition=="AHS") else i=NULL
+    yname_lhs= if (Y.res==TRUE) paste0(Y,".res") else Y
     crossfit_hat(
       data,
       i=i,
       y_name = "Q",
       folds=foldname,
-      x_names = c(X,paste0(Y,".res")),
+      x_names = c(X,yname_lhs),
       margins = margins,
       weight_name = weight,
       mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
@@ -656,11 +657,12 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
   if (sum(test == "AHS")>0) {
     if (length(test)>1) i=which(data$condition=="AHS") else i=NULL
+    yname_lhs= if (Y.res==TRUE) paste0(Y,".res") else Y
     fit_models(data,
                forest_type = "causal",
                i=i,
                y_name="Q",
-               x_names=c(X,paste0(Y,".res")),
+               x_names=c(X,yname_lhs),
                w_name=Z,
                folds=foldname,
                margins = margins,
@@ -673,11 +675,12 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
   if (sum(test == "MW")>0) {
     if (length(test)>1) i=which(data$condition=="MW") else i=NULL
+    yname_lhs= if (Y.res==TRUE) paste0(Y,".res") else Y
     fit_models(data,
                forest_type = "regression",
                i=i,
                y_name="Q",
-               x_names=c(X,paste0(Y,".res")),
+               x_names=c(X,yname_lhs),
                folds=foldname,
                margins = margins,
                weight_name = weight,
