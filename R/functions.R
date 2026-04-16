@@ -2253,34 +2253,24 @@ forest_test <- function(
   has_selection <- (length(select_margins) > 0L) || select_sample
 
   if (has_selection) {
-    if (pool_sample) {
-      agg_by <- c(adjust_cols, select_margins, "cell_id")
-      cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
-      choose_by <- adjust_cols
-      id_by <- c(adjust_cols, select_margins, "cell_id")
-      keep_ids <- cand[, .SD[which.min(sel_t)], by = choose_by][, ..id_by]
+    # Outer-half-honest selection:
+    # each training half chooses its own best rule using that half only,
+    # and that rule is then transported to the opposite half for testing.
+    agg_by <- c(adjust_cols, sample_col, select_margins, "cell_id")
+    cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
 
-      selected_train <- merge(train_all, keep_ids,
-                              by = c(adjust_cols, select_margins, "cell_id"))
-    } else if (select_sample) {
-      agg_by <- c(adjust_cols, select_margins, sample_col, "cell_id")
-      cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
-      choose_by <- adjust_cols
-      id_by <- c(adjust_cols, select_margins, sample_col, "cell_id")
-      keep_ids <- cand[, .SD[which.min(sel_t)], by = choose_by][, ..id_by]
+    choose_by <- c(adjust_cols, sample_col)
+    id_by <- c(adjust_cols, sample_col, select_margins, "cell_id")
 
-      selected_train <- merge(train_all, keep_ids,
-                              by = c(adjust_cols, select_margins, sample_col, "cell_id"))
-    } else {
-      agg_by <- c(adjust_cols, select_margins, sample_col, "cell_id")
-      cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
-      choose_by <- c(adjust_cols, sample_col)
-      id_by <- c(adjust_cols, sample_col, select_margins, "cell_id")
-      keep_ids <- cand[, .SD[which.min(sel_t)], by = choose_by][, ..id_by]
+    keep_ids <- cand[, .SD[which.min(sel_t)], by = choose_by][, ..id_by]
 
-      selected_train <- merge(train_all, keep_ids,
-                              by = c(adjust_cols, sample_col, select_margins, "cell_id"))
-    }
+    selected_train <- merge(
+      train_all,
+      keep_ids,
+      by = id_by,
+      all = FALSE,
+      sort = FALSE
+    )
   }
 
   train_out <- data.table::copy(train_all)
@@ -2302,10 +2292,10 @@ forest_test <- function(
   if (length(idx_test_all) > 0L) in_test[idx_test_all] <- TRUE
   if (!any(in_test)) stop("Testing subset is empty.")
 
-  # keep selected margin values for final test rows
+  # keep selected margin values for final test rows when uniquely defined
   selected_test_keys <- NULL
   if (length(select_margins) > 0L) {
-    selected_test_keys <- unique(selected_train[, c(adjust_cols, select_margins), with = FALSE])
+    selected_test_keys <- unique(selected_train[, c(adjust_cols, sample_col, select_margins), with = FALSE])
   }
 
   dt_test <- data.table::data.table(
@@ -2326,8 +2316,11 @@ forest_test <- function(
       tau_cutoff = NA_real_,
       p.raw = stats::pnorm(o$t)
     )
-    if (!is.null(selected_test_keys)) {
+
+    if (!is.null(selected_test_keys) && nrow(selected_test_keys) == 1L) {
       for (cc in select_margins) test_out[, (cc) := selected_test_keys[[cc]][1L]]
+    } else if (length(select_margins) > 0L) {
+      for (cc in select_margins) test_out[, (cc) := NA]
     }
   } else {
     test_out <- dt_test[, {
@@ -2344,14 +2337,19 @@ forest_test <- function(
     if (!(sample_col %in% names(test_out))) test_out[, (sample_col) := NA_integer_]
 
     if (!is.null(selected_test_keys)) {
-      # selected margins are constant within each adjust_cols group
-      merge_by <- adjust_cols
+      merge_by <- c(adjust_cols, sample_col)
+
       if (length(merge_by) == 0L) {
-        for (cc in select_margins) test_out[, (cc) := selected_test_keys[[cc]][1L]]
+        if (nrow(selected_test_keys) == 1L) {
+          for (cc in select_margins) test_out[, (cc) := selected_test_keys[[cc]][1L]]
+        } else {
+          for (cc in select_margins) test_out[, (cc) := NA]
+        }
       } else {
+        selected_test_keys_u <- unique(selected_test_keys)
         test_out <- merge(
           test_out,
-          selected_test_keys,
+          selected_test_keys_u,
           by = merge_by,
           all.x = TRUE,
           sort = FALSE
@@ -2464,7 +2462,6 @@ forest_test <- function(
 
   out
 }
-
 
 ##USED by CART_test and forest_test to estimate global means.
 global_means_crv1 <- function(
@@ -2587,17 +2584,11 @@ test_one_sided_noncompliance <- function(data, D, Z, margins = character(0)) {
   }
 
   os <- res[one_sided == TRUE]
-  if (nrow(os) == 0L) {
-    message(if (length(margins) == 0L)
-      "No one-sided noncompliance detected overall (no margins)."
-      else
-        "No one-sided noncompliance detected in any margins cell."
-    )
-  } else {
+  if (nrow(os) != 0L) {
     message(if (length(margins) == 0L)
       "One-sided noncompliance detected overall (no margins):"
       else
-        "One-sided noncompliance detected in the following margins cells:"
+      "One-sided noncompliance detected in the following margins cells:"
     )
     print(os)
   }
