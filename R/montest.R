@@ -756,11 +756,11 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       names(res$minp)=paste0("p.",c("raw","holm","hochberg","BH","BY","CCT"))
     } else {
       for (m in c("holm","hochberg","BH","BY")) {
-        res$results[train==FALSE==FALSE,paste0("p.",m):=p.adjust(replace(p.raw, is.na(p.raw), 1),method=m)]
+        res$results[train==FALSE,paste0("p.",m):=p.adjust(replace(p.raw, is.na(p.raw), 1),method=m)]
       }
       byv=c("sample",margins)[!c("sample",margins) %in% pool]
       res$minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
-      res$minp=apply(res$results[train==FALSE&is.na(t)==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
+      res$minp=apply(res$results[train==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
       res$minp=c(res$minp,p.CCT=cct_pvalue(replace(res$results[train==FALSE,p.raw],is.na(res$results[train==FALSE,p.raw]),1)))
     }
 
