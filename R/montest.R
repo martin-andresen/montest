@@ -156,7 +156,7 @@
 #' @export
 
 montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=NULL,crossfit=NULL,
-                 normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50,
+                 normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
@@ -190,7 +190,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=NULL,crossfit=NULL
     )
   }
 
-  if ((minsize!=floor(minsize))|minsize<0) stop("Minsize must be an integer >0.")
+  if (is.integer(minsize)==FALSE|minsize<=0) stop("Minsize must be an integer >0.")
 
   if (is.null(test)==TRUE) {
     if (is.null(Y)==TRUE) {
@@ -240,22 +240,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=NULL,crossfit=NULL
   if (sum(sum(grepl("Q.hat",colnames(data))))) stop("Variable name beginning with Q.hat discovered, reserved for internal use. Please rename.")
   if ("Q" %in% colnames(data)) stop("Data contains variable named Q, which is reserved for internal use. Please rename.")
 
-  #tunetype=match.arg(tunetype,c("one","all"))
-  #if (tune.Qparameters!="none") {
-  #  tune.Qparameters=match.arg(tune.Qparameters,several.ok=TRUE,c("all","sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty"))
-  #}
-  #if (tune.Cparameters!="none") {
-  #  tune.Cparameters=match.arg(tune.Cparameters,several.ok=TRUE,c("all","sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty"))
-  #}
-  #if (tune.Zparameters!="none") {
-  #  tune.Zparameters=match.arg(tune.Zparameters,several.ok=TRUE,c("all","sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty"))
-  #}
-  #if (tune.Yparameters!="none") {
-  #  tune.Yparameters=match.arg(tune.Yparameters,several.ok=TRUE,c("all","sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty"))
-  #}
-  #if (tune.Dparameters!="none") {
-  #  tune.Yparameters=match.arg(tune.Yparameters,several.ok=TRUE,c("all","sample.fraction", "mtry", "min.node.size", "honesty.fraction", "honesty.prune.leaves", "alpha", "imbalance.penalty"))
-  #}
   gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
