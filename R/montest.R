@@ -155,10 +155,10 @@
 #' @seealso montestplot LATEtest
 #' @export
 
-montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","Q","forest","Y"),
-                 normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,num.trees=2000,seed=10101,minsize=50,
+montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=NULL,crossfit=NULL,
+                 normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,
-                 Ysubsets = 4, Dsubsets = 4,Zsubsets=4,Y.res=TRUE,testtype="forest",
+                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
@@ -174,7 +174,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
   gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
-  crossfit=match.arg(crossfit,c("Z","Q","C","Y"),several.ok=TRUE)
+  if (is.null(crossfit)==FALSE) match.arg(crossfit,c("Z","Q","C","Y"),several.ok=TRUE)
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
@@ -211,7 +211,12 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
     }
   }
 
-  if ((Ysubsets<=1)|(Dsubsets<=1)|(Zsubsets<=1)) stop("Ysubsets, Dsubsets and Zsubsets must be integers larger than 1")
+  if (Ysubsets<=1|is.integer(Ysubsets)==FALSE) stop("Ysubsets must be an integers larger than 1")
+  if (Dsubsets<0|Dsubsets==1|is.integer(Dsubsets)==FALSE) stop("Dsubsets must be an integer equal to 0 (linear model) or larger than 1")
+  if (Zsubsets<0|Zsubsets==1|is.integer(Zsubsets)==FALSE) stop("Zsubsets must be an integer equal to 0 (linear model) or larger than 1")
+
+  if (Dsubsets==0&"BP" %in% test) stop("Dsubsets=0 (linear model) incopatible with test=BP.")
+  if (Zsubsets==0&"BP" %in% test) stop("Zsubsets=0 (linear model) incopatible with test=BP.")
 
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
   else if (sum(pool=="all")==1) pool=c("zmargin","dmargin","ybin","condition","equation","outcome","sample")
@@ -316,7 +321,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
   ##OUTER SPLIT
   if (is.null(stratify)==TRUE) {
-    if (is.null(cluster)==TRUE) strat=Z else strat=NULL
+    if (is.null(cluster)==TRUE&Zsubsets>0) strat=Z else strat=NULL
   }
   make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=strat)
 
@@ -332,9 +337,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
   time=rbind(time,prepare=proc.time())
 
-  ############### 3 Discretize Z, D and Y into subsets ###############33
+  ############### 3 Discretize Z, D and Y into subsets ###############
 
-  if (is.null(Dsubsets)==FALSE) { ##bin treatment
+
+  if (is.null(Dsubsets)==FALSE&Dsubsets>0) { ##bin treatment
     data <- binarize_var(
       data    = data,
       var     = D,
@@ -344,7 +350,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
     )
   }
 
-  if (is.null(Zsubsets)==FALSE) { ##instrument
+  if (is.null(Zsubsets)==FALSE&Zsubsets>0) { ##instrument
     data <- binarize_var(
       data    = data,
       var     = Z,
@@ -372,7 +378,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
     }
   }
 
-  n=nrow(data); J=length(unique(data[,get(..D)]))-1; K=length(unique(data[,get(..Z)]))-1;L=length(Y)
+  n=nrow(data); J=if (Dsubsets>0) length(unique(data[,get(..D)]))-1 else 1; K= if (Zsubsets>0) length(unique(data[,get(..Z)]))-1 else 1 ;L=length(Y)
 
   results=c();tunable.Cparams=c()
 
@@ -384,6 +390,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
 
   XW=X
   XWY=c(X,Y)
+
 
   ##group common tree argments
   time=rbind(time,discretize=proc.time())
@@ -410,7 +417,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
     data[,(Z):=get(..Z)>=zmargin]
 
     margins=c(margins,"zmargin")
-  } else { ##MAKE SURE Z is dummy!
+  } else if (Zsubsets>0) { ##MAKE SURE Z is dummy!
     data[, (Z) := as.integer(get(..Z) == max(get(..Z), na.rm = TRUE))]
   }
 
@@ -426,12 +433,12 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       weight_name = weight,
       forest_opts = Zparameters,
       folds=foldname,
-      mode=if ("Z" %in% crossfit & is.null(foldname)==TRUE) "across" else "within"
+      mode=ifelse(("Z" %in% crossfit & is.null(foldname)==TRUE),"across","within")
     )
   } else {
     data[,(paste0(Z,".hat")):=(mean(get(..Z))*.N-get(..Z))/(.N-1),by=c("sample",margins)] ##leave one out mean
   }
-  if (normalize.Z==TRUE) { #Normalize propensity scores
+  if (normalize.Z==TRUE&Zsubsets>0) { #Normalize propensity scores
     data[, (paste0(Z, ".hat")) :=
            get(paste0(..Z, ".hat")) * .N / sum(get(..Z) / get(paste0(..Z, ".hat"))),
          by = c("sample", margins)]
@@ -457,7 +464,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       folds=foldname,
       margins = margins,
       weight_name = weight,
-      mode=if ("Y" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
+      mode=ifelse(("Y" %in% crossfit & is.null(foldname)==TRUE),"across","within"),
       forest_opts = Yparameters
     )
     data[,paste0(Y,".res"):=get(..Y)-get(paste0(..Y,".hat"))]
@@ -484,15 +491,16 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       folds=foldname,
       margins = margins,
       weight_name = weight,
-      mode=if ("D" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
+      mode=ifelse(("D" %in% crossfit & is.null(foldname)==TRUE),"across","within"),
       forest_opts = Dparameters
     )
   }
 
   ##Check for onesided noncompliance
-
-  os_res <- test_one_sided_noncompliance(data = data, D = D, Z = Z, margins = margins)
-  osmargins=margins
+  if (Dsubsets>0&Zsubsets>0) {
+    os_res <- test_one_sided_noncompliance(data = data, D = D, Z = Z, margins = margins)
+    osmargins=margins
+  }
 
   ##Expand multiple conditions for testing (except K + BP, which has same def of Q - expand later)
   if (length(test)>1) {
@@ -514,30 +522,36 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   ## (or keep just the nontrivially satisfied one)
   ## Expand to equation=0,1 only when BOTH equations are nontrivial
 
+  if (Dsubsets>0&Zsubsets>0) {
   if (length(osmargins) == 0L) {
+      # global one-sided result (os_res should be 1 row)
+      os_one <- isTRUE(os_res[["one_sided"]][1])
+      os_eq  <- os_res[["trivial_equation"]][1]
 
-    # global one-sided result (os_res should be 1 row)
-    os_one <- isTRUE(os_res[["one_sided"]][1])
-    os_eq  <- os_res[["trivial_equation"]][1]
+      data[, `:=`(os_one_sided = os_res[["one_sided"]][1],
+                  os_triv_eq   = os_res[["trivial_equation"]][1])]
 
-    data[, `:=`(os_one_sided = os_res[["one_sided"]][1],
-                os_triv_eq   = os_res[["trivial_equation"]][1])]
+    } else {
 
-  } else {
+      data[os_res, on = osmargins,
+           `:=`(os_one_sided = i.one_sided,
+                os_triv_eq   = i.trivial_equation)]
 
-    data[os_res, on = osmargins,
-         `:=`(os_one_sided = i.one_sided,
-              os_triv_eq   = i.trivial_equation)]
+      # unmatched cells treated as not one-sided
+      data[is.na(os_one_sided), os_one_sided := FALSE]
+    }
+    } else {
+      data[,os_one_sided:=FALSE]
+      data[,os_triv_eq:=NA]
+    }
 
-    # unmatched cells treated as not one-sided
-    data[is.na(os_one_sided), os_one_sided := FALSE]
-  }
 
   # ------------------------------------------------------------
   # 2) Drop trivially satisfied SIMPLE/AHS in one-sided cells
   # ------------------------------------------------------------
 
   data <- data[!(condition %chin% c("simple","AHS") & os_one_sided)]
+
 
   # ------------------------------------------------------------
   # EXPAND to EQ=0:1
@@ -575,20 +589,75 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
   }
 
   ##TEST FOR SUPPORT and VARIATION IN Z AND Q within each group
+  byvars <- c("sample", margins)
 
-  data[,nQ:=uniqueN(Q), by=c("sample",margins)]
-  data[,nZ:=uniqueN(get(..Z)), by=c("sample",margins)]
-  data[,n0:=sum(get(..Z)==0), by=c("sample",margins)]
-  data[,n1:=sum(get(..Z)==1), by=c("sample",margins)]
-  data[,sd_res:=sd(get(..Z)-get(paste0(..Z,".hat"))),by=c("sample",margins)]
-  data[,bad:= (nQ<2| nZ<2 | n0<min_n | n1 <min_n | sd_res==0)]
-  data=data[bad==FALSE]
+  ## Common group size
+  data[, n_group := .N, by = byvars]
 
-  ##ALSO DROP OTHER SAMPLE PART WITHIN A MARGIN IF ONE PART HAS BEEN DROPPED
-  data[,sdsample:=sd(sample),by=margins]
-  data=data[sdsample>0]
-  data[,sdsample:=NULL]
-  data[, c("nQ", "nZ", "n0", "n1", "sd_res", "bad") := NULL]
+  ## Common summaries for Q and Z
+  data[, nQ := uniqueN(Q), by = byvars]
+  data[, sdQ := stats::sd(Q), by = byvars]
+
+  data[, nZ := uniqueN(get(..Z)), by = byvars]
+  data[, sdZ := stats::sd(get(..Z)), by = byvars]
+  data[, sd_res := stats::sd(get(..Z) - get(paste0(..Z, ".hat"))), by = byvars]
+
+  ## Q checks
+  if (Dsubsets==0) {
+    data[, bad_Q := (
+      n_group < min_n |
+        is.na(sdQ) | sdQ == 0
+    )]
+  } else {
+    data[, min_cell_Q := {
+      qtab <- table(Q)
+      if (length(qtab) == 0L) NA_integer_ else min(qtab)
+    }, by = byvars]
+
+    data[, bad_Q := (
+      nQ < 2 |
+        min_cell_Q < min_n
+    )]
+  }
+
+  ## Z checks
+  if (Zsubsets==0) {
+    data[, bad_Z := (
+      n_group < min_n |
+        is.na(sdZ) | sdZ == 0 |
+        is.na(sd_res) | sd_res == 0
+    )]
+  } else {
+    data[, min_cell_Z := {
+      ztab <- table(get(..Z))
+      if (length(ztab) == 0L) NA_integer_ else min(ztab)
+    }, by = byvars]
+
+    data[, bad_Z := (
+      nZ < 2 |
+        min_cell_Z < min_n |
+        is.na(sd_res) | sd_res == 0
+    )]
+  }
+
+  ## Combine bad flags
+  data[, bad := bad_Q | bad_Z]
+  data <- data[bad == FALSE]
+
+  ## ALSO DROP OTHER SAMPLE PART WITHIN A MARGIN IF ONE PART HAS BEEN DROPPED
+  data[, sdsample := stats::sd(sample), by = margins]
+  data <- data[sdsample > 0]
+
+  ## Clean up
+  drop_cols <- intersect(
+    c(
+      "n_group", "nQ", "sdQ", "nZ", "sdZ", "sd_res",
+      "min_cell_Q", "min_cell_Z",
+      "bad_Q", "bad_Z", "bad", "sdsample"
+    ),
+    names(data)
+  )
+  data[, (drop_cols) := NULL]
 
   if (nrow(data)==0) {
     stop("No observations with variation in Z and Q and overlap remains - identification issue.")
@@ -605,7 +674,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,test=NULL,inner.folds=5,crossfit=c("Z","
       folds=foldname,
       margins = margins,
       weight_name = weight,
-      mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
+      mode=ifelse(("Q" %in% crossfit & is.null(foldname)==TRUE),"across","within"),
       forest_opts = Qparameters
     )
   }
