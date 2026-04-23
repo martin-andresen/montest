@@ -116,4 +116,3 @@ fct_datasim <- function(setup, dgp, n) {
   data <- as.data.frame(cbind(Y, D, Z, X))
   return(data)
 }
-

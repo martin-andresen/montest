@@ -126,7 +126,8 @@ CART_test <- function(
     margins = NULL,
     weight  = NULL,
     cluster = NULL,
-    select = NULL,            # subset of margins; may also include "sample"
+    pool    = NULL,
+    select  = NULL,
     cp = 0.0,
     maxrankcp = 10L,
     alpha = 0.05,
@@ -135,11 +136,13 @@ CART_test <- function(
     preselect = c("none", "minimum", "negative", "nonpositive", "fgk_relevant"),
     store_trees = FALSE,
     verbose = FALSE,
-    xval=10,
-    rpart_options=NULL
+    xval = 10,
+    rpart_options = NULL
 ) {
   stopifnot(data.table::is.data.table(data))
   preselect <- match.arg(preselect)
+
+  `%||%` <- function(x, y) if (is.null(x)) y else x
 
   sample_col <- as.character(sample)
   scores_col <- as.character(scores)
@@ -170,20 +173,48 @@ CART_test <- function(
   svec <- as.integer(data[[sample_col]])
   stopifnot(all(svec %in% c(1L, 2L)))
 
-  # ---- selection setup ----
-  if (is.null(select)) select <- character()
-  select <- unique(as.character(select))
-  select[select == "sample"] <- sample_col
+  # ---------------- validate pool/select ----------------
+  allowed_opts <- c("dmargin", "zmargin", "ybin", "equation", "sample", "condition")
 
-  allowed_select <- unique(c(margins, sample_col))
-  bad_select <- setdiff(select, allowed_select)
-  if (length(bad_select) > 0L) {
-    stop("select contains invalid names: ", paste(bad_select, collapse = ", "))
+  if (is.null(pool)) pool <- character()
+  pool <- unique(as.character(pool))
+  if (length(setdiff(pool, allowed_opts)) > 0L) {
+    stop("pool contains invalid entries: ", paste(setdiff(pool, allowed_opts), collapse = ", "))
   }
 
-  select_sample  <- sample_col %chin% select
+  if (is.null(select)) select <- character()
+  select <- unique(as.character(select))
+  if (length(setdiff(select, allowed_opts)) > 0L) {
+    stop("select contains invalid entries: ", paste(setdiff(select, allowed_opts), collapse = ", "))
+  }
+
+  overlap <- intersect(pool, select)
+  if (length(overlap) > 0L) {
+    stop("These entries appear in both pool and select: ", paste(overlap, collapse = ", "))
+  }
+
+
+  bad_pool_margins <- setdiff(setdiff(pool, "sample"), margins)
+  if (length(bad_pool_margins) > 0L) {
+    stop("These pooled margins are not in `margins`: ", paste(bad_pool_margins, collapse = ", "))
+  }
+
+  bad_select_margins <- setdiff(setdiff(select, "sample"), margins)
+  if (length(bad_select_margins) > 0L) {
+    stop("These selected margins are not in `margins`: ", paste(bad_select_margins, collapse = ", "))
+  }
+
+  pool_sample   <- "sample" %chin% pool
+  select_sample <- "sample" %chin% select
+
+  pool_margins   <- intersect(pool, margins)
   select_margins <- intersect(select, margins)
-  cell_cols      <- setdiff(margins, select_margins)   # margins still kept separate
+
+  # margins kept separate when defining fit-groups
+  sep_margins <- setdiff(margins, pool_margins)
+
+  # after selection/pooling, these define distinct testing strata
+  final_keep_margins <- setdiff(margins, union(pool_margins, select_margins))
 
   # ---------------- helpers ----------------
 
@@ -248,8 +279,6 @@ CART_test <- function(
     }
 
     if (preselect == "fgk_relevant") {
-      # Mirror of FGK's relevance screening for left-tailed tests:
-      # keep leaves that are not strongly in the wrong direction.
       thr <- stats::qnorm(1 - alpha / L)
       keep <- dt_train_leaf[t < thr, leaf]
       return(as.integer(keep))
@@ -258,12 +287,11 @@ CART_test <- function(
     as.integer(dt_train_leaf$leaf)
   }
 
-  # Choose ONE cell (across selected margins / maybe sample), then choose leaves within it.
   choose_group_selection <- function(dt_grp) {
     dtf <- dt_grp[is.finite(t)]
     if (nrow(dtf) == 0L) {
       return(list(
-        best_cell = NA_integer_,
+        best_fit_id = NA_integer_,
         best_train_s = NA_integer_,
         sel_leaves = integer()
       ))
@@ -272,7 +300,7 @@ CART_test <- function(
     if (preselect == "minimum") {
       j <- which.min(dtf$t)
       return(list(
-        best_cell = as.integer(dtf$cell_id[j]),
+        best_fit_id = as.integer(dtf$fit_id[j]),
         best_train_s = as.integer(dtf$train_s[j]),
         sel_leaves = as.integer(dtf$leaf[j])
       ))
@@ -280,12 +308,12 @@ CART_test <- function(
 
     if (preselect == "none") {
       j <- which.min(dtf$t)
-      bc <- as.integer(dtf$cell_id[j])
+      bf <- as.integer(dtf$fit_id[j])
       bt <- as.integer(dtf$train_s[j])
       return(list(
-        best_cell = bc,
+        best_fit_id = bf,
         best_train_s = bt,
-        sel_leaves = as.integer(dtf[cell_id == bc & train_s == bt, leaf])
+        sel_leaves = as.integer(dtf[fit_id == bf & train_s == bt, leaf])
       ))
     }
 
@@ -295,18 +323,18 @@ CART_test <- function(
       if (nrow(keep) == 0L) {
         j <- which.min(dtf$t)
         return(list(
-          best_cell = as.integer(dtf$cell_id[j]),
+          best_fit_id = as.integer(dtf$fit_id[j]),
           best_train_s = as.integer(dtf$train_s[j]),
           sel_leaves = as.integer(dtf$leaf[j])
         ))
       } else {
         j <- which.min(keep$t)
-        bc <- as.integer(keep$cell_id[j])
+        bf <- as.integer(keep$fit_id[j])
         bt <- as.integer(keep$train_s[j])
         return(list(
-          best_cell = bc,
+          best_fit_id = bf,
           best_train_s = bt,
-          sel_leaves = as.integer(keep[cell_id == bc & train_s == bt, leaf])
+          sel_leaves = as.integer(keep[fit_id == bf & train_s == bt, leaf])
         ))
       }
     }
@@ -317,66 +345,91 @@ CART_test <- function(
       if (nrow(keep) == 0L) {
         j <- which.min(dtf$t)
         return(list(
-          best_cell = as.integer(dtf$cell_id[j]),
+          best_fit_id = as.integer(dtf$fit_id[j]),
           best_train_s = as.integer(dtf$train_s[j]),
           sel_leaves = as.integer(dtf$leaf[j])
         ))
       } else {
         j <- which.min(keep$t)
-        bc <- as.integer(keep$cell_id[j])
+        bf <- as.integer(keep$fit_id[j])
         bt <- as.integer(keep$train_s[j])
         return(list(
-          best_cell = bc,
+          best_fit_id = bf,
           best_train_s = bt,
-          sel_leaves = as.integer(keep[cell_id == bc & train_s == bt, leaf])
+          sel_leaves = as.integer(keep[fit_id == bf & train_s == bt, leaf])
         ))
       }
     }
 
     if (preselect == "fgk_relevant") {
-      # After local FGK screening, choose the most negative remaining cell/sample,
-      # and test all locally-screened leaves in that chosen cell/sample.
       j <- which.min(dtf$t)
-      bc <- as.integer(dtf$cell_id[j])
+      bf <- as.integer(dtf$fit_id[j])
       bt <- as.integer(dtf$train_s[j])
       return(list(
-        best_cell = bc,
+        best_fit_id = bf,
         best_train_s = bt,
-        sel_leaves = as.integer(dtf[cell_id == bc & train_s == bt, leaf])
+        sel_leaves = as.integer(dtf[fit_id == bf & train_s == bt, leaf])
       ))
     }
 
     j <- which.min(dtf$t)
     list(
-      best_cell = as.integer(dtf$cell_id[j]),
+      best_fit_id = as.integer(dtf$fit_id[j]),
       best_train_s = as.integer(dtf$train_s[j]),
       sel_leaves = as.integer(dtf$leaf[j])
     )
   }
+  add_key_cols <- function(dt, key_dt, all_margin_names) {
+    if (length(all_margin_names) == 0L) return(dt)
+    for (cc in all_margin_names) {
+      if (!cc %chin% names(dt)) dt[, (cc) := NA]
+    }
+    if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+      for (cc in names(key_dt)) dt[, (cc) := key_dt[[cc]][1]]
+    }
+    dt
+  }
 
-  fit_one_tree_cell <- function(df_cell, train_sample) {
-    dtr <- df_cell[df_cell[[sample_col]] == train_sample]
+  build_tree_design <- function(df, pooled_cols) {
+    if (length(pooled_cols) == 0L) {
+      X <- as.data.frame(df[, ..x_names])
+      return(X)
+    }
+    X0 <- as.data.frame(df[, ..x_names])
+    P0 <- as.data.frame(df[, ..pooled_cols])
+    for (cc in names(P0)) P0[[cc]] <- factor(P0[[cc]])
+    MM <- stats::model.matrix(~ . - 1, data = P0)
+    X <- cbind(X0, as.data.frame(MM))
+    X
+  }
+
+  fit_one_tree_group <- function(df_group, train_sample) {
+    dtr <- df_group[df_group[[sample_col]] == train_sample]
     if (nrow(dtr) < 2L) return(NULL)
 
-    cols_tr <- c(scores_col, x_names)
-    df_tr <- as.data.frame(dtr[, ..cols_tr])
-
+    Xtr <- build_tree_design(dtr, pool_margins)
+    df_tr <- data.frame(.y = as.numeric(dtr[[scores_col]]), Xtr, check.names = FALSE)
     w_tr <- if (!is.null(weight_col)) as.numeric(dtr[[weight_col]]) else NULL
-    fml <- stats::as.formula(paste0(scores_col, " ~ ", paste(x_names, collapse = " + ")))
 
+    fml <- stats::as.formula(paste(".y ~", paste(colnames(Xtr), collapse = " + ")))
 
     tree <- rpart::rpart(
       formula = fml,
       data = df_tr,
       method = "anova",
       weights = w_tr,
-      control = do.call(rpart::rpart.control, modifyList(rpart_options %||% list(),
-                                                         list(cp = cp, minbucket = minsize)))
+      control = do.call(
+        rpart::rpart.control,
+        modifyList(
+          rpart_options %||% list(),
+          list(cp = cp, minbucket = minsize, xval = xval)
+        )
+      )
     )
 
-    if (!is.null(tree$cp) && nrow(tree$cp) > 0L) {
+    if (!is.null(tree$cptable) && nrow(tree$cptable) > 0L) {
       maxrankcp2 <- min(maxrankcp, nrow(tree$cptable))
-      maxcp <- tree$cp[maxrankcp2, 1]
+      maxcp <- tree$cptable[maxrankcp2, 1]
       if (isTRUE(prune)) {
         opcpid <- which.min(tree$cptable[, 4])
         opcp <- tree$cptable[opcpid, 1]
@@ -386,8 +439,8 @@ CART_test <- function(
       }
     }
 
-    df_all <- as.data.frame(df_cell[, ..x_names])
-    leaf_all <- as.integer(rpart:::pred.rpart(tree, as.matrix(df_all)))
+    Xall <- build_tree_design(df_group, pool_margins)
+    leaf_all <- as.integer(rpart:::pred.rpart(tree, as.matrix(Xall)))
     list(tree = tree, leaf_all = leaf_all)
   }
 
@@ -420,30 +473,49 @@ CART_test <- function(
     out
   }
 
-  # ---------------- build full-margin cells ----------------
+  # ---------------- global output on fully separated cells ----------------
   n <- nrow(data)
-  gid <- if (length(margins) == 0L) rep(1L, n) else data.table::frankv(data[, ..margins], ties.method = "dense")
-  idx_list <- split(seq_len(n), gid)
-  n_cells <- length(idx_list)
+  gid_full <- if (length(margins) == 0L) {
+    rep(1L, n)
+  } else {
+    data.table::frankv(data[, ..margins], ties.method = "dense")
+  }
+  idx_full_list <- split(seq_len(n), gid_full)
+  n_full_cells <- length(idx_full_list)
 
-  cell_objs <- vector("list", n_cells)
-  global_list <- vector("list", n_cells)
-  trees_list <- if (store_trees) vector("list", n_cells) else NULL
-
-  for (g in seq_len(n_cells)) {
-    idx <- idx_list[[g]]
+  global_list <- vector("list", n_full_cells)
+  for (g in seq_len(n_full_cells)) {
+    idx <- idx_full_list[[g]]
     key_dt <- if (length(margins) > 0L) data[idx[1L], ..margins] else NULL
     df_cell <- data[idx]
-
     global_list[[g]] <- global_means_one_cell(df_cell, key_dt)
-    if (store_trees) trees_list[[g]] <- vector("list", 2L)
+  }
+  global_out <- data.table::rbindlist(global_list, use.names = TRUE, fill = TRUE)
+
+  # ---------------- fit-groups for trees ----------------
+  gid_fit <- if (length(sep_margins) == 0L) {
+    rep(1L, n)
+  } else {
+    data.table::frankv(data[, ..sep_margins], ties.method = "dense")
+  }
+  idx_fit_list <- split(seq_len(n), gid_fit)
+  n_fit <- length(idx_fit_list)
+
+  fit_objs   <- vector("list", n_fit)
+  trees_list <- if (store_trees) vector("list", n_fit) else NULL
+
+  for (g in seq_len(n_fit)) {
+    idx <- idx_fit_list[[g]]
+    df_group <- data[idx]
+    key_dt <- if (length(sep_margins) > 0L) data[idx[1L], ..sep_margins] else NULL
 
     dirs <- vector("list", 2L)
+    if (store_trees) trees_list[[g]] <- vector("list", 2L)
 
     for (train_s in c(1L, 2L)) {
       est_s <- if (train_s == 1L) 2L else 1L
 
-      fit <- fit_one_tree_cell(df_cell, train_s)
+      fit <- fit_one_tree_group(df_group, train_s)
       if (is.null(fit)) {
         dirs[[train_s]] <- NULL
         next
@@ -451,20 +523,20 @@ CART_test <- function(
       if (store_trees) trees_list[[g]][[train_s]] <- fit$tree
 
       leaf_all <- fit$leaf_all
-      s_cell <- as.integer(df_cell[[sample_col]])
-      score_cell <- as.numeric(df_cell[[scores_col]])
-      w_cell <- if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
-      w_cell[!is.finite(w_cell)] <- 0
-      cl_cell <- if (!is.null(cluster_col)) df_cell[[cluster_col]] else NULL
+      s_group <- as.integer(df_group[[sample_col]])
+      score_group <- as.numeric(df_group[[scores_col]])
+      w_group <- if (!is.null(weight_col)) as.numeric(df_group[[weight_col]]) else rep(1.0, nrow(df_group))
+      w_group[!is.finite(w_group)] <- 0
+      cl_group <- if (!is.null(cluster_col)) df_group[[cluster_col]] else NULL
 
       dt0 <- data.table::data.table(
         leaf   = leaf_all,
-        sample = s_cell,
-        score  = score_cell,
-        w      = w_cell
+        sample = s_group,
+        score  = score_group,
+        w      = w_group
       )
       if (!is.null(cluster_col)) {
-        dt0[, cl := as.integer(factor(cl_cell, exclude = NULL))]
+        dt0[, cl := as.integer(factor(cl_group, exclude = NULL))]
       } else {
         dt0[, cl := .I]
       }
@@ -485,10 +557,8 @@ CART_test <- function(
       train_leaf[, p.raw := stats::pnorm(t)]
 
       prom <- select_leaves_local(train_leaf[is.finite(t), .(leaf, t)])
-
-      if (!is.null(key_dt) && ncol(key_dt) > 0L) {
-        for (cc in names(key_dt)) train_leaf[, (cc) := key_dt[[cc]][1]]
-      }
+      train_leaf[, selected_local := as.integer(leaf %in% prom)]
+      train_leaf <- add_key_cols(train_leaf, key_dt, margins)
 
       dirs[[train_s]] <- list(
         idx = idx,
@@ -496,101 +566,101 @@ CART_test <- function(
         leaf_all = leaf_all,
         train_leaf = train_leaf,
         prom = as.integer(prom),
+        fit_id = g,
         train_s = train_s,
         est_s = est_s
       )
     }
 
-    cell_objs[[g]] <- dirs
+    fit_objs[[g]] <- dirs
 
     if (verbose && (g %% 25L == 0L)) {
-      message(sprintf("CART_test: processed %d/%d margin cells", g, n_cells))
+      message(sprintf("CART_test: processed %d/%d fit groups", g, n_fit))
     }
   }
-
-  global_out <- data.table::rbindlist(global_list, use.names = TRUE, fill = TRUE)
 
   # ---------------- collect candidate leaves ----------------
   leaf_rows <- list()
   lr <- 0L
 
-  for (g in seq_len(n_cells)) {
+  for (g in seq_len(n_fit)) {
     for (train_s in c(1L, 2L)) {
-      obj <- cell_objs[[g]][[train_s]]
+      obj <- fit_objs[[g]][[train_s]]
       if (is.null(obj)) next
 
       tl <- data.table::copy(obj$train_leaf)
       tl[, `:=`(
-        cell_id = g,
+        fit_id = g,
         train_s = train_s,
-        est_s = obj$est_s,
-        selected_local = as.integer(leaf %in% obj$prom)
+        est_s = obj$est_s
       )]
       leaf_rows[[lr <- lr + 1L]] <- tl
     }
   }
 
   leaf_tbl <- data.table::rbindlist(leaf_rows, use.names = TRUE, fill = TRUE)
-
-  # Restrict candidate set to locally preselected ("promising") leaves.
   leaf_tbl_use <- leaf_tbl[selected_local == 1L & is.finite(t)]
 
   if (nrow(leaf_tbl_use) == 0L) {
     stop("Testing subset is empty (after local preselection).")
   }
 
-  # group across selected dimensions; keep non-selected dimensions separate
-  grp_cols <- c(cell_cols, if (!select_sample) "train_s" else character())
-  grp_cols <- unique(grp_cols)
+  # ---------------- choose among selected margins ----------------
+  choice_group_cols <- c(final_keep_margins)
+  if (!select_sample) choice_group_cols <- c(choice_group_cols, "train_s")
+  choice_group_cols <- unique(choice_group_cols)
 
-  if (length(grp_cols) == 0L) {
-    sel_obj <- choose_group_selection(leaf_tbl_use[, .(cell_id, train_s, leaf, t)])
+  if (length(choice_group_cols) == 0L) {
+    z <- choose_group_selection(leaf_tbl_use[, .(fit_id, train_s, leaf, t)])
     sel_tbl <- data.table::data.table(
-      best_cell = sel_obj$best_cell,
-      best_train_s = sel_obj$best_train_s
+      best_fit_id = z$best_fit_id,
+      best_train_s = z$best_train_s,
+      sel_leaves = list(z$sel_leaves)
     )
-    sel_tbl[, sel_leaves := list(sel_obj$sel_leaves)]
   } else {
     sel_tbl <- leaf_tbl_use[, {
-      z <- choose_group_selection(.SD[, .(cell_id, train_s, leaf, t)])
+      z <- choose_group_selection(.SD[, .(fit_id, train_s, leaf, t)])
       data.table::data.table(
-        best_cell = z$best_cell,
+        best_fit_id = z$best_fit_id,
         best_train_s = z$best_train_s,
         sel_leaves = list(z$sel_leaves)
       )
-    }, by = grp_cols]
+    }, by = choice_group_cols]
   }
 
-  # ---------------- mark relevant train rows + build testing jobs ----------------
-  # ---------------- mark relevant train rows + build testing jobs ----------------
+  # ---------------- mark relevant train rows and build testing jobs ----------------
+  # ---------------- mark relevant train rows and build testing jobs ----------------
+  # ---------------- mark relevant train rows and build testing jobs ----------------
   train_rows <- list()
   tr_k <- 0L
   test_jobs <- list()
   tj_k <- 0L
 
-  for (g in seq_len(n_cells)) {
+  for (g in seq_len(n_fit)) {
     for (train_s in c(1L, 2L)) {
-      obj <- cell_objs[[g]][[train_s]]
+      obj <- fit_objs[[g]][[train_s]]
       if (is.null(obj)) next
 
       key_row <- data.table::data.table()
-      if (length(cell_cols) > 0L && !is.null(obj$key_dt) && ncol(obj$key_dt) > 0L) {
-        for (cc in cell_cols) key_row[, (cc) := obj$key_dt[[cc]][1]]
+      if (length(final_keep_margins) > 0L && !is.null(obj$key_dt) && ncol(obj$key_dt) > 0L) {
+        for (cc in final_keep_margins) {
+          if (cc %chin% names(obj$key_dt)) key_row[, (cc) := obj$key_dt[[cc]][1]]
+        }
       }
       if (!select_sample) key_row[, train_s := train_s]
 
-      if (nrow(sel_tbl) == 1L && length(grp_cols) == 0L) {
+      if (nrow(sel_tbl) == 1L && length(choice_group_cols) == 0L) {
         sel_here <- sel_tbl
       } else {
-        sel_here <- merge(key_row, sel_tbl, by = grp_cols, all.x = TRUE)
+        sel_here <- merge(key_row, sel_tbl, by = choice_group_cols, all.x = TRUE)
       }
 
       sel_leaves <- integer()
       chosen <- FALSE
       if (nrow(sel_here) == 1L &&
-          is.finite(sel_here$best_cell[1]) &&
+          is.finite(sel_here$best_fit_id[1]) &&
           is.finite(sel_here$best_train_s[1]) &&
-          g == sel_here$best_cell[1] &&
+          g == sel_here$best_fit_id[1] &&
           train_s == sel_here$best_train_s[1]) {
         sel_leaves <- as.integer(unlist(sel_here$sel_leaves[[1]], use.names = FALSE))
         chosen <- length(sel_leaves) > 0L
@@ -602,12 +672,32 @@ CART_test <- function(
 
       if (chosen) {
         for (lf in sel_leaves) {
-          test_jobs[[tj_k <- tj_k + 1L]] <- list(
-            cell_id = g,
-            train_s = train_s,
-            est_s = obj$est_s,
-            leaf = as.integer(lf)
+          job_dt <- data.table::data.table(
+            fit_id   = g,
+            train_s  = train_s,
+            est_s    = obj$est_s,
+            leaf     = as.integer(lf)
           )
+
+          # margins kept in reported output
+          for (cc in margins) {
+            val <- NA
+            if (!is.null(obj$key_dt) && cc %chin% names(obj$key_dt)) val <- obj$key_dt[[cc]][1]
+            job_dt[, (cc) := val]
+          }
+
+          # pooling key for final testing
+          for (cc in final_keep_margins) {
+            val <- NA
+            if (!is.null(obj$key_dt) && cc %chin% names(obj$key_dt)) val <- obj$key_dt[[cc]][1]
+            job_dt[, (paste0(".pool_", cc)) := val]
+          }
+          if (!pool_sample) {
+            job_dt[, .pool_est_s := obj$est_s]
+            job_dt[, .pool_leaf := as.integer(lf)]
+          }
+
+          test_jobs[[tj_k <- tj_k + 1L]] <- job_dt
         }
       }
     }
@@ -616,39 +706,80 @@ CART_test <- function(
   train_out <- data.table::rbindlist(train_rows, use.names = TRUE, fill = TRUE)
 
   if (length(test_jobs) == 0L) stop("Testing subset is empty (after selection).")
+  jobs_dt <- data.table::rbindlist(test_jobs, use.names = TRUE, fill = TRUE)
 
-  # ---------------- testing: one test per selected leaf ----------------
+  # ---------------- collapse testing jobs according to pooling ----------------
+  if (pool_sample) {
+    test_group_cols <- c(final_keep_margins)
+  } else {
+    test_group_cols <- c(final_keep_margins, "est_s", "leaf")
+  }
+  test_group_cols <- unique(test_group_cols)
+
+  # ---------------- testing: one test per pooled selected leaf-group ----------------
+  # ---------------- collapse testing jobs according to pooling ----------------
+  pool_cols <- grep("^\\.pool_", names(jobs_dt), value = TRUE)
+
+  # ---------------- testing: one test per pooled job-group ----------------
   test_rows <- list()
   tt_k <- 0L
 
-  for (j in seq_along(test_jobs)) {
-    job <- test_jobs[[j]]
-    obj <- cell_objs[[job$cell_id]][[job$train_s]]
+  if (length(pool_cols) == 0L) {
+    unique_job_groups <- data.table::data.table(.dummy = 1L)
+    jobs_dt[, .dummy := 1L]
+    pool_cols <- ".dummy"
+  } else {
+    unique_job_groups <- unique(jobs_dt[, ..pool_cols])
+  }
 
-    idx <- obj$idx
-    leaf_all <- obj$leaf_all
-    est_s <- obj$est_s
+  for (jj in seq_len(nrow(unique_job_groups))) {
+    key <- unique_job_groups[jj]
 
-    keep_local <- which(
-      svec[idx] == est_s &
-        !is.na(leaf_all) &
-        leaf_all == job$leaf
-    )
-    if (length(keep_local) == 0L) next
+    sel_expr <- rep(TRUE, nrow(jobs_dt))
+    for (cc in pool_cols) {
+      v <- key[[cc]][1]
+      if (is.na(v)) {
+        sel_expr <- sel_expr & is.na(jobs_dt[[cc]])
+      } else {
+        sel_expr <- sel_expr & (jobs_dt[[cc]] == v)
+      }
+    }
+    jobs_here <- jobs_dt[sel_expr]
+    if (nrow(jobs_here) == 0L) next
 
-    idx_keep <- idx[keep_local]
+    idx_keep_all <- integer()
 
-    y <- as.numeric(data[[scores_col]])[idx_keep]
-    w <- if (!is.null(weight_col)) as.numeric(data[[weight_col]])[idx_keep] else rep(1.0, length(idx_keep))
+    for (kk in seq_len(nrow(jobs_here))) {
+      job <- jobs_here[kk]
+      obj <- fit_objs[[job$fit_id]][[job$train_s]]
+
+      idx <- obj$idx
+      leaf_all <- obj$leaf_all
+
+      keep_local <- which(
+        svec[idx] == job$est_s &
+          !is.na(leaf_all) &
+          leaf_all == job$leaf
+      )
+      if (length(keep_local) == 0L) next
+
+      idx_keep_all <- c(idx_keep_all, idx[keep_local])
+    }
+
+    idx_keep_all <- sort(unique(idx_keep_all))
+    if (length(idx_keep_all) == 0L) next
+
+    y <- as.numeric(data[[scores_col]])[idx_keep_all]
+    w <- if (!is.null(weight_col)) as.numeric(data[[weight_col]])[idx_keep_all] else rep(1.0, length(idx_keep_all))
     w[!is.finite(w)] <- 0
-    cl <- if (!is.null(cluster_col)) data[[cluster_col]][idx_keep] else NULL
+    cl <- if (!is.null(cluster_col)) data[[cluster_col]][idx_keep_all] else NULL
 
     o <- mean_test_crv1(y, w, cl)
 
     rr <- data.table::data.table(
       train = FALSE,
-      sample = est_s,
-      leaf = as.integer(job$leaf),
+      sample = if (!pool_sample) unique(jobs_here$est_s)[1] else NA_integer_,
+      leaf = if (!pool_sample) unique(jobs_here$leaf)[1] else NA_integer_,
       G = o$G,
       N = o$N,
       coef = o$coef,
@@ -658,21 +789,35 @@ CART_test <- function(
       relevant = NA_integer_
     )
 
-    if (!is.null(obj$key_dt) && ncol(obj$key_dt) > 0L) {
-      for (cc in names(obj$key_dt)) rr[, (cc) := obj$key_dt[[cc]][1]]
+    # carry reported margins forward
+    for (cc in margins) {
+      vals <- unique(jobs_here[[cc]])
+      vals <- vals[!is.na(vals)]
+      rr[, (cc) := if (length(vals) == 1L) vals else NA]
     }
 
     test_rows[[tt_k <- tt_k + 1L]] <- rr
   }
 
+  if (".dummy" %chin% names(jobs_dt)) jobs_dt[, .dummy := NULL]
+
   if (length(test_rows) == 0L) stop("Testing subset is empty (after selection).")
   test_out <- data.table::rbindlist(test_rows, use.names = TRUE, fill = TRUE)
 
-  # combine results
   results_out <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
   if (!("relevant" %chin% names(results_out))) results_out[, relevant := NA_integer_]
   results_out[train == FALSE, relevant := NA_integer_]
   data.table::setorder(results_out, train)
+
+  front_cols <- c(
+    intersect(margins, names(results_out)),
+    intersect(sample_col, names(results_out)),
+    intersect("leaf", names(results_out)),
+    intersect("train", names(results_out))
+  )
+
+  other_cols <- setdiff(names(results_out), front_cols)
+  data.table::setcolorder(results_out, c(front_cols, other_cols))
 
   out <- list(
     results = results_out,
@@ -1938,9 +2083,12 @@ forest_test <- function(
     select = NULL,
     gridpoints = NULL,
     store_grid = TRUE,
-    verbose = FALSE
+    verbose = FALSE,
+    preselect = c("none", "minimum", "negative", "nonpositive", "fgk_relevant"),
+    alpha=0.05
 ) {
   stopifnot(data.table::is.data.table(data))
+  preselect <- match.arg(preselect)
 
   sample_col <- as.character(sample)
   pred_col   <- as.character(pred)
@@ -2049,6 +2197,44 @@ forest_test <- function(
     list(coef = theta, se = se, t = theta / se, G = G, N = length(score))
   }
 
+  ##Margin select helper
+  select_groups_preselect <- function(dt_grp, t_col = "sel_t",alpha=0.05) {
+    tt <- dt_grp[[t_col]]
+    ok <- is.finite(tt)
+    if (!any(ok)) return(dt_grp[0])
+
+    d <- dt_grp[ok]
+
+    if (preselect == "none") {
+      return(d)
+    }
+
+    if (preselect == "minimum") {
+      return(d[which.min(get(t_col))])
+    }
+
+    if (preselect == "negative") {
+      thr <- stats::qnorm(alpha / nrow(d))
+      keep <- d[get(t_col) <= thr]
+      if (nrow(keep) == 0L) keep <- d[which.min(get(t_col))]
+      return(keep)
+    }
+
+    if (preselect == "nonpositive") {
+      thr <- stats::qnorm(1 - alpha / nrow(d))
+      keep <- d[get(t_col) < thr]
+      if (nrow(keep) == 0L) keep <- d[which.min(get(t_col))]
+      return(keep)
+    }
+
+    if (preselect == "fgk_relevant") {
+      thr <- stats::qnorm(1 - alpha / nrow(d))
+      keep <- d[get(t_col) < thr]
+      return(keep)
+    }
+
+    d[which.min(get(t_col))]
+  }
   percentile_indices <- function(w, k) {
     n0 <- length(w)
     if (n0 == 0L) return(integer())
@@ -2254,15 +2440,19 @@ forest_test <- function(
 
   if (has_selection) {
     # Outer-half-honest selection:
-    # each training half chooses its own best rule using that half only,
-    # and that rule is then transported to the opposite half for testing.
+    # each training half competes only against candidates in that same half,
+    # within each non-selected adjustment cell.
     agg_by <- c(adjust_cols, sample_col, select_margins, "cell_id")
     cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
 
     choose_by <- c(adjust_cols, sample_col)
     id_by <- c(adjust_cols, sample_col, select_margins, "cell_id")
 
-    keep_ids <- cand[, .SD[which.min(sel_t)], by = choose_by][, ..id_by]
+    if (length(choose_by) == 0L) {
+      keep_ids <- select_groups_preselect(cand,alpha=alpha)[, ..id_by]
+    } else {
+      keep_ids <- cand[, select_groups_preselect(.SD,alpha=alpha), by = choose_by][, ..id_by]
+    }
 
     selected_train <- merge(
       train_all,
@@ -2463,6 +2653,9 @@ forest_test <- function(
   out
 }
 
+
+
+
 ##USED by CART_test and forest_test to estimate global means.
 global_means_crv1 <- function(
     data,
@@ -2519,32 +2712,79 @@ global_means_crv1 <- function(
   global_dt
 }
 
+
+
 #######ONE SIDED NONCOMPLIANCE HELPERS #######
-test_one_sided_noncompliance <- function(data, D, Z, margins = character(0)) {
+test_one_sided_noncompliance <- function(
+    data,
+    D,
+    Z,
+    zmargin_var = NULL
+) {
   dt <- data.table::as.data.table(data)
 
   stopifnot(is.character(D), length(D) == 1, D %in% names(dt))
   stopifnot(is.character(Z), length(Z) == 1, Z %in% names(dt))
 
-  if (is.null(margins)) margins <- character(0)
-  stopifnot(is.character(margins), all(margins %in% names(dt)))
+  has_zmargin <- !is.null(zmargin_var)
+  if (has_zmargin) {
+    stopifnot(is.character(zmargin_var), length(zmargin_var) == 1, zmargin_var %in% names(dt))
+  }
 
-  # binary check (strict, allow NA)
-  if (!all(dt[[D]] %in% c(0L, 1L), na.rm = TRUE)) stop("D must be binary 0/1 (allowing NA).")
-  if (!all(dt[[Z]] %in% c(0L, 1L), na.rm = TRUE)) stop("Z must be binary 0/1 (allowing NA).")
+  Dcol <- D
+  Zcol <- Z
+  Zmcol <- zmargin_var
+
+  if (!is.numeric(dt[[Dcol]]) && !is.integer(dt[[Dcol]])) {
+    stop("D must be numeric/integer ordered treatment values.")
+  }
+
+  zvals <- sort(unique(dt[[Zcol]][!is.na(dt[[Zcol]])]))
+  if (!all(zvals %in% c(0, 1))) {
+    stop("Z must already be binary 0/1 within each zmargin slice.")
+  }
+
+  d_support <- sort(unique(dt[[Dcol]][!is.na(dt[[Dcol]])]))
+  if (length(d_support) < 2L) stop("D must have at least two support values.")
+  dmargin_vals <- d_support[-1L]
+
+  keep_vars <- unique(c(Dcol, Zcol, if (has_zmargin) Zmcol else character(0)))
+  dt2 <- dt[stats::complete.cases(dt[, ..keep_vars])]
+
+  if (!has_zmargin) {
+    z_support <- sort(unique(dt2[[Zcol]]))
+    if (!all(z_support %in% c(0, 1)) || length(z_support) != 2L) {
+      stop("When zmargin_var is NULL, Z must be binary 0/1.")
+    }
+  }
+
+  d_index <- data.table::data.table(dmargin = dmargin_vals, dummy__ = 1L)
+  dt2[, dummy__ := 1L]
+  tmp <- d_index[dt2, on = "dummy__", allow.cartesian = TRUE][, dummy__ := NULL]
+  dt2[, dummy__ := NULL]
+
+  tmp[, Z_thr__ := as.integer(get(Zcol))]
+  tmp[, D_thr__ := as.integer(get(Dcol) >= dmargin)]
+
+  by_threshold <- if (has_zmargin) {
+    tmp[, zmargin := get(Zmcol)]
+    c("zmargin", "dmargin")
+  } else {
+    "dmargin"
+  }
 
   core <- function(.SD) {
-    z <- .SD[[Z]]
-    d <- .SD[[D]]
+    z <- .SD[["Z_thr__"]]
+    d <- .SD[["D_thr__"]]
 
     n_z0 <- sum(z == 0L)
     n_z1 <- sum(z == 1L)
 
-    p_always <- if (n_z0 > 0L) mean(d[z == 0L] == 1L) else NA_real_  # P(D=1|Z=0)
-    p_never  <- if (n_z1 > 0L) mean(d[z == 1L] == 0L) else NA_real_  # P(D=0|Z=1)
+    p_always <- if (n_z0 > 0L) mean(d[z == 0L] == 1L) else NA_real_
+    p_never  <- if (n_z1 > 0L) mean(d[z == 1L] == 0L) else NA_real_
 
     only_always <- is.finite(p_always) && is.finite(p_never) && (p_always > 0) && (p_never == 0)
-    only_never  <- is.finite(p_always) && is.finite(p_never) && (p_never  > 0) && (p_always == 0)
+    only_never  <- is.finite(p_always) && is.finite(p_never) && (p_never > 0) && (p_always == 0)
 
     one_sided <- only_always || only_never
 
@@ -2558,44 +2798,85 @@ test_one_sided_noncompliance <- function(data, D, Z, margins = character(0)) {
       "Perfect compliance"
     }
 
-    # your encoding: eq==1 trivial for only never-takers; eq==0 trivial for only always-takers
-    trivial_equation <- if (only_never) 1L else if (only_always) 0L else NA_integer_
-
     list(
       n_z0 = n_z0,
       n_z1 = n_z1,
       p_always = p_always,
       p_never = p_never,
       one_sided = one_sided,
-      direction = direction,
-      trivial_equation = trivial_equation
+      direction = direction
     )
   }
 
-  Dcol <- D
-  Zcol <- Z
+  threshold_res <- tmp[, core(.SD), by = by_threshold]
 
-  dt2 <- dt[!is.na(get(Dcol)) & !is.na(get(Zcol))]
+  if (has_zmargin) {
+    margin_cells <- unique(tmp[, .(zmargin)])
+    margin_cells[, dummy__ := 1L]
+    exact_index <- data.table::data.table(dval = d_support, dummy__ = 1L)
+    exact_res <- exact_index[margin_cells, on = "dummy__", allow.cartesian = TRUE][, dummy__ := NULL]
 
-  if (length(margins) == 0L) {
-    res <- data.table::as.data.table(core(dt2))
+    d_map <- data.table::data.table(
+      dval = d_support,
+      next_d = c(d_support[-1L], NA)
+    )
+    exact_res <- d_map[exact_res, on = "dval"]
+
+    below <- threshold_res[
+      direction == "Never-takers only",
+      .(zmargin, dval = dmargin, trivial_from_below = TRUE)
+    ]
+
+    above <- threshold_res[
+      direction == "Always-takers only",
+      .(zmargin, next_d = dmargin, trivial_from_above = TRUE)
+    ]
+
+    exact_res <- merge(exact_res, below, by = c("zmargin", "dval"), all.x = TRUE)
+    exact_res <- merge(exact_res, above, by = c("zmargin", "next_d"), all.x = TRUE)
   } else {
-    res <- dt2[, core(.SD), by = margins]
+    exact_res <- data.table::data.table(dval = d_support)
+
+    d_map <- data.table::data.table(
+      dval = d_support,
+      next_d = c(d_support[-1L], NA)
+    )
+    exact_res <- d_map[exact_res, on = "dval"]
+
+    below <- threshold_res[
+      direction == "Never-takers only",
+      .(dval = dmargin, trivial_from_below = TRUE)
+    ]
+
+    above <- threshold_res[
+      direction == "Always-takers only",
+      .(next_d = dmargin, trivial_from_above = TRUE)
+    ]
+
+    exact_res <- merge(exact_res, below, by = "dval", all.x = TRUE)
+    exact_res <- merge(exact_res, above, by = "next_d", all.x = TRUE)
   }
 
-  os <- res[one_sided == TRUE]
+  exact_res[is.na(trivial_from_below), trivial_from_below := FALSE]
+  exact_res[is.na(trivial_from_above), trivial_from_above := FALSE]
+  exact_res[, trivial_exact := trivial_from_below | trivial_from_above]
+  exact_res[, next_d := NULL]
+
+  if (length(d_support) == 2L && "dmargin" %in% names(threshold_res)) {
+    threshold_res[, dmargin := NULL]
+  }
+
+  os <- threshold_res[one_sided == TRUE]
   if (nrow(os) != 0L) {
-    message(if (length(margins) == 0L)
-      "One-sided noncompliance detected overall (no margins):"
-      else
-      "One-sided noncompliance detected in the following margins cells:"
-    )
+    message("One-sided noncompliance detected in the following threshold-margin cells:")
     print(os)
   }
 
-  invisible(res)
+  invisible(list(
+    threshold = threshold_res,
+    exact = exact_res
+  ))
 }
-
 #####binarize var #######
 
 binarize_var <- function(data,
