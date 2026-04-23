@@ -10,49 +10,41 @@ montest(
   Z,
   X = NULL,
   Y = NULL,
-  test = NULL,
-  inner.folds = 5,
-  crossfit.forest = TRUE,
+  condition = NULL,
+  inner.folds = NULL,
+  crossfit = NULL,
   normalize.Z = TRUE,
-  aipw.clip = 0.001,
+  aipw.clip = 0,
   weight = NULL,
   cluster = NULL,
-  num.trees = 2000,
   seed = 10101,
-  minsize = 50,
-  gridtypeY = "equisized",
-  gridtypeD = "equisized",
-  gridtypeZ = "equisized",
-  sim = FALSE,
-  Ysubsets = 4,
-  Dsubsets = 4,
-  Zsubsets = 4,
+  minsize = 50L,
+  gridtypeY = NULL,
+  gridtypeD = NULL,
+  gridtypeZ = NULL,
+  stratify = NULL,
+  joint = TRUE,
+  Ysubsets = 4L,
+  Dsubsets = 4L,
+  Zsubsets = 4L,
   Y.res = TRUE,
   testtype = "forest",
   gridpoints = NULL,
   min_n = 1L,
   pool = "all",
   select = "none",
-  shrink = FALSE,
+  shrink = 0,
   cp = 0,
   maxrankcp = 10L,
+  rpart_options = NULL,
   alpha = 0.05,
   prune = TRUE,
-  preselect = "negative",
+  preselect = "fgk_relevant",
   Zparameters = list(),
   Yparameters = list(),
   Qparameters = list(),
   Dparameters = list(),
-  Cparameters = list(),
-  tune.Qparameters = "none",
-  tune.Zparameters = "none",
-  tune.Cparameters = "none",
-  tune.Yparameters = "none",
-  tune.Dparameters = "none",
-  tune.num.trees = 200,
-  tune.num.reps = 50,
-  tune.num.draws = 1000,
-  tunetype = "one"
+  Cparameters = list()
 )
 }
 \arguments{
@@ -61,24 +53,23 @@ Observations with missing values in any variables used by the call are dropped.}
 
 \item{D}{Character scalar giving the name of the treatment variable.}
 
-\item{Z}{Character scalar giving the name of the instrumental variable.}
+\item{Z}{Character scalar giving the name of the instrumental variable. \bold{Z should be coded so that higher values weakly increases treatment.}}
 
 \item{X}{Optional character vector of covariate names used for subset discovery and
 nuisance estimation.}
 
-\item{Y}{Optional character vector of outcome variable names. Required for tests other
+\item{Y}{Optional character scalar for the outcome variable. Required for tests other
 than \code{"simple"}.}
 
-\item{test}{Character vector selecting which tests to run. Allowed values are any combination of
-\code{"simple"}, \code{"BP"}, \code{"MW"}, \code{"AHS"}, or \code{"all"}.
+\item{condition}{Character vector selecting which tests to run. Allowed values are any combination of
+\code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifi?? and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 If \code{Y} is omitted, only \code{"simple"} is allowed.}
 
 \item{inner.folds}{Optional integer giving the number of within-sample folds used for
 cross-fitting nuisance functions and, optionally, forest predictions. Set to
-\code{NULL} to disable the inner split. Defaults to 5.}
+\code{NULL} to disable the inner split. Defaults to NULL - nuissances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.}
 
-\item{crossfit.forest}{Logical, default TRUE; if \code{TRUE}, forest predictions are cross-fitted
-within each sample half when supported.}
+\item{crossfit}{Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.}
 
 \item{normalize.Z}{Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 normalized after estimation.}
@@ -91,9 +82,7 @@ scores when augmented inverse-probability weighted scores are constructed.}
 \item{cluster}{Optional character scalar naming a cluster identifier. Cluster-robust
 inference is used in forest-based testing. CART testing canot be combined with cluster.}
 
-\item{num.trees}{Integer, default 2000 giving the number of trees for the main forest fits.}
-
-\item{seed}{Integer random seed,}
+\item{seed}{Integer random seed, default 10101, set to NULL to disable setting seed}
 
 \item{minsize}{Integer minimum effective sample size or minimum cluster count required
 for subset search and testing. Default 50.}
@@ -102,10 +91,8 @@ for subset search and testing. Default 50.}
 variables are discretized before stacking. Must be one of \code{"equisized"} or
 \code{"equidistant"}.}
 
-\item{sim}{Logical; for development and testing}
-
 \item{Ysubsets, Dsubsets, Zsubsets}{Integers giving the number of bins used when
-discretizing \code{Y}, \code{D}, and \code{Z}, respectively.}
+discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Dsubsets and Zsubsets may be set to 0L for linear models.}
 
 \item{Y.res}{Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
 outcome on the right hand side \code{MW,AHS}.}
@@ -117,19 +104,19 @@ outcome on the right hand side \code{MW,AHS}.}
 by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.}
 
 \item{min_n}{Integer minimum number of treated and untreated instrument observations
-required within each sample half and margin cell.}
+required within each sample half and margin cell considered for residual variation.}
 
 \item{pool}{Character vector controlling which dimensions are pooled when finding testing subsets
-testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
-\code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
+\code{"yval"}, \code{"condition"}, \code{"equation"},
+\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
-testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
-\code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
+testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
+\code{"yval"}, \code{"condition"}, \code{"equation"},
 \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
-\item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default=FALSE}
+\item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
 \item{cp, maxrankcp, alpha, prune, preselect}{Tuning parameters for the CART-based search
 routine. See Details.}
@@ -137,12 +124,16 @@ routine. See Details.}
 \item{Zparameters, Yparameters, Qparameters, Dparameters, Cparameters}{Named lists of
 additional arguments passed to the underlying GRF estimation routines for different
 nuisance or target models.See regression_forest and causal_forest for details.}
+
+\item{num.trees}{Integer, default 2000 giving the number of trees for the main forest fits.}
+
+\item{sim}{Logical; for development and testing}
 }
 \value{
 A named list:
 
 \describe{
-  \item{\code{results}}{A Matrix of ain train/test results by sample and margin cell.}
+  \item{\code{results}}{A Matrix of train and test results by sample and margin cell.}
   \item{\code{global}}{Global mean test statistics over the same stratification.}
   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
@@ -185,10 +176,10 @@ The procedure works in several stages:
   treatment effects are predicted in and out of sample and scores constructed
   \item Each sample part (optionally within margins, depending on the options in code{pool}) is sorted
   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
-  in predicted treatment effects. Select the cutoff with the smallest t-statistic on themean of scores
-  Alterantively, subset selection can be done using a CART algorithm.
-  \item The corresponding subset is evaluated in the opposite sample half. If performing multiple tests,
-  depending on the option  \cite{pool}, p-values are optionally adjusted for multiple testing.
+  in predicted treatment effects. Select the cutoff with the smallest t-statistic on the mean of scores
+  Alternatively, subset selection can be done using a CART algorithm.
+  \item Depending on the choices in \code{select}, promising subsets are evaluated in the opposite sample half. If performing multiple tests,
+  depending on the option \code{pool}, p-values are adjusted for multiple testing.
 }
 
 \code{montest} supports weights and clustering, and allow for multivalued treatments and instruments
@@ -226,7 +217,7 @@ out <- montest(
   D = "D",
   Z = "Z",
   X = c("Xvar1", "Xvar2", "Xvar3"),
-  test = "simple",
+  condition = "simple",
   testtype = "forest")
 
 # Test multiple conditions, pooling evidence
@@ -236,7 +227,7 @@ out2 <- montest(
   Z = "Z",
   Y="Y",
   X = c("Xvar1", "Xvar2", "Xvar3"),
-  test = c("simple","BP","MW"))
+  condition = c("simple","KR","MW"))
 }
 
 }

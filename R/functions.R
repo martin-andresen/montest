@@ -2375,11 +2375,10 @@ forest_test <- function(
         idx_all <- unique(c(idx_q, idx_c))
         idx_all <- idx_all[is.finite(idx_all)]
         idx_all <- sort(idx_all)
-        out <- data.table::data.table(tau = pred[idx_all], t = t_stat[idx_all], chosen = FALSE)
-        if (is.finite(idx_c) && nrow(out) > 0L) {
-          j <- match(pred[idx_c], out$tau)
-          if (!is.na(j)) out[j, chosen := TRUE]
-        }
+        out <- data.table::data.table(
+          tau = pred[idx_all],
+          t   = t_stat[idx_all]
+        )
         out
       }, by = "sample"]
 

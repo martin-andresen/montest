@@ -14,18 +14,18 @@
 #' @param data A \code{data.frame} or \code{data.table} containing the analysis sample.
 #'   Observations with missing values in any variables used by the call are dropped.
 #' @param D Character scalar giving the name of the treatment variable.
-#' @param Z Character scalar giving the name of the instrumental variable.
+#' @param Z Character scalar giving the name of the instrumental variable. \bold{Z should be coded so that higher values weakly increases treatment.}
 #' @param X Optional character vector of covariate names used for subset discovery and
 #'   nuisance estimation.
-#' @param Y Optional character vector of outcome variable names. Required for tests other
+#' @param Y Optional character scalar for the outcome variable. Required for tests other
 #'   than \code{"simple"}.
-#' @param test Character vector selecting which tests to run. Allowed values are any combination of
-#'   \code{"simple"}, \code{"BP"}, \code{"MW"}, \code{"AHS"}, or \code{"all"}.
+#' @param condition Character vector selecting which tests to run. Allowed values are any combination of
+#'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifi?? and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted, only \code{"simple"} is allowed.
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
-#'   \code{NULL} to disable the inner split. Defaults to 5.
-#' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q,"Y","C","D". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
+#'   \code{NULL} to disable the inner split. Defaults to NULL - nuissances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
+#' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
 #' @param aipw.clip Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
@@ -43,7 +43,7 @@
 #'   \code{"equidistant"}.
 #' @param sim Logical; for development and testing
 #' @param Ysubsets,Dsubsets,Zsubsets Integers giving the number of bins used when
-#'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively.
+#'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Dsubsets and Zsubsets may be set to 0L for linear models.
 #' @param Y.res Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
 #'   outcome on the right hand side \code{MW,AHS}.
 #' @param testtype Character string selecting the subset-search routine. Must be
@@ -51,14 +51,14 @@
 #' @param gridpoints Optional integer controlling the number of candidate cutoffs searched
 #'   by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.
 #' @param min_n Integer minimum number of treated and untreated instrument observations
-#'   required within each sample half and margin cell.
+#'   required within each sample half and margin cell considered for residual variation.
 #' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
-#'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
-#'   \code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
+#'   \code{"yval"}, \code{"condition"}, \code{"equation"},
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
-#'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dmargin"},
-#'   \code{"ybin"}, \code{"condition"}, \code{"equation"}, \code{"outcome"},
+#'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
+#'   \code{"yval"}, \code{"condition"}, \code{"equation"},
 #'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param cp,maxrankcp,alpha,prune,preselect Tuning parameters for the CART-based search
 #'   routine. See Details.
@@ -82,10 +82,10 @@
 #'   treatment effects are predicted in and out of sample and scores constructed
 #'   \item Each sample part (optionally within margins, depending on the options in code{pool}) is sorted
 #'   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
-#'   in predicted treatment effects. Select the cutoff with the smallest t-statistic on themean of scores
-#'   Alterantively, subset selection can be done using a CART algorithm.
-#'   \item The corresponding subset is evaluated in the opposite sample half. If performing multiple tests,
-#'   depending on the option  \cite{pool}, p-values are optionally adjusted for multiple testing.
+#'   in predicted treatment effects. Select the cutoff with the smallest t-statistic on the mean of scores
+#'   Alternatively, subset selection can be done using a CART algorithm.
+#'   \item Depending on the choices in \code{select}, promising subsets are evaluated in the opposite sample half. If performing multiple tests,
+#'   depending on the option \code{pool}, p-values are adjusted for multiple testing.
 #' }
 #'
 #' \code{montest} supports weights and clustering, and allow for multivalued treatments and instruments
@@ -668,6 +668,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     margin_index[, zmargin := NA_integer_]
   }
   data <- margin_index[data, on = "zmargin", allow.cartesian = TRUE]
+  if ("zmargin" %in% names(margin_index) && all(is.na(margin_index[["zmargin"]]))) {
+    margin_index[, zmargin := NULL]
+  }
 
   # --------------------------------------------------
   #  Create Q by condition
