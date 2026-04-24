@@ -2084,11 +2084,11 @@ forest_test <- function(
     gridpoints = NULL,
     store_grid = TRUE,
     verbose = FALSE,
-    preselect = c("none", "minimum", "negative", "nonpositive", "fgk_relevant"),
+    screen = c("stepdown","none", "minimum", "negative", "nonpositive","fgk_relevant"),
     alpha=0.05
 ) {
   stopifnot(data.table::is.data.table(data))
-  preselect <- match.arg(preselect)
+ screen <- match.arg(screen)
 
   sample_col <- as.character(sample)
   pred_col   <- as.character(pred)
@@ -2136,7 +2136,7 @@ forest_test <- function(
     stop("select contains invalid names: ", paste(bad_select, collapse = ", "))
   }
 
-  overlap <- intersect(pool, select)
+  overlap <- setdiff(intersect(pool, select), sample_col)
   if (length(overlap) > 0L) {
     stop("The following names appear in both pool and select: ",
          paste(overlap, collapse = ", "))
@@ -2144,9 +2144,6 @@ forest_test <- function(
 
   pool_sample   <- sample_col %in% pool
   select_sample <- sample_col %in% select
-  if (pool_sample && select_sample) {
-    stop("sample cannot appear in both pool and select.")
-  }
 
   pool_margins   <- intersect(pool, margins)
   select_margins <- intersect(select, margins)
@@ -2156,7 +2153,7 @@ forest_test <- function(
 
   test_by <- c(
     adjust_cols,
-    if (!pool_sample && !select_sample) sample_col else character()
+    if (!pool_sample) sample_col else character()
   )
 
   do_shares <- (length(pool_margins) > 0L)
@@ -2198,42 +2195,68 @@ forest_test <- function(
   }
 
   ##Margin select helper
-  select_groups_preselect <- function(dt_grp, t_col = "sel_t",alpha=0.05) {
+  select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05) {
     tt <- dt_grp[[t_col]]
     ok <- is.finite(tt)
     if (!any(ok)) return(dt_grp[0])
 
-    d <- dt_grp[ok]
+    d <- data.table::copy(dt_grp[ok])
+    data.table::setorderv(d, t_col)
 
-    if (preselect == "none") {
+    if (screen == "none") {
       return(d)
     }
 
-    if (preselect == "minimum") {
-      return(d[which.min(get(t_col))])
+    if (screen == "minimum") {
+      return(d[1L])
     }
 
-    if (preselect == "negative") {
+    if (screen == "negative") {
       thr <- stats::qnorm(alpha / nrow(d))
       keep <- d[get(t_col) <= thr]
-      if (nrow(keep) == 0L) keep <- d[which.min(get(t_col))]
+      if (nrow(keep) == 0L) keep <- d[1L]
       return(keep)
     }
 
-    if (preselect == "nonpositive") {
+    if (screen == "nonpositive") {
       thr <- stats::qnorm(1 - alpha / nrow(d))
       keep <- d[get(t_col) < thr]
-      if (nrow(keep) == 0L) keep <- d[which.min(get(t_col))]
+      if (nrow(keep) == 0L) keep <- d[1L]
       return(keep)
     }
 
-    if (preselect == "fgk_relevant") {
+    if (screen == "stepdown") {
+      # Ordered by promise already: most negative t first.
+      # Add r-th candidate if it survives Holm among top r.
+      keep_n <- 1L
+
+      if (nrow(d) >= 2L) {
+        p <- stats::pnorm(d[[t_col]])
+
+        for (r in 2:nrow(d)) {
+          p_top <- p[seq_len(r)]
+          p_holm <- stats::p.adjust(p_top, method = "holm")
+
+          # Since d is ordered by p/t, the r-th is the weakest among top r.
+          if (p_holm[r] <= alpha) {
+            keep_n <- r
+          } else {
+            break
+          }
+        }
+      }
+
+      return(d[seq_len(keep_n)])
+    }
+
+    if (screen == "fgk_relevant") {
+      # This one is allowed to return zero cells.
       thr <- stats::qnorm(1 - alpha / nrow(d))
       keep <- d[get(t_col) < thr]
       return(keep)
     }
 
-    d[which.min(get(t_col))]
+    d[1L]
   }
   percentile_indices <- function(w, k) {
     n0 <- length(w)
@@ -2438,19 +2461,25 @@ forest_test <- function(
   has_selection <- (length(select_margins) > 0L) || select_sample
 
   if (has_selection) {
-    # Outer-half-honest selection:
-    # each training half competes only against candidates in that same half,
-    # within each non-selected adjustment cell.
-    agg_by <- c(adjust_cols, sample_col, select_margins, "cell_id")
+    agg_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
+
     cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
 
-    choose_by <- c(adjust_cols, sample_col)
-    id_by <- c(adjust_cols, sample_col, select_margins, "cell_id")
+    choose_by <- c(
+      adjust_cols,
+      if (!select_sample && !pool_sample) sample_col else character()
+    )
+
+    id_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
 
     if (length(choose_by) == 0L) {
-      keep_ids <- select_groups_preselect(cand,alpha=alpha)[, ..id_by]
+      keep_ids <- select_groups_screen(cand, alpha = alpha)[, ..id_by]
     } else {
-      keep_ids <- cand[, select_groups_preselect(.SD,alpha=alpha), by = choose_by][, ..id_by]
+      keep_ids <- cand[
+        ,
+        select_groups_screen(.SD, alpha = alpha),
+        by = choose_by
+      ][, ..id_by]
     }
 
     selected_train <- merge(
@@ -2461,6 +2490,72 @@ forest_test <- function(
       sort = FALSE
     )
   }
+
+  adaptive_sample <- pool_sample && select_sample
+
+  sample_design <- if (adaptive_sample) "adaptive" else if (pool_sample) "pooled" else "separate"
+
+  family_p <- function(dt) {
+    p <- stats::pnorm(dt$t)
+    min(stats::p.adjust(p, method = "holm"), na.rm = TRUE)
+  }
+
+  pooled_p <- function(dt) {
+    ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
+    if (!any(ok)) return(Inf)
+
+    theta <- dt$coef[ok]
+    se    <- dt$stderr[ok]
+
+    ivar <- 1 / se^2
+    theta_pool <- sum(ivar * theta) / sum(ivar)
+    se_pool <- sqrt(1 / sum(ivar))
+    t_pool <- theta_pool / se_pool
+
+    stats::pnorm(t_pool)
+  }
+
+  if (adaptive_sample && nrow(selected_train) > 0L) {
+
+    by_sample_score <- selected_train[
+      ,
+      .(p_family = family_p(.SD)),
+      by = sample_col
+    ]
+
+    best_sample <- by_sample_score[which.min(p_family), get(sample_col)]
+
+    cand_best <- selected_train[get(sample_col) == best_sample]
+    cand_sep  <- selected_train
+    cand_pool <- selected_train
+
+    p_best <- family_p(cand_best)
+    p_sep  <- family_p(cand_sep)
+    p_pool <- pooled_p(cand_pool)
+
+    choice <- names(which.min(c(
+      best_only = p_best,
+      separate  = p_sep,
+      pooled    = p_pool
+    )))
+
+    if (choice == "best_only") {
+      selected_train <- cand_best
+      sample_design <- "best_only"
+      test_by <- adjust_cols
+
+    } else if (choice == "separate") {
+      selected_train <- cand_sep
+      sample_design <- "separate"
+      test_by <- c(adjust_cols, sample_col)
+
+    } else if (choice == "pooled") {
+      selected_train <- cand_pool
+      sample_design <- "pooled"
+      test_by <- adjust_cols
+    }
+  }
+
 
   train_out <- data.table::copy(train_all)
   win_keys <- unique(selected_train[, .(cell_id, sample)])
@@ -2644,7 +2739,8 @@ forest_test <- function(
     global  = global,
     Xmeans  = Xmeans,
     Xmeans_all = Xmeans_all,
-    XSD = XSD
+    XSD = XSD,
+    sample_design = sample_design
   )
   if (!is.null(shares)) out$shares <- shares
   if (!store_grid) out$grid <- NULL

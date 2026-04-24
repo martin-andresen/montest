@@ -55,12 +55,13 @@
 #' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select, but "sample" can, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
-#' @param cp,maxrankcp,alpha,prune,preselect Tuning parameters for the CART-based search
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select, but "sample" can, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#' @screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
+#' @param cp,maxrankcp,alpha,prune, Tuning parameters for the CART-based search
 #'   routine. See Details.
 #' @param Zparameters,Yparameters,Qparameters,Dparameters,Cparameters Named lists of
 #'   additional arguments passed to the underlying GRF estimation routines for different
@@ -159,8 +160,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0, ##forest opts
-                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,preselect="fgk_relevant", ##CART opts
+                 gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0,
+                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
                  #tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
                  #tune.num.trees=200,tune.num.reps=50,tune.num.draws=1000,tunetype="one" ##tuning options
@@ -171,6 +172,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
 
   ################### 1 CHECK INPUT #####################
+  screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
   gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
@@ -226,7 +228,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   else if (sum(select=="none")==1) select=c()
   else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample"),several.ok=TRUE)
 
-  overlap <- intersect(pool, select)
+  overlap <- setdiff(intersect(pool, select), "sample")
   if (length(overlap) > 0L) {
     stop("Error: The following names appear in both pool and select: ",
          paste(overlap, collapse = ", "))
@@ -980,19 +982,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  ##res=list()
-  ##if (sim==TRUE) {
-  ##  poollist=list(character(0),margins[!margins %in% "condition"],c(margins[!margins %in% "condition"],"sample"),c(margins,"sample"),margins)
-  ##  treelist=c("CART","forest")
-  ##
-  ##  for (p in 1:5) {
-  ##    res[[paste0(c("forest",p),collapse="_")]]=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poollist[[p]],gridpoints=gridpoints,margins=margins)
-  ##    res[[paste0(c("CART",p),collapse="_")]]=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,pool=poollist[[p]])
-  ##  }
-  ##} else {   ##}
-
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,preselect=preselect,alpha=alpha)
-  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,select=selectmargins,pool=poolmargins,rpart_options=rpart_options)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha)
+  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,pool=poolmargins,rpart_options=rpart_options)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())
