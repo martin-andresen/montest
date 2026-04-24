@@ -39,7 +39,7 @@ montest(
   rpart_options = NULL,
   alpha = 0.05,
   prune = TRUE,
-  preselect = "fgk_relevant",
+  screen = "stepdown",
   Zparameters = list(),
   Yparameters = list(),
   Qparameters = list(),
@@ -53,7 +53,7 @@ Observations with missing values in any variables used by the call are dropped.}
 
 \item{D}{Character scalar giving the name of the treatment variable.}
 
-\item{Z}{Character scalar giving the name of the instrumental variable. \bold{Z should be coded so that higher values weakly increases treatment.}}
+\item{Z}{Character scalar giving the name of the instrumental variable. \bold{Importantly, Z should be coded so that higher values weakly increases treatment.}}
 
 \item{X}{Optional character vector of covariate names used for subset discovery and
 nuisance estimation.}
@@ -62,7 +62,7 @@ nuisance estimation.}
 than \code{"simple"}.}
 
 \item{condition}{Character vector selecting which tests to run. Allowed values are any combination of
-\code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifi?? and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
+\code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 If \code{Y} is omitted, only \code{"simple"} is allowed.}
 
 \item{inner.folds}{Optional integer giving the number of within-sample folds used for
@@ -109,31 +109,35 @@ required within each sample half and margin cell considered for residual variati
 \item{pool}{Character vector controlling which dimensions are pooled when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
+\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select, but "sample" can, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+\code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select, but "sample" can, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
-\item{cp, maxrankcp, alpha, prune, preselect}{Tuning parameters for the CART-based search
+\item{cp, maxrankcp, alpha, prune, }{Tuning parameters for the CART-based search
 routine. See Details.}
 
 \item{Zparameters, Yparameters, Qparameters, Dparameters, Cparameters}{Named lists of
 additional arguments passed to the underlying GRF estimation routines for different
-nuisance or target models.See regression_forest and causal_forest for details.}
+nuisance or target models.See regression_forest and causal_forest for details.
+@param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.}
 
 \item{num.trees}{Integer, default 2000 giving the number of trees for the main forest fits.}
 
 \item{sim}{Logical; for development and testing}
+
+\item{\code{screen}}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.}
 }
 \value{
 A named list:
 
 \describe{
   \item{\code{results}}{A Matrix of train and test results by sample and margin cell.}
+  \item{\code{margins}}{A Matrix of margins of condition, zmargin, dval, yval, equation that characterizes the cells used for testing.}
   \item{\code{global}}{Global mean test statistics over the same stratification.}
   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
@@ -150,35 +154,34 @@ A named list:
 }
 \description{
 \code{montest()} searches for violations of monotonicity and LATE assumptions in
-data-adaptive subsets of the sample. It combines sample splitting,
+data-adaptive subsets of the sample and across various margins. It combines sample splitting,
 cross-fitting, and generalized random forest (or CART-based subset search) to identify
 regions of the covariate space or margins of the instrument or treatment where test
 statistics are most negative, and then evaluates those regions in the held-out sample.
 The function supports several testable conditions, including a simple test of whether
-the first stage is negative \code{"simple"}, the Balke and Pearl (1997) condition \code{"BP"},
+the first stage is negative \code{"simple"}, the Kwan and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrment and treatment),
 the Mourifie and Wan (2017) conditions  \code{"MW"}, and the first stage conditional on Y-test from
 Andresen, Huber and Sloczynski (2026) \code{"AHS"}. Multivalued instruments, treatments and outcomes
 are expanded across margins and discretized into bins before estimation. See Details.
 }
 \details{
-The procedure works in several stages:
+The rough steps of the montest algorithm is as follows
 
 \enumerate{
-  \item The data are restricted to the variables used in the call, complete cases are
-  kept, and the sample is split into two halves (optionally respecting clusters).
+  \item Data is restricted to complete cases of the variables used, and the sample is split into two halves (optionally respecting clusters).
   \item Continuous or multivalued instruments, treatments and outcomes discretized into bins.
   \item The data is stacked across instrument margins, treatment margins, outcomes,
-  equations, and test conditions.
-  \item Nuisance functions such as \code{Z.hat}, \code{Q.hat} are estimated and outcomes are residualized
-  using regression forests within margins and and cross-fitted within sample halves.
-  \item Separate causal forests of the outcome \code{Q}, which depends on the condition being tested, on
+  equations, and test conditions. The outcome variable Q is defined, depending on condition and margins.
+  \item Nuisance functions for as \code{Z.hat}, and the outcome \code{Q.hat} are estimated and outcomes are residualized
+  using regression forests within margins.
+  \item Separate causal forests of the outcome \code{Q}, on
   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
   treatment effects are predicted in and out of sample and scores constructed
   \item Each sample part (optionally within margins, depending on the options in code{pool}) is sorted
   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
   in predicted treatment effects. Select the cutoff with the smallest t-statistic on the mean of scores
   Alternatively, subset selection can be done using a CART algorithm.
-  \item Depending on the choices in \code{select}, promising subsets are evaluated in the opposite sample half. If performing multiple tests,
+  \item Depending on the choices in \code{select}, promising subsets (using selection rules in \code{screen}) are evaluated  in the opposite sample half. If performing multiple tests,
   depending on the option \code{pool}, p-values are adjusted for multiple testing.
 }
 
@@ -186,25 +189,22 @@ The procedure works in several stages:
 by binarizing instruments and treatments into quantile or equisized bins. The command also tests for
 one-sided monotonicity (within margins of the treatment and instrument) and if found, warns the user
 and skips testing any trivially satisified conditions.
+
+Consider a multivalued instrument with K values, a multivalued treatment with J values, a multivalued outcome with L values. \code{montest} can test the following families of conditions:
+\enumerate{
+ \item \code{condition="simple"} tests the sharp condition of a nonnegative first stage everywhere, which tests monotonicity,
+  but not exclusion in addition to instrument exogeneity. There are a total of (J-1)(K-1) such conditions.
+ \item \code{condition="KR"} tests the sharp Kwan-Roth (2026) / Sun (2023) conditions for instrument validity,
+ which require exclusion and monotonicity in addition to instrument exogeneity. There are in total (K-1)(L + (J-1)(2^L-2))
+  such conditions. If option joint=FALSE, montest tests only the (K-1)JK cellwise conditions with only one outcome value in the set A.
+  With a binary treatment and instrument, these conditions collapse to the conditions from Balke and Pearl (1997). Outcome variable Y must be specified.
+  \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
+  first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
+  There are a total of (J-1)(K-1) such conditions.
+  \item \code{condition=="MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
+  and exclusion conditional on instrument validity. This is only allowed for a binary treatment. There are a total of 2K such conditions.
 }
-\section{CART tuning parameters}{
-
-When \code{testtype = "CART"}, subset search is based on regression trees fit to the
-score variable. The argument \code{cp} controls tree complexity, \code{maxrankcp}
-limits the pruning table rank considered, \code{alpha} enters the preselection rule,
-\code{prune} toggles pruning, and \code{preselect} determines which candidate leaves
-are retained before testing. Supported preselection rules are \code{"none"},
-\code{"minimum"}, \code{"negative"}, and \code{"nonpositive"}.
 }
-
-\section{Reserved names}{
-
-The function uses internal variable names such as \code{Q}, \code{*.hat},
-\code{sample}, \code{condition}, \code{equation}, \code{ybin}, \code{zmargin}, and
-\code{dmargin}. Some of these are created internally, and names conflicting with the
-\code{*.hat} conventions are rejected.
-}
-
 \examples{
 \dontrun{
 
