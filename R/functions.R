@@ -2384,7 +2384,7 @@ forest_test <- function(
 
       if (!is.null(key_dt) && ncol(key_dt) > 0L) {
         for (cc in names(key_dt)) grid_out[, (cc) := key_dt[[cc]][1]]
-        data.table::setcolorder(grid_out, c(names(key_dt), "sample", "t", "tau", "chosen"))
+        data.table::setcolorder(grid_out, c(names(key_dt), "sample", "t", "tau"))
       }
     }
 

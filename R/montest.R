@@ -222,7 +222,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   else if (is.null(pool)==FALSE) pool=match.arg(pool,c("zmargin","dval","yval","condition","sample"),several.ok=TRUE)
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
-  else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation",,"sample")
+  else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample")
   else if (sum(select=="none")==1) select=c()
   else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample"),several.ok=TRUE)
 
@@ -274,7 +274,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
   if (sum(condition %in% c("AHS","MW","KR"))==0&is.null(Y)==FALSE) Y=NULL
-  time=rbind(start=time,checks=proc.time())
+  time=rbind("Check input"=proc.time())
 
   ###################### 2 Prepare data #########################3
   XW=X
@@ -315,7 +315,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   if (is.null(cluster)==TRUE) cluster="id_"
 
-  time=rbind(time,prepare=proc.time())
+  time=rbind(time,"Prepare data"=proc.time())
 
   ############### 3 Discretize Z, D and Y into subsets ###############
 
@@ -363,7 +363,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     stop("Nothing to test with a binary treatment, a binary instrument, the simple first stage condition and no variables in X.")
   }
 
-  time=rbind(time,discretize=proc.time())
+  time=rbind(time,"Binarize treatment, instrument and outcome"=proc.time())
 
   ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
   margins=c()
@@ -557,7 +557,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
 
-  time=rbind(time,nuissance_Z=proc.time())
+  time=rbind(time,"Stack data for Z margins and estimate nuisance for Z"=proc.time())
 
   #######STACK ACROSS MARGINS ##########
   ##CONSTRUCT INDEX MATRIX OF MARGINS
@@ -683,22 +683,23 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   data[, Q := NA_real_]
 
+
+  if ("dval" %in% names(data)) {
+    data[, D_bin := fifelse(
+           is.na(dval),
+           as.numeric(get(Dcol)),
+           as.numeric(get(Dcol) >= dval)
+         )]
+  } else {
+    data[,D_bin := as.numeric(get(Dcol))]
+  }
+
   # simple / AHS
-  data[condition %in% c("simple", "AHS"),
-       Q := fifelse(
-         is.na(dval),
-         as.integer(get(Dcol) == 1L),
-         as.integer(get(Dcol) >= dval)
-       )]
-
+  if (any(c("AHS","simple") %in% condition)) {
+    data[condition %in% c("simple","AHS"),Q:=D_bin]
+  }
   # MW
-  data[condition == "MW",
-       D_bin := fifelse(
-         is.na(dval),
-         as.integer(get(Dcol) == 1L),
-         as.integer(get(Dcol) >= dval)
-       )]
-
+  if ("MW" %in% condition) {
   data[condition == "MW",
        Q := equation * (
          (1 - get(Zhat)) * D_bin * get(Zcol) -
@@ -708,22 +709,24 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
            get(Zhat) * (1 - D_bin) * (1 - get(Zcol)) -
              (1 - get(Zhat)) * (1 - D_bin) * get(Zcol)
          )]
+  }
 
-  data[, D_bin := NULL]
 
   # KR (cellwise + joint)
-  dmin <- min(data[[Dcol]], na.rm = TRUE)
+  if ("KR" %in% condition) {
+    dmin <- min(data[[Dcol]], na.rm = TRUE)
 
-  data[condition == "KR" & dval == dmin,
-       Q := -as.integer(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-       by = .(dval, yval)]
+    data[condition == "KR" & dval == dmin,
+         Q := -as.integer(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
+         by = .(dval, yval)]
 
-  data[condition == "KR" & dval > dmin,
-       Q := as.integer(get(Dcol) >= dval) -
-         as.integer(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-       by = .(dval, yval)]
+    data[condition == "KR" & dval > dmin,
+         Q := D_bin -
+           as.integer(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
+         by = .(dval, yval)]
+  }
 
-  time=rbind(time,stack_data=proc.time())
+  time=rbind(time,"Stack data across margins"=proc.time())
 
   ##Estimate Q.hat in stacked data
   if (sum(condition %in% c("simple","KR"))>0) {
@@ -837,7 +840,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     drop_all <- data[, any(bad_Q, na.rm = TRUE)]
 
     if (isTRUE(drop_all)) {
-      message("Dropping all rows because at least one sample part / condition cell has no usable variation in Q.")
+      message("Dropping all rows because at least one sample part has no usable variation in Q.")
       data <- data[0]
 
       if (exists("margin_index")) {
@@ -896,7 +899,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
 
-  time=rbind(time,nuisance_Q=proc.time())
+  time=rbind(time,"Estimate nuisance for outcomes Q"=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
   if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances - use OOB for forest.
@@ -971,7 +974,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
 
-  time=rbind(time,causal_forest=proc.time())
+  time=rbind(time,"Estimate causal forests"=proc.time())
 
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
   poolmargins=pool[pool %in% c(margins,"sample")]
@@ -992,7 +995,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,preselect=preselect,cluster=cluster,select=selectmargins,pool=poolmargins,rpart_options=rpart_options)
 
 
-  time=rbind(time,find_and_test=proc.time())
+  time=rbind(time,"Find promising subset and test"=proc.time())
 
 
   ################ 7: Multiple hypothesis testing and output #####################
@@ -1017,10 +1020,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
       }
     }
 
-  time=rbind(time,finalize=proc.time())
+  time=rbind(time,"Correct for multiple hypothesis testing"=proc.time())
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
   time=time[,1:3]
-  time=rbind(time,total=colSums(time))
+  time=rbind(time,"Total"=colSums(time))
   return=c(res,list(time=time,obs=obs,margins=margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE]))
   return(return)
 }

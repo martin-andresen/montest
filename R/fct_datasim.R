@@ -1,118 +1,139 @@
-######################################################################################
-# Function for data simulation
-# Borrowed from LATEtest - Farbmacher et al.
-# + added more DGPs
-######################################################################################
-
-fct_datasim <- function(setup, dgp, n) {
+##This is a generalization of the DGP in Farbmacher et. al (2020) to multivalued treatments and instruments.
+fct_datasim <- function(
+    setup, n,
+    J = 1, K = 1,
+    condition = NULL,
+    mono_bad = NULL,          # data.frame(k, m), k = D >= k, m = Z margin m-1 -> m
+    excl_bad = NULL,          # vector of Z margins m
+    alpha_good = 0.40,
+    alpha_bad  = -0.75,
+    gap = 1.0,
+    gamma_bad = 1.25,
+    tau = rep(1, K)           # tau[k] effect of crossing D >= k
+) {
 
   p <- 3
   betaXY <- c(0.3, 0.3, 0.3)
-  cov <- matrix(c(1, 0.3, 0.3, 1), 2, 2)
+
+  if (length(tau) != K) {
+    stop("tau must have length K")
+  }
+
+  cov <- matrix(c(1, 0.3,
+                  0.3, 1), 2, 2)
+
   errors <- MASS::mvrnorm(n, rep(0, 2), cov)
 
   X <- matrix(rnorm(n * p), n, p)
   colnames(X) <- paste0("Xvar", 1:p)
 
-  # common alpha levels for all monotonicity DGPs
-  alpha_lo <- -0.75
-  alpha_hi <-  0.40
+  Xdf <- as.data.frame(X)
 
-  if (dgp == 0) {
-    # no violations of A1 & A3; inequalities are binding
-    alpha <- rep(0, n)
-    gamma <- rep(0, n)
-
-  } else if (dgp == 1) {
-    # no violations of A1 & A3; inequalities are not binding
-    alpha <- rep(0.2, n)
-    gamma <- rep(0, n)
-
-  } else if (dgp == 2) {
-    # local violation of monotonicity: axis-aligned threshold
-    alpha <- ifelse(X[, 1] < qnorm(0.15), alpha_lo, alpha_hi)
-    gamma <- rep(0, n)
-
-  } else if (dgp == 3) {
-    # local violation of exclusion restriction
-    alpha <- rep(0.2, n)
-    gamma <- ifelse(X[, 2] < qnorm(0.15), 1.25, 0)
-
-  } else if (dgp == 4) {
-    # global violation of exclusion restriction
-    alpha <- rep(0.2, n)
-    gamma <- rep(0.5, n)
-
-  } else if (dgp == 5) {
-    # global violation of exclusion restriction with sign heterogeneity
-    alpha <- rep(0.2, n)
-    gamma <- ifelse(X[, 3] < qnorm(0.5), 0.5, -0.5)
-
-  } else if (dgp == 6) {
-    # oblique local violation of monotonicity
-    beta_rot <- c(1, 1, 1) / sqrt(3)
-    S <- as.vector(X %*% beta_rot)
-    alpha <- ifelse(S < qnorm(0.15), alpha_lo, alpha_hi)
-    gamma <- rep(0, n)
-
-  } else if (dgp == 7) {
-    # oblique local violation of exclusion restriction
-    a <- 0.2
-    alpha <- rep(a, n)
-
-    beta_exc <- c(1, 1, 1) / sqrt(3)
-    S <- as.vector(X %*% beta_exc)
-    gamma <- ifelse(S > qnorm(0.85), 1.25, 0)
-  } else if (dgp == 8) {
-    # radial local violation of monotonicity
-    # violating region is the inner 15% ball under ||X||^2 ~ chi^2_3
-    r2 <- rowSums(X^2)
-    cutoff6 <- qchisq(0.15, df = 3)
-    alpha <- ifelse(r2 < cutoff6, alpha_lo, alpha_hi)
-    gamma <- rep(0, n)
-
-  } else if (dgp == 9) {
-    # oscillating local violation of monotonicity
-    # define violating region as top 15% of oscillation score
-    U1 <- pnorm(X[, 1])
-    U2 <- pnorm(X[, 2])
-    V  <- sin(pi * U1) * sin(pi * U2)
-
-    # approx 85th percentile of V when U1,U2 ~ U(0,1)
-    cutoff8 <- 0.7777
-    alpha <- ifelse(V > cutoff8, alpha_lo, alpha_hi)
-    gamma <- rep(0, n)
-
-  } else if (dgp == 10) {
-    # smooth-index local violation of monotonicity
-    beta_idx <- c(1, 1, 1) / sqrt(3)
-    S <- as.vector(X %*% beta_idx)
-    alpha <- ifelse(S > qnorm(0.85), alpha_lo, alpha_hi)
-    gamma <- rep(0, n)
+  if (is.null(condition)) {
+    viol <- rep(TRUE, n)
   } else {
-    stop("invalid choice of dgp")
+    viol <- eval(parse(text = condition), envir = Xdf)
+    if (!is.logical(viol) || length(viol) != n) {
+      stop("condition must evaluate to a logical vector of length n")
+    }
+    viol[is.na(viol)] <- FALSE
   }
 
   if (setup == "A") {
-    # randomized instrument
-    Z <- rbinom(n, size = 1, prob = 0.5)
-    Dlatent <- alpha * Z + errors[, 1]
-    D <- as.numeric(Dlatent > 0)
+    Z <- sample(0:J, n, replace = TRUE)
+    b <- rep(0, n)
 
   } else if (setup == "B") {
-    # unconfounded instrument
-    Zlatent <- 0.2 * X[, 1] + 0.2 * X[, 2] + 0.2 * X[, 3] + rnorm(n)
-    Z <- as.numeric(Zlatent > 0)
-    b <- 0.5 * log(1 + exp(X[, 1] + X[, 2] + X[, 3]))
-    Dlatent <- b + alpha * Z + errors[, 1]
-    D <- as.numeric(Dlatent > 0)
+    z_score <- 0.2 * rowSums(X) + rnorm(n)
+
+    br <- unique(quantile(
+      z_score,
+      probs = seq(0, 1, length.out = J + 2),
+      na.rm = TRUE
+    ))
+
+    Z <- as.integer(cut(
+      z_score,
+      breaks = br,
+      include.lowest = TRUE,
+      labels = FALSE
+    )) - 1L
+
+    b <- 0.5 * log1p(exp(rowSums(X)))
 
   } else {
     stop("invalid choice of setup")
   }
 
-  Y <- as.vector(1 * D + gamma * Z + X %*% betaXY + errors[, 2])
+  alpha_good_mat <- matrix(alpha_good, nrow = K, ncol = J)
+  alpha_bad_mat  <- alpha_good_mat
 
-  data <- as.data.frame(cbind(Y, D, Z, X))
-  return(data)
+  if (!is.null(mono_bad)) {
+    stopifnot(all(c("k", "m") %in% names(mono_bad)))
+
+    for (r in seq_len(nrow(mono_bad))) {
+      k <- mono_bad$k[r]
+      m <- mono_bad$m[r]
+
+      if (k < 1 || k > K || m < 1 || m > J) {
+        stop("mono_bad contains invalid k or m")
+      }
+
+      alpha_bad_mat[k, m] <- alpha_bad
+    }
+  }
+
+  shift_good <- cbind(0, t(apply(alpha_good_mat, 1, cumsum)))
+  shift_bad  <- cbind(0, t(apply(alpha_bad_mat,  1, cumsum)))
+
+  base <- b + errors[, 1]
+
+  L <- matrix(NA_real_, n, K)
+
+  for (k in seq_len(K)) {
+    sh <- shift_good[k, Z + 1L]
+
+    if (!is.null(mono_bad)) {
+      sh[viol] <- shift_bad[k, Z[viol] + 1L]
+    }
+
+    raw_k <- base + sh - (k - 1) * gap
+
+    if (k == 1L) {
+      L[, k] <- raw_k
+    } else {
+      L[, k] <- pmin(raw_k, L[, k - 1L] - 1e-8)
+    }
+  }
+
+  D <- rowSums(L > 0)
+
+  eta_good <- rep(0, J)
+  eta_bad  <- eta_good
+
+  if (!is.null(excl_bad)) {
+    if (any(excl_bad < 1 | excl_bad > J)) {
+      stop("excl_bad contains invalid margin m")
+    }
+
+    eta_bad[excl_bad] <- gamma_bad
+  }
+
+  gamma_good_z <- c(0, cumsum(eta_good))
+  gamma_bad_z  <- c(0, cumsum(eta_bad))
+
+  gamma_z <- gamma_good_z[Z + 1L]
+
+  if (!is.null(excl_bad)) {
+    gamma_z[viol] <- gamma_bad_z[Z[viol] + 1L]
+  }
+
+  tau_D <- rep(0, n)
+  for (k in seq_len(K)) {
+    tau_D <- tau_D + tau[k] * as.numeric(D >= k)
+  }
+
+  Y <- as.vector(tau_D + gamma_z + X %*% betaXY + errors[, 2])
+
+  data.frame(Y, D, Z, X)
 }
