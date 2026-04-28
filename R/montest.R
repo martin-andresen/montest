@@ -164,7 +164,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool="all",select="none",shrink=0,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
                  #tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
@@ -200,43 +200,42 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   if (is.null(condition)==TRUE) {
     if (is.null(Y)==TRUE) {
-      condition="simple"
-    } else condition="all"
+      condition=c("simple","simple_linearZ","simple_linearD","simple_linearDZ")
+    } else condition="KR"
   }
 
-  condition=match.arg(condition,c("simple","KR","MW","AHS","all"),several.ok=TRUE) ##took out support for Kitagawa
+  condition=match.arg(condition,c("simple","simple_linearZ","simple_linearD","simple_linearDZ","simple_linearZD","KR","MW","AHS","all"),several.ok=TRUE) ##took out support for Kitagawa
   if (length(Y)>1) stop("More than one outcome currently not supported.")
   if ("all" %in% condition) {
-    condition=c("simple","KR","MW","AHS")
+    condition=c("simple","simple_linearZ","simple_linearD","simple_linearDZ","simple_linearZD","KR","MW","AHS")
   }
   if (is.null(Y)==TRUE) {
-    if (sum(!condition %in% "simple")>0) {
-      stop("Other conditions than simple may not be used when Y is not specified. Specify the Y argument or use condition=simple")
+    if (any(condition %in% c("KR","AHS","MW"))) {
+      stop("Other conditions than (variants of) simple may not be used when Y is not specified. Specify the Y argument or use condition=simple")
     }
   }
 
-  if (Ysubsets<=1|is.integer(Ysubsets)==FALSE) stop("Ysubsets must be an integers larger than 1")
-  if (Dsubsets<0|Dsubsets==1|is.integer(Dsubsets)==FALSE) stop("Dsubsets must be an integer equal to 0 (linear model) or larger than 1. Use #L notation for integer.")
-  if (Zsubsets<0|Zsubsets==1|is.integer(Zsubsets)==FALSE) stop("Zsubsets must be an integer equal to 0 (linear model) or larger than 1. Use #L notation for integer.")
+  if (any(condition %in% c("simple_linearDZ", "simple_linearZD"))) {
+    condition <- unique(c(
+      condition[!condition %in% c("simple_linearDZ", "simple_linearZD")],
+      "simple_linearDZ"
+    ))
+  }
 
-  if (Dsubsets==0&"KR" %in% condition) stop("Dsubsets=0 (linear model) incompatible with condition=KR, use only for condition=simple or condition=AHS.")
-  if (Zsubsets==0&"KR" %in% condition) stop("Zsubsets=0 (linear model) incompatible with condition=KR, use only for condition=simple or condition=AHS.")
-
+  if (Ysubsets<=1|is.integer(Ysubsets)==FALSE) stop("Ysubsets must be an integers larger than 1. Use #L for integer.")
+  if (Dsubsets<2|is.integer(Dsubsets)==FALSE) stop("Dsubsets must be an integer larger than 1. Use #L for integer.")
+  if (Zsubsets<2|is.integer(Zsubsets)==FALSE) stop("Zsubsets must be an integer larger than 1. Use #L for integer.")
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
   else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample")
   else if (sum(pool=="none")==1) pool=c()
   else if (is.null(pool)==FALSE) pool=match.arg(pool,c("zmargin","dval","yval","condition","sample"),several.ok=TRUE)
+  else pool=c("zmargin","dval","yval","sample")
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
   else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample")
   else if (sum(select=="none")==1) select=c()
   else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample"),several.ok=TRUE)
-
-  overlap <- setdiff(intersect(pool, select), "sample")
-  if (length(overlap) > 0L) {
-    stop("Error: The following names appear in both pool and select: ",
-         paste(overlap, collapse = ", "))
-  }
+  else select="condition"
 
   if (sum(sum(grepl("Z.hat",colnames(data))))) stop("Variable name beginning with Z.hat discovered, reserved for internal use. Please rename.")
   if (sum(sum(grepl("D.hat",colnames(data))))) stop("Variable name beginning with D.hat discovered, reserved for internal use. Please rename.")
@@ -284,6 +283,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   ###################### 2 Prepare data #########################3
   XW=X
+  Zname=Z
+  Dname=D
+  Yname=Y
 
   if (sum(c("MW","AHS") %in% condition)>0) {XWY=c(X,Y)} else {XWY=XW}
 
@@ -325,27 +327,37 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   ############### 3 Discretize Z, D and Y into subsets ###############
 
-
-  if (is.null(Dsubsets)==FALSE&Dsubsets>0) { ##bin treatment
+  if (any(condition %in% c("KR","simple","AHS","MW","simple_linearZ"))){
+    ##bin treatment
     data <- binarize_var(
       data    = data,
       var     = D,
       ngroups = Dsubsets,
       gridtype = gridtypeD,
-      wvar    = wvar
+      wvar    = wvar,
+      newvar=paste0(D,".bin")
     )
+    Dbincol=paste0(D,".bin")
+    Dsup=sort(unique(data[,get(Dbincol)]));J=length(Dsup)
+  } else {
+    J=Inf;Dbincol=NULL
   }
 
-  if (is.null(Zsubsets)==FALSE&Zsubsets>0) { ##bin instrument
+  if (any(condition %in% c("KR","simple","AHS","MW","simple_linearD"))){
+    ##bin instrument
     data <- binarize_var(
       data    = data,
       var     = Z,
       ngroups = Zsubsets,
       gridtype = gridtypeZ,
-      wvar    = wvar
+      wvar    = wvar,
+      newvar=paste0(Z,".bin")
     )
+    Zbincol=paste0(Z,".bin")
+    Zsup=sort(unique(data[,get(Zbincol)]));K=length(Zsup)
+  } else {
+    K=Inf;Zbincol=NULL
   }
-
 
   if ("KR" %in% condition) { ##bin outcome(s)
     data <- binarize_var(
@@ -356,16 +368,37 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
       wvar    = wvar,
       newvar = paste0(Y, ".bin")
     )
-    ybincol=paste0(Y,".bin")
-    Ysup=sort(unique(data[,get(..ybincol)]));L=length(Ysup)
+    Ybincol=paste0(Y,".bin")
+    Ysup=sort(unique(data[,get(Ybincol)]));L=length(Ysup)
   }
 
-  n=nrow(data);
-  Dsup=sort(unique(data[,get(..D)]));J=length(Dsup)
-  Zsup=sort(unique(data[,get(..Z)]));K=length(Zsup)
+  n=nrow(data)
+
+  ##Remove redundant linearized versions of the simple first satge stat.
+  has_DZ <- "simple_linearDZ" %in% condition
+
+  if (has_DZ && (J == 2 || K == 2)) {
+    condition <- setdiff(condition, "simple_linearDZ")
+
+    if (K == 2) condition <- union(condition, "simple_linearD")
+    if (J == 2) condition <- union(condition, "simple_linearZ")
+  }
+
+  if ("simple_linearZ" %in% condition && K == 2) {
+    condition <- union(setdiff(condition, "simple_linearZ"), "simple")
+  }
+
+  if ("simple_linearD" %in% condition && J == 2) {
+    condition <- union(setdiff(condition, "simple_linearD"), "simple")
+  }
+
+  has_margin_conditions <- any(condition %in% c("KR", "simple", "AHS", "MW","simple_linearD"))
+  has_linearZ_conditions <- any(condition %in% c("simple_linearZ",
+                                                 "simple_linearDZ"))
+
 
   if (J>2&("MW" %in% condition)) stop("Multivalued treatment not supported with condition MW.")
-  if (J==2&K==2&is.null(X)==TRUE&all(condition=="simple")) {
+  if (J==2&K==2&is.null(X)==TRUE&!any(condition %in% c("AHS","MW","KR"))) {
     stop("Nothing to test with a binary treatment, a binary instrument, the simple first stage condition and no variables in X.")
   }
 
@@ -374,31 +407,72 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
   margins=c()
 
-  ##Stack for margins of Z
-  if (K>2) { ##Expand to all margins of Z
-    minZ=min(data[,..Z]);maxZ=max(data[,..Z]);zvals=sort(unique(data[,get(..Z)]))
-    times = 1L + 1L * as.integer(data[[Z]] > minZ & data[[Z]] < maxZ)
-    data = data[rep.int(seq_len(nrow(data)), times)]
+  ## Stack for margins of Z
+  if (K > 2 && any(condition %in% c("KR", "simple", "AHS", "MW",
+                                    "simple_linearD", "simple_linearZ", "simple_linearDZ"))) {
 
-    zname=Z
-    data[get(zname)==minZ,zmargin:=zvals[2]]
-    data[get(zname)==maxZ,zmargin:=zvals[length(zvals)]]
-    data[is.na(zmargin),
-         zmargin := {
-           z0 <- .SD[[1L]][1L]
-           k  <- match(z0, zvals)
-           stopifnot(.N == 2L, !is.na(k), k < length(zvals))
-           c(zvals[k], zvals[k + 1L])
-         },
-         by = id_,
-         .SDcols = zname]
+    zmap_list <- list()
 
-    data[,(Z):=as.integer(get(..Z)>=zmargin)]
-    margins=c(margins,"zmargin")
-  } else if (Zsubsets>0) { ##MAKE SURE Z is dummy!
-    data[, (Z) := as.integer(get(..Z) == max(get(..Z)))]
+    ## Margin-specific expansion:
+    ## - lowest Z gets second-lowest margin, so Zbin >= zmargin gives 0
+    ## - highest Z gets highest margin, so Zbin >= zmargin gives 1
+    ## - intermediate Z gets current and next-higher margins, giving one 1 and one 0
+    if (has_margin_conditions) {
+      stopifnot(!is.null(Zbincol), Zbincol %in% names(data))
+
+      zvals <- sort(unique(data[[Zbincol]]))
+      minZ  <- zvals[1L]
+      maxZ  <- zvals[length(zvals)]
+
+      zmap_list[[length(zmap_list) + 1L]] <- data[, {
+        z0 <- get(Zbincol)
+        k  <- match(z0, zvals)
+
+        if (z0 == minZ) {
+          zm <- zvals[2L]
+        } else if (z0 == maxZ) {
+          zm <- zvals[length(zvals)]
+        } else {
+          zm <- c(z0, zvals[k + 1L])
+        }
+
+        .(rowid = .I, zmargin = zm)
+      }, by = id_]
+    }
+
+    ## Linear-Z / linear-DZ copy:
+    ## only one extra copy per original row, with zmargin = NA.
+    if (has_linearZ_conditions) {
+      zmap_list[[length(zmap_list) + 1L]] <- data[
+        ,
+        .(rowid = .I, zmargin = NA_real_),
+        by = id_
+      ]
+    }
+
+    zmap <- data.table::rbindlist(zmap_list, use.names = TRUE)
+
+    ## Expand data according to zmap
+    data <- data[zmap$rowid]
+    data[, zmargin := zmap$zmargin]
+
+    margins <- unique(c(margins, "zmargin"))
+
+    ## For margin rows, binarize Z at the margin.
+    if (has_margin_conditions) {
+      data[!is.na(zmargin), (Z) := as.integer(get(Zbincol) >= zmargin)]
+    }
+
+    ## For linear-Z rows, keep the original Z.
+    if (has_linearZ_conditions) {
+      data[is.na(zmargin), (Z) := get(Zname)]
+    }
+
+    ## Drop temporary binarized-Z helper only if it exists.
+    if (!is.null(Zbincol) && Zbincol %in% names(data)) {
+      data[, (Zbincol) := NULL]
+    }
   }
-
 
   ##estimate Z.hat for each margin in stacked data
   if (is.null(X)==FALSE) {
@@ -464,8 +538,21 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
   ##Check for onesided noncompliance
-  if (Dsubsets>0&Zsubsets>0) {
-    os_res <- test_one_sided_noncompliance(data = data, D = D, Z = Z,zmargin_var=margins)
+  nonmissing_margin_i <- function(DT, margin_var = "zmargin") {
+    if (margin_var %in% names(DT)) {
+      !is.na(DT[[margin_var]])
+    } else {
+      rep(TRUE, nrow(DT))
+    }
+  }
+
+  if (has_margin_conditions) {
+    os_res <- test_one_sided_noncompliance(
+      data = data[nonmissing_margin_i(data, "zmargin")],
+      D = D,
+      Z = Z,
+      zmargin_var = margins
+    )
     osmargins=margins
     if (nrow(os_res$threshold[one_sided==TRUE])>0) os_res
     if (nrow(os_res$threshold[one_sided==FALSE])==0&sum(condition %in% c("KR","MW"))==0) {
@@ -476,34 +563,33 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   ##Check for residual variation in Z
   byvars <- c("sample", margins)
   Zhat <- paste0(Z, ".hat")
-  Zcol <- Z
 
   # Common summaries
   data[, n_group := .N, by = byvars]
-  data[, nZ      := uniqueN(get(Zcol), na.rm = TRUE), by = byvars]
-  data[, sdZ     := stats::sd(get(Zcol), na.rm = TRUE), by = byvars]
-  data[, sd_res  := stats::sd(get(Zcol) - get(Zhat), na.rm = TRUE), by = byvars]
+  data[, nZ      := uniqueN(get(Zname), na.rm = TRUE), by = byvars]
+  data[, sdZ     := stats::sd(get(Zname), na.rm = TRUE), by = byvars]
+  data[, sd_res  := stats::sd(get(Zname) - get(Zhat), na.rm = TRUE), by = byvars]
 
   # Initialize helper
   if (!("min_cell_Z" %in% names(data))) data[, min_cell_Z := NA_integer_]
 
-  if (Zsubsets == 0) {
+  if (has_linearZ_conditions) {
     # Continuous Z: require group size, variation in Z, and variation in residualized Z
-    data[, bad_Z := (
+    data[nonmissing_margin_i(data, "zmargin"), bad_Z := (
       n_group < min_n |
         is.na(sdZ) | sdZ == 0 |
         is.na(sd_res) | sd_res == 0
     ), by = "sample"]
-
-  } else {
+  }
+  if (has_margin_conditions) {
     # Discrete Z: require at least 2 support points, enough observations in each Z cell,
     # and variation in residualized Z
-    data[, min_cell_Z := {
-      ztab <- table(get(Zcol), useNA = "no")
+    data[nonmissing_margin_i(data, "zmargin"), min_cell_Z := {
+      ztab <- table(get(Zname), useNA = "no")
       if (length(ztab) == 0L) NA_integer_ else min(ztab)
     }, by = byvars]
 
-    data[, bad_Z := (
+    data[nonmissing_margin_i(data, "zmargin"), bad_Z := (
       n_group < min_n |
         nZ < 2 |
         is.na(min_cell_Z) | min_cell_Z < min_n |
@@ -594,6 +680,23 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     idx_blocks[["simple"]] <- tmp
   }
 
+  if ("simple_linearD" %in% condition) {
+    if (K>2) tmp=data.table(zmargin=Zsup[-1]) else tmp=data.table()
+    tmp[, condition := "simple_linearD"]
+    idx_blocks[["simple_linearD"]] <- tmp
+  }
+
+  if ("simple_linearZ" %in% condition) {
+    tmp=data.table(dval=Dsup[-1])
+    tmp[, condition := "simple_linearZ"]
+    idx_blocks[["simple_linearZ"]] <- tmp
+  }
+
+  if ("simple_linearDZ" %in% condition) {
+    tmp=data.table(condition="simple_linearDZ")
+    idx_blocks[["simple_linearDZ"]] <- tmp
+  }
+
   # AHS
   if ("AHS" %in% condition) {
     tmp <- os_res$threshold[one_sided == FALSE]
@@ -669,51 +772,46 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   # 2) Cross with zmargin-stacked data
   # --------------------------------------------------
 
-  if (!"zmargin" %in% names(data)) {
-    data[, zmargin := NA_integer_]
-    margin_index[, zmargin := NA_integer_]
-  }
-  data <- margin_index[data, on = "zmargin", allow.cartesian = TRUE]
-  if ("zmargin" %in% names(margin_index) && all(is.na(margin_index[["zmargin"]]))) {
-    margin_index[, zmargin := NULL]
-  }
+  data[, join_dummy__ := 1L]
+  margin_index[, join_dummy__ := 1L]
+
+  data <- margin_index[
+    data,
+    on = "join_dummy__",
+    allow.cartesian = TRUE
+  ]
+
+  data[, join_dummy__ := NULL]
 
   # --------------------------------------------------
   #  Create Q by condition
   # --------------------------------------------------
 
-  Dcol   <- D
+  Dcol   <- Dbincol
   Ycol   <- paste0(Y,".bin")
   Zcol   <- Z
   Zhat   <- paste0(Zcol, ".hat")
-
   data[, Q := NA_real_]
-
-
-  if ("dval" %in% names(data)) {
-    data[, D_bin := fifelse(
-           is.na(dval),
-           as.numeric(get(Dcol)),
-           as.numeric(get(Dcol) >= dval)
-         )]
-  } else {
-    data[,D_bin := as.numeric(get(Dcol))]
-  }
+  if (!"dval" %in% colnames(data)) dval=1
 
   # simple / AHS
-  if (any(c("AHS","simple") %in% condition)) {
-    data[condition %in% c("simple","AHS"),Q:=D_bin]
+  if (any(c("AHS","simple","simple_linearZ") %in% condition)) {
+    data[condition %in% c("simple","AHS","simple_linearZ"),Q:=as.integer(get(Dbincol)>=dval)]
   }
+  if (any(c("simple_linearD","simple_linearDZ") %in% condition)) {
+    data[condition %in% c("simple_linearD","simple_linearDZ"),Q:=get(Dname)]
+  }
+
   # MW
   if ("MW" %in% condition) {
   data[condition == "MW",
        Q := equation * (
-         (1 - get(Zhat)) * D_bin * get(Zcol) -
-           get(Zhat) * D_bin * (1 - get(Zcol))
+         (1 - get(Zhat)) * get(Dcol) * get(Zcol) -
+           get(Zhat) * get(Dcol) * (1 - get(Zcol))
        ) +
          (1 - equation) * (
-           get(Zhat) * (1 - D_bin) * (1 - get(Zcol)) -
-             (1 - get(Zhat)) * (1 - D_bin) * get(Zcol)
+           get(Zhat) * (1 - get(Dcol)) * (1 - get(Zcol)) -
+             (1 - get(Zhat)) * (1 - get(Dcol)) * get(Zcol)
          )]
   }
 
@@ -727,7 +825,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
          by = .(dval, yval)]
 
     data[condition == "KR" & dval > dmin,
-         Q := D_bin -
+         Q := get(Dcol) -
            as.integer(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
          by = .(dval, yval)]
   }
@@ -735,8 +833,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   time=rbind(time,"Stack data across margins"=proc.time())
 
   ##Estimate Q.hat in stacked data
-  if (sum(condition %in% c("simple","KR"))>0) {
-    if (length(condition)>1) i=which(data$condition %in%  c("simple","KR")) else i=NULL
+  if (any(condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR"))) {
+    if (length(condition)>1) i=which(data$condition %in%  c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR")) else i=NULL
     crossfit_hat(
       data,
       i=i,
@@ -765,19 +863,17 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
       forest_opts = Qparameters
     )
   }
-
-  ##Check for usable (residual) variation in Q
+  ## Check for usable (residual) variation in Q
   byvars <- c("sample", margins)
 
   # common summaries
   data[, n_group := .N, by = byvars]
-  data[, nQ := uniqueN(Q, na.rm = TRUE), by = byvars]
-  data[, sdQ := stats::sd(Q, na.rm = TRUE), by = byvars]
+  data[, nQ      := uniqueN(Q, na.rm = TRUE), by = byvars]
+  data[, sdQ     := stats::sd(Q, na.rm = TRUE), by = byvars]
 
   # family/type flags
   data[, Q_continuous :=
-         condition == "MW" |
-         (condition %in% c("simple", "AHS") & Dsubsets == 0)]
+         condition %in% c("MW", "simple_linearD", "simple_linearDZ")]
 
   data[, Q_needs_resid :=
          condition != "MW"]
@@ -810,26 +906,16 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
        ),
        by = byvars]
 
-  # simple / AHS continuous case
-  data[condition %in% c("simple", "AHS") & Q_continuous == TRUE,
+  # linear-D / linear-DZ: continuous and residualized
+  data[Q_continuous == TRUE & Q_needs_resid == TRUE,
        bad_Q := (
          n_group < min_n |
            is.na(sd_resQ) | sd_resQ == 0
        ),
        by = byvars]
 
-  # simple / AHS discrete case
-  data[condition %in% c("simple", "AHS") & Q_continuous == FALSE,
-       bad_Q := (
-         n_group < min_n |
-           nQ < 2 |
-           is.na(min_cell_Q) | min_cell_Q < min_n |
-           is.na(sd_resQ) | sd_resQ == 0
-       ),
-       by = byvars]
-
-  # KR always discrete
-  data[condition == "KR",
+  # KR / simple / AHS / simple_linearZ: discrete and residualized
+  data[Q_continuous == FALSE,
        bad_Q := (
          n_group < min_n |
            nQ < 2 |
@@ -904,14 +990,13 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     data[, (helper_cols_Q) := NULL]
   }
 
-
   time=rbind(time,"Estimate nuisance for outcomes Q"=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
   if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances - use OOB for forest.
 
-  if (sum(condition %in% c("simple","KR"))>0) {
-    if (length(condition)>1) i=which(data$condition %in% c("simple","KR")) else i=NULL
+  if (any(condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR"))) {
+    if (length(condition)>1) i=which(data$condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR")) else i=NULL
     fit_models(data,
                i=i,
                forest_type = "causal",
@@ -964,7 +1049,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
-
 
   if (shrink>0) {
     shrink_te_crossfit(

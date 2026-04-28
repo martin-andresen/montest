@@ -133,14 +133,14 @@ CART_test <- function(
     alpha = 0.05,
     prune = TRUE,
     minsize = 50L,
-    preselect = c("none", "minimum", "negative", "nonpositive", "fgk_relevant"),
+    screen = c("stepdown","none", "minimum", "negative", "nonpositive", "fgk_relevant"),
     store_trees = FALSE,
     verbose = FALSE,
     xval = 10,
     rpart_options = NULL
 ) {
   stopifnot(data.table::is.data.table(data))
-  preselect <- match.arg(preselect)
+  screen <- match.arg(screen)
 
   `%||%` <- function(x, y) if (is.null(x)) y else x
 
@@ -190,9 +190,9 @@ CART_test <- function(
 
   overlap <- intersect(pool, select)
   if (length(overlap) > 0L) {
-    stop("These entries appear in both pool and select: ", paste(overlap, collapse = ", "))
+    stop("forest_test_core() does not allow overlap between pool and select. ",
+         "Use forest_test() for adaptive overlap.")
   }
-
 
   bad_pool_margins <- setdiff(setdiff(pool, "sample"), margins)
   if (length(bad_pool_margins) > 0L) {
@@ -256,29 +256,50 @@ CART_test <- function(
     L <- nrow(dt_train_leaf)
     if (L == 0L) return(integer())
 
-    if (preselect == "none") {
+    if (screen == "none") {
       return(as.integer(dt_train_leaf$leaf))
     }
 
-    if (preselect == "minimum") {
+    if (screen == "minimum") {
       return(as.integer(dt_train_leaf[which.min(t), leaf]))
     }
 
-    if (preselect == "negative") {
+    if (screen == "stepdown") {
+      dtf <- dt_train_leaf[is.finite(t)]
+      if (nrow(dtf) == 0L) return(integer())
+
+      data.table::setorder(dtf, t)
+      p <- stats::pnorm(dtf$t)
+
+      m_keep <- 1L
+
+      if (length(p) >= 2L) {
+        for (m in 2L:length(p)) {
+          # Holm on the current prefix of length m
+          holm_ok <- all(p[seq_len(m)] <= alpha / rev(seq_len(m)))
+          if (!holm_ok) break
+          m_keep <- m
+        }
+      }
+
+      return(as.integer(dtf$leaf[seq_len(m_keep)]))
+    }
+
+    if (screen == "negative") {
       thr <- stats::qnorm(alpha / L)
       keep <- dt_train_leaf[t <= thr, leaf]
       if (length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
       return(as.integer(keep))
     }
 
-    if (preselect == "nonpositive") {
+    if (screen == "nonpositive") {
       thr <- stats::qnorm(1 - alpha / L)
       keep <- dt_train_leaf[t < thr, leaf]
       if (length(keep) == 0L) keep <- dt_train_leaf[which.min(t), leaf]
       return(as.integer(keep))
     }
 
-    if (preselect == "fgk_relevant") {
+    if (screen == "fgk_relevant") {
       thr <- stats::qnorm(1 - alpha / L)
       keep <- dt_train_leaf[t < thr, leaf]
       return(as.integer(keep))
@@ -289,96 +310,122 @@ CART_test <- function(
 
   choose_group_selection <- function(dt_grp) {
     dtf <- dt_grp[is.finite(t)]
-    if (nrow(dtf) == 0L) {
-      return(list(
-        best_fit_id = NA_integer_,
-        best_train_s = NA_integer_,
-        sel_leaves = integer()
-      ))
-    }
 
-    if (preselect == "minimum") {
+    empty_out <- data.table::data.table(
+      best_fit_id = NA_integer_,
+      best_train_s = NA_integer_,
+      sel_leaves = list(integer())
+    )
+
+    if (nrow(dtf) == 0L) return(empty_out)
+
+    if (screen == "minimum") {
       j <- which.min(dtf$t)
-      return(list(
+      return(data.table::data.table(
         best_fit_id = as.integer(dtf$fit_id[j]),
         best_train_s = as.integer(dtf$train_s[j]),
-        sel_leaves = as.integer(dtf$leaf[j])
+        sel_leaves = list(as.integer(dtf$leaf[j]))
       ))
     }
 
-    if (preselect == "none") {
+    if (screen == "stepdown") {
+      data.table::setorder(dtf, t)
+      p <- stats::pnorm(dtf$t)
+
+      m_keep <- 1L
+
+      if (length(p) >= 2L) {
+        for (m in 2L:length(p)) {
+          holm_ok <- all(p[seq_len(m)] <= alpha / rev(seq_len(m)))
+          if (!holm_ok) break
+          m_keep <- m
+        }
+      }
+
+      keep <- dtf[seq_len(m_keep)]
+
+      return(keep[, .(
+        sel_leaves = list(as.integer(leaf))
+      ), by = .(
+        best_fit_id = fit_id,
+        best_train_s = train_s
+      )])
+    }
+
+    if (screen == "none") {
       j <- which.min(dtf$t)
       bf <- as.integer(dtf$fit_id[j])
       bt <- as.integer(dtf$train_s[j])
-      return(list(
+      return(data.table::data.table(
         best_fit_id = bf,
         best_train_s = bt,
-        sel_leaves = as.integer(dtf[fit_id == bf & train_s == bt, leaf])
+        sel_leaves = list(as.integer(dtf[fit_id == bf & train_s == bt, leaf]))
       ))
     }
 
-    if (preselect == "negative") {
+    if (screen == "negative") {
       thr <- stats::qnorm(alpha / nrow(dtf))
       keep <- dtf[t <= thr]
       if (nrow(keep) == 0L) {
         j <- which.min(dtf$t)
-        return(list(
+        return(data.table::data.table(
           best_fit_id = as.integer(dtf$fit_id[j]),
           best_train_s = as.integer(dtf$train_s[j]),
-          sel_leaves = as.integer(dtf$leaf[j])
-        ))
-      } else {
-        j <- which.min(keep$t)
-        bf <- as.integer(keep$fit_id[j])
-        bt <- as.integer(keep$train_s[j])
-        return(list(
-          best_fit_id = bf,
-          best_train_s = bt,
-          sel_leaves = as.integer(keep[fit_id == bf & train_s == bt, leaf])
+          sel_leaves = list(as.integer(dtf$leaf[j]))
         ))
       }
+
+      j <- which.min(keep$t)
+      bf <- as.integer(keep$fit_id[j])
+      bt <- as.integer(keep$train_s[j])
+      return(data.table::data.table(
+        best_fit_id = bf,
+        best_train_s = bt,
+        sel_leaves = list(as.integer(keep[fit_id == bf & train_s == bt, leaf]))
+      ))
     }
 
-    if (preselect == "nonpositive") {
+    if (screen == "nonpositive") {
       thr <- stats::qnorm(1 - alpha / nrow(dtf))
       keep <- dtf[t < thr]
       if (nrow(keep) == 0L) {
         j <- which.min(dtf$t)
-        return(list(
+        return(data.table::data.table(
           best_fit_id = as.integer(dtf$fit_id[j]),
           best_train_s = as.integer(dtf$train_s[j]),
-          sel_leaves = as.integer(dtf$leaf[j])
-        ))
-      } else {
-        j <- which.min(keep$t)
-        bf <- as.integer(keep$fit_id[j])
-        bt <- as.integer(keep$train_s[j])
-        return(list(
-          best_fit_id = bf,
-          best_train_s = bt,
-          sel_leaves = as.integer(keep[fit_id == bf & train_s == bt, leaf])
+          sel_leaves = list(as.integer(dtf$leaf[j]))
         ))
       }
+
+      j <- which.min(keep$t)
+      bf <- as.integer(keep$fit_id[j])
+      bt <- as.integer(keep$train_s[j])
+      return(data.table::data.table(
+        best_fit_id = bf,
+        best_train_s = bt,
+        sel_leaves = list(as.integer(keep[fit_id == bf & train_s == bt, leaf]))
+      ))
     }
 
-    if (preselect == "fgk_relevant") {
+    if (screen == "fgk_relevant") {
       j <- which.min(dtf$t)
       bf <- as.integer(dtf$fit_id[j])
       bt <- as.integer(dtf$train_s[j])
-      return(list(
+      return(data.table::data.table(
         best_fit_id = bf,
         best_train_s = bt,
-        sel_leaves = as.integer(dtf[fit_id == bf & train_s == bt, leaf])
+        sel_leaves = list(as.integer(dtf[fit_id == bf & train_s == bt, leaf]))
       ))
     }
 
     j <- which.min(dtf$t)
-    list(
+    data.table::data.table(
       best_fit_id = as.integer(dtf$fit_id[j]),
       best_train_s = as.integer(dtf$train_s[j]),
-      sel_leaves = as.integer(dtf$leaf[j])
+      sel_leaves = list(as.integer(dtf$leaf[j]))
     )
   }
+
   add_key_cols <- function(dt, key_dt, all_margin_names) {
     if (length(all_margin_names) == 0L) return(dt)
     for (cc in all_margin_names) {
@@ -602,7 +649,7 @@ CART_test <- function(
   leaf_tbl_use <- leaf_tbl[selected_local == 1L & is.finite(t)]
 
   if (nrow(leaf_tbl_use) == 0L) {
-    stop("Testing subset is empty (after local preselection).")
+    stop("Testing subset is empty (after local screening).")
   }
 
   # ---------------- choose among selected margins ----------------
@@ -657,13 +704,20 @@ CART_test <- function(
 
       sel_leaves <- integer()
       chosen <- FALSE
-      if (nrow(sel_here) == 1L &&
-          is.finite(sel_here$best_fit_id[1]) &&
-          is.finite(sel_here$best_train_s[1]) &&
-          g == sel_here$best_fit_id[1] &&
-          train_s == sel_here$best_train_s[1]) {
-        sel_leaves <- as.integer(unlist(sel_here$sel_leaves[[1]], use.names = FALSE))
-        chosen <- length(sel_leaves) > 0L
+
+      if (nrow(sel_here) > 0L) {
+        sel_match <- sel_here[
+          is.finite(best_fit_id) &
+            is.finite(best_train_s) &
+            best_fit_id == g &
+            best_train_s == train_s
+        ]
+
+        if (nrow(sel_match) > 0L) {
+          sel_leaves <- as.integer(unlist(sel_match$sel_leaves, use.names = FALSE))
+          sel_leaves <- unique(sel_leaves)
+          chosen <- length(sel_leaves) > 0L
+        }
       }
 
       tl <- data.table::copy(obj$train_leaf)
@@ -2084,11 +2138,292 @@ forest_test <- function(
     gridpoints = NULL,
     store_grid = TRUE,
     verbose = FALSE,
-    screen = c("stepdown","none", "minimum", "negative", "nonpositive","fgk_relevant"),
-    alpha=0.05
+    screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant"),
+    alpha = 0.05
+) {
+  screen <- match.arg(screen)
+
+  if (is.null(pool)) pool <- character()
+  if (is.null(select)) select <- character()
+  if (is.null(margins)) margins <- character()
+
+  pool <- unique(as.character(pool))
+  select <- unique(as.character(select))
+  margins <- as.character(margins)
+
+  sample_col <- as.character(sample)
+  stopifnot(length(sample_col) == 1L)
+
+  adaptive_dims <- intersect(pool, select)
+
+  pooled_train_p <- function(dt) {
+    ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
+    if (!any(ok)) return(Inf)
+
+    theta <- dt$coef[ok]
+    se <- dt$stderr[ok]
+
+    ivar <- 1 / se^2
+    theta_pool <- sum(ivar * theta) / sum(ivar)
+    se_pool <- sqrt(1 / sum(ivar))
+    t_pool <- theta_pool / se_pool
+
+    stats::pnorm(t_pool)
+  }
+
+  separate_train_p <- function(dt) {
+    p <- stats::pnorm(dt$t)
+    if (!length(p) || all(!is.finite(p))) return(Inf)
+    min(stats::p.adjust(p, method = "holm"), na.rm = TRUE)
+  }
+
+  design_score <- function(fit, pool_eff, select_eff, design_row) {
+    tr <- data.table::as.data.table(fit$results)[train == TRUE & relevant == 1L]
+    if (nrow(tr) == 0L) return(Inf)
+
+    pooled_train_p <- function(dt) {
+      ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
+      if (!any(ok)) return(Inf)
+
+      theta <- dt$coef[ok]
+      se    <- dt$stderr[ok]
+
+      ivar <- 1 / se^2
+
+      theta_pool <- sum(ivar * theta) / sum(ivar)
+      se_pool    <- sqrt(1 / sum(ivar))
+      t_pool     <- theta_pool / se_pool
+
+      stats::pnorm(t_pool)
+    }
+
+    score_by_groups <- function(dt, separate_cols) {
+      separate_cols <- intersect(separate_cols, names(dt))
+
+      if (length(separate_cols) == 0L) {
+        return(pooled_train_p(dt))
+      }
+
+      pp <- dt[
+        ,
+        .(p_pool = pooled_train_p(.SD)),
+        by = separate_cols
+      ]$p_pool
+
+      pp <- pp[is.finite(pp)]
+      if (!length(pp)) return(Inf)
+
+      min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE)
+    }
+
+    ## Dimensions that can define separate train-side hypotheses.
+    dim_cols <- intersect(unique(c(margins, sample_col)), names(tr))
+
+    ## Start from the effective final design:
+    ## anything not in pool_eff remains separate.
+    separate_cols <- setdiff(dim_cols, pool_eff)
+
+    ## Now override using the adaptive design labels.
+    ## selected_then_pooled   => pool over this dimension when scoring
+    ## selected_then_separate => keep this dimension separate when scoring
+    for (dd in intersect(names(design_row), dim_cols)) {
+      choice <- as.character(design_row[[dd]])
+
+      if (choice == "selected_then_pooled") {
+        separate_cols <- setdiff(separate_cols, dd)
+      }
+
+      if (choice == "selected_then_separate") {
+        separate_cols <- unique(c(separate_cols, dd))
+      }
+
+      if (choice == "pooled_before_search") {
+        separate_cols <- setdiff(separate_cols, dd)
+      }
+    }
+
+    ## Safety: dimensions that were selected but explicitly not pooled should be separate.
+    selected_not_pooled <- setdiff(intersect(select_eff, dim_cols), pool_eff)
+    separate_cols <- unique(c(separate_cols, selected_not_pooled))
+
+    score_by_groups(tr, separate_cols)
+  }
+
+  run_core <- function(pool_eff, select_eff) {
+    forest_test_core(
+      data = data,
+      cluster = cluster,
+      weight = weight,
+      sample = sample,
+      pred = pred,
+      pred_o = pred_o,
+      scores = scores,
+      x_names = x_names,
+      minsize = minsize,
+      margins = margins,
+      pool = pool_eff,
+      select = select_eff,
+      gridpoints = gridpoints,
+      store_grid = store_grid,
+      verbose = verbose,
+      screen = screen,
+      alpha = alpha
+    )
+  }
+
+  if (length(adaptive_dims) == 0L) {
+    out <- run_core(pool, select)
+    out$adaptive_dims <- character()
+    out$adaptive_design <- NA_character_
+    out$adaptive_scores <- NULL
+    return(out)
+  }
+
+  pool_base <- setdiff(pool, adaptive_dims)
+  select_base <- setdiff(select, adaptive_dims)
+
+  design_opts_by_dim <- lapply(adaptive_dims, function(dd) {
+    if (dd == sample_col) {
+      c("selected_then_pooled", "selected_then_separate")
+    } else {
+      c(
+        "pooled_before_search",
+        "selected_then_pooled",
+        "selected_then_separate"
+      )
+    }
+  })
+
+  names(design_opts_by_dim) <- adaptive_dims
+
+  design_grid <- data.table::as.data.table(
+    expand.grid(design_opts_by_dim, stringsAsFactors = FALSE)
+  )
+
+  make_eff <- function(design_row) {
+    pool_eff <- pool_base
+    select_eff <- select_base
+
+    for (dd in adaptive_dims) {
+      choice <- as.character(design_row[[dd]])
+
+      if (dd == sample_col) {
+        if (choice == "selected_then_pooled") {
+          # Run core with sample in pool only.
+          pool_eff <- c(pool_eff, dd)
+
+        } else if (choice == "selected_then_separate") {
+          # Run core with sample in select only.
+          select_eff <- c(select_eff, dd)
+
+        } else {
+          stop("Invalid sample adaptive design: ", choice)
+        }
+
+      } else {
+        if (choice == "pooled_before_search") {
+          pool_eff <- c(pool_eff, dd)
+
+        } else if (choice == "selected_then_pooled") {
+          pool_eff <- c(pool_eff, dd)
+          select_eff <- c(select_eff, dd)
+
+        } else if (choice == "selected_then_separate") {
+          select_eff <- c(select_eff, dd)
+
+        } else {
+          stop("Unknown adaptive design choice.")
+        }
+      }
+    }
+
+    list(
+      pool = unique(pool_eff),
+      select = unique(select_eff)
+    )
+  }
+
+  design_name <- function(design_row) {
+    paste(
+      paste(names(design_row), as.character(unlist(design_row)), sep = "="),
+      collapse = "; "
+    )
+  }
+
+  fits <- vector("list", nrow(design_grid))
+  scores_design <- rep(Inf, nrow(design_grid))
+  names_design <- character(nrow(design_grid))
+  pool_designs <- vector("list", nrow(design_grid))
+  select_designs <- vector("list", nrow(design_grid))
+
+  for (ii in seq_len(nrow(design_grid))) {
+    eff <- make_eff(design_grid[ii])
+    names_design[ii] <- design_name(design_grid[ii])
+    pool_designs[[ii]] <- eff$pool
+    select_designs[[ii]] <- eff$select
+
+    fits[[ii]] <- run_core(eff$pool, eff$select)
+
+    scores_design[ii] <- design_score(
+      fit = fits[[ii]],
+      pool_eff = eff$pool,
+      select_eff = eff$select,
+      design_row = design_grid[ii]
+    )
+  }
+
+  flex_score <- vapply(names_design, function(x) {
+    parts <- strsplit(x, "; ", fixed = TRUE)[[1]]
+
+    sum(vapply(parts, function(p) {
+      val <- sub("^[^=]+=", "", p)
+
+      if (val == "pooled_before_search") return(0L)
+      if (val == "selected_then_pooled") return(1L)
+      if (val == "selected_then_separate") return(2L)
+
+      99L
+    }, integer(1)))
+  }, integer(1))
+
+  winner_i <- which.min(scores_design + 1e-12 * flex_score)
+
+  out <- fits[[winner_i]]
+
+  out$adaptive_dims <- adaptive_dims
+  out$adaptive_design <- names_design[winner_i]
+  out$adaptive_scores <- data.table::data.table(
+    design = names_design,
+    score = scores_design
+  )
+
+  out$adaptive_pool <- pool_designs[[winner_i]]
+  out$adaptive_select <- select_designs[[winner_i]]
+
+  out
+}
+
+forest_test_core <- function(
+    data,
+    cluster = NULL,
+    weight  = NULL,
+    sample  = "sample",
+    pred    = "pred",
+    pred_o  = "pred_o",
+    scores  = "scores",
+    x_names = NULL,
+    minsize = 50L,
+    margins = NULL,
+    pool = NULL,
+    select = NULL,
+    gridpoints = NULL,
+    store_grid = TRUE,
+    verbose = FALSE,
+    screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant"),
+    alpha = 0.05
 ) {
   stopifnot(data.table::is.data.table(data))
- screen <- match.arg(screen)
+  screen <- match.arg(screen)
 
   sample_col <- as.character(sample)
   pred_col   <- as.character(pred)
@@ -2136,25 +2471,30 @@ forest_test <- function(
     stop("select contains invalid names: ", paste(bad_select, collapse = ", "))
   }
 
-  overlap <- setdiff(intersect(pool, select), sample_col)
-  if (length(overlap) > 0L) {
-    stop("The following names appear in both pool and select: ",
-         paste(overlap, collapse = ", "))
-  }
-
   pool_sample   <- sample_col %in% pool
   select_sample <- sample_col %in% select
+
+  if (pool_sample && select_sample) {
+    stop(
+      "forest_test_core() no longer accepts sample in both pool and select. ",
+      "Use forest_test(), which evaluates sample=selected_then_pooled and ",
+      "sample=selected_then_separate as two separate designs."
+    )
+  }
 
   pool_margins   <- intersect(pool, margins)
   select_margins <- intersect(select, margins)
 
-  cell_cols <- setdiff(margins, pool_margins)
+  pool_before_margins <- setdiff(pool_margins, select_margins)
+
+  cell_cols <- setdiff(margins, pool_before_margins)
   adjust_cols <- setdiff(cell_cols, select_margins)
 
-  test_by <- c(
+  test_by <- unique(c(
     adjust_cols,
+    select_margins,
     if (!pool_sample) sample_col else character()
-  )
+  ))
 
   do_shares <- (length(pool_margins) > 0L)
 
@@ -2186,7 +2526,8 @@ forest_test <- function(
     dt0 <- data.table::data.table(score = score, w = w, cl = cl)
     gb <- dt0[, .(U = sum(w * score), W = sum(w)), by = cl]
     G <- nrow(gb)
-    U <- sum(gb$U); W <- sum(gb$W)
+    U <- sum(gb$U)
+    W <- sum(gb$W)
     theta <- U / W
     ug <- gb$U - theta * gb$W
     se <- sqrt((G / pmax.int(G - 1L, 1L)) * sum(ug^2)) / abs(W)
@@ -2194,7 +2535,6 @@ forest_test <- function(
     list(coef = theta, se = se, t = theta / se, G = G, N = length(score))
   }
 
-  ##Margin select helper
   select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05) {
     tt <- dt_grp[[t_col]]
     ok <- is.finite(tt)
@@ -2226,8 +2566,6 @@ forest_test <- function(
     }
 
     if (screen == "stepdown") {
-      # Ordered by promise already: most negative t first.
-      # Add r-th candidate if it survives Holm among top r.
       keep_n <- 1L
 
       if (nrow(d) >= 2L) {
@@ -2237,7 +2575,6 @@ forest_test <- function(
           p_top <- p[seq_len(r)]
           p_holm <- stats::p.adjust(p_top, method = "holm")
 
-          # Since d is ordered by p/t, the r-th is the weakest among top r.
           if (p_holm[r] <= alpha) {
             keep_n <- r
           } else {
@@ -2250,7 +2587,6 @@ forest_test <- function(
     }
 
     if (screen == "fgk_relevant") {
-      # This one is allowed to return zero cells.
       thr <- stats::qnorm(1 - alpha / nrow(d))
       keep <- d[get(t_col) < thr]
       return(keep)
@@ -2258,6 +2594,7 @@ forest_test <- function(
 
     d[1L]
   }
+
   percentile_indices <- function(w, k) {
     n0 <- length(w)
     if (n0 == 0L) return(integer())
@@ -2335,10 +2672,16 @@ forest_test <- function(
       dTB2 =  Wg^2  - (Wg  - b)^2,
       dTAB =  WgY * Wg - (WgY - a) * (Wg - b)
     )]
-    dt[, `:=`(TA2 = cumsum(dTA2), TB2 = cumsum(dTB2), TAB = cumsum(dTAB)), by = sample]
+
+    dt[, `:=`(
+      TA2 = cumsum(dTA2),
+      TB2 = cumsum(dTB2),
+      TAB = cumsum(dTAB)
+    ), by = sample]
+
     dt[, G := cumsum(!duplicated(cl)), by = sample]
 
-    dt[, sumS2 := (TA2 - 2*m*TAB + (m^2)*TB2) / (SW^2)]
+    dt[, sumS2 := (TA2 - 2 * m * TAB + (m^2) * TB2) / (SW^2)]
     dt[, se := sqrt((G / pmax.int(G - 1L, 1L)) * sumS2)]
     dt[G < 2L, se := NA_real_]
     dt[, t_stat := m / se]
@@ -2365,6 +2708,7 @@ forest_test <- function(
       max(as.numeric(c(tau_tr[sample == 1L, tau_tr], tau_est[sample == 2L, tau_est]))),
       max(as.numeric(c(tau_tr[sample == 2L, tau_tr], tau_est[sample == 1L, tau_est])))
     )
+
     dt[, tau_constraint := data.table::fifelse(sample == 1L, tau_vec[1], tau_vec[2])]
 
     if (!search_grid_on) {
@@ -2378,19 +2722,22 @@ forest_test <- function(
       }, by = sample]
     }
 
-    elig <- (dt$pred >= dt$tau_constraint) & (dt$G >= minsize) & (dt$cand_search)
+    elig <- (dt$pred >= dt$tau_constraint) & (dt$G >= minsize) & dt$cand_search
 
     res <- dt[elig, .SD[which.min(t_stat)], by = sample,
               .SDcols = c("G", "N", "m", "se", "t_stat", "pred")]
 
     cut1 <- res[sample == 1L, pred]
     cut2 <- res[sample == 2L, pred]
+
     if (length(cut1) == 0L || !is.finite(cut1)) cut1 <- tau_vec[1]
     if (length(cut2) == 0L || !is.finite(cut2)) cut2 <- tau_vec[2]
 
     grid_out <- NULL
+
     if (store_grid) {
       k_store <- 100L
+
       grid_out <- dt[, {
         idx_q <- percentile_indices(w, k_store)
         cut_s <- if (.BY$sample == 1L) cut1 else cut2
@@ -2398,11 +2745,11 @@ forest_test <- function(
         idx_all <- unique(c(idx_q, idx_c))
         idx_all <- idx_all[is.finite(idx_all)]
         idx_all <- sort(idx_all)
-        out <- data.table::data.table(
+
+        data.table::data.table(
           tau = pred[idx_all],
-          t   = t_stat[idx_all]
+          t = t_stat[idx_all]
         )
-        out
       }, by = "sample"]
 
       if (!is.null(key_dt) && ncol(key_dt) > 0L) {
@@ -2447,115 +2794,126 @@ forest_test <- function(
     ans <- run_one_cell_idx(idx_list[[g]], keys_list[[g]], cell_id = g)
     train_list[[g]] <- ans$train
     idx_test_list[[g]] <- ans$idx_test
+
     if (store_grid) grid_list[[g]] <- ans$grid
+
     if (verbose && (g %% 25L == 0L)) {
       message(sprintf("forest_test: processed %d/%d cells", g, n_cells))
     }
   }
 
   train_all <- data.table::rbindlist(train_list, use.names = TRUE, fill = TRUE)
-  grid_out  <- if (store_grid) data.table::rbindlist(grid_list, use.names = TRUE, fill = TRUE) else NULL
+  grid_out  <- if (store_grid) {
+    data.table::rbindlist(grid_list, use.names = TRUE, fill = TRUE)
+  } else {
+    NULL
+  }
 
   selected_train <- train_all
 
   has_selection <- (length(select_margins) > 0L) || select_sample
 
   if (has_selection) {
-    agg_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
 
-    cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
+    pooled_t_from_rows <- function(dt) {
+      ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
+      if (!any(ok)) return(NA_real_)
 
-    choose_by <- c(
-      adjust_cols,
-      if (!select_sample && !pool_sample) sample_col else character()
-    )
+      theta <- dt$coef[ok]
+      se <- dt$stderr[ok]
 
-    id_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
+      ivar <- 1 / se^2
+      theta_pool <- sum(ivar * theta) / sum(ivar)
+      se_pool <- sqrt(1 / sum(ivar))
 
-    if (length(choose_by) == 0L) {
-      keep_ids <- select_groups_screen(cand, alpha = alpha)[, ..id_by]
-    } else {
-      keep_ids <- cand[
+      theta_pool / se_pool
+    }
+
+    if (pool_sample && length(select_margins) > 0L && !select_sample) {
+      # Important case:
+      # sample is pooled, but some margin, e.g. dval, is selected.
+      #
+      # Selection candidates should be scored after pooling across sample
+      # within each selected-margin candidate.
+      #
+      # Example:
+      #   dval = 1: pool sample 1 and sample 2 training estimates
+      #   dval = 2: pool sample 1 and sample 2 training estimates
+      # then choose the best dval.
+      cand_by <- unique(c(adjust_cols, select_margins, "cell_id"))
+
+      cand <- train_all[
         ,
-        select_groups_screen(.SD, alpha = alpha),
-        by = choose_by
-      ][, ..id_by]
-    }
+        .(sel_t = pooled_t_from_rows(.SD)),
+        by = cand_by
+      ]
 
-    selected_train <- merge(
-      train_all,
-      keep_ids,
-      by = id_by,
-      all = FALSE,
-      sort = FALSE
-    )
-  }
+      choose_by <- adjust_cols
+      id_by <- cand_by
 
-  adaptive_sample <- pool_sample && select_sample
+      if (length(choose_by) == 0L) {
+        keep_ids <- select_groups_screen(cand, alpha = alpha)[, ..id_by]
+      } else {
+        keep_ids <- cand[
+          ,
+          select_groups_screen(.SD, alpha = alpha),
+          by = choose_by
+        ][, ..id_by]
+      }
 
-  sample_design <- if (adaptive_sample) "adaptive" else if (pool_sample) "pooled" else "separate"
+      # Merge back by dval/cell/etc., but not sample.
+      # This keeps both sample rows for the selected dval.
+      selected_train <- merge(
+        train_all,
+        keep_ids,
+        by = id_by,
+        all = FALSE,
+        sort = FALSE
+      )
 
-  family_p <- function(dt) {
-    p <- stats::pnorm(dt$t)
-    min(stats::p.adjust(p, method = "holm"), na.rm = TRUE)
-  }
+    } else {
+      # Original selection logic for:
+      # - sample selected separately,
+      # - no sample pooling,
+      # - margin selection without sample pooling.
+      agg_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
 
-  pooled_p <- function(dt) {
-    ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
-    if (!any(ok)) return(Inf)
+      cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
 
-    theta <- dt$coef[ok]
-    se    <- dt$stderr[ok]
+      choose_by <- c(
+        adjust_cols,
+        if (!select_sample && !pool_sample) sample_col else character()
+      )
 
-    ivar <- 1 / se^2
-    theta_pool <- sum(ivar * theta) / sum(ivar)
-    se_pool <- sqrt(1 / sum(ivar))
-    t_pool <- theta_pool / se_pool
+      id_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
 
-    stats::pnorm(t_pool)
-  }
+      if (length(choose_by) == 0L) {
+        keep_ids <- select_groups_screen(cand, alpha = alpha)[, ..id_by]
+      } else {
+        keep_ids <- cand[
+          ,
+          select_groups_screen(.SD, alpha = alpha),
+          by = choose_by
+        ][, ..id_by]
+      }
 
-  if (adaptive_sample && nrow(selected_train) > 0L) {
-
-    by_sample_score <- selected_train[
-      ,
-      .(p_family = family_p(.SD)),
-      by = sample_col
-    ]
-
-    best_sample <- by_sample_score[which.min(p_family), get(sample_col)]
-
-    cand_best <- selected_train[get(sample_col) == best_sample]
-    cand_sep  <- selected_train
-    cand_pool <- selected_train
-
-    p_best <- family_p(cand_best)
-    p_sep  <- family_p(cand_sep)
-    p_pool <- pooled_p(cand_pool)
-
-    choice <- names(which.min(c(
-      best_only = p_best,
-      separate  = p_sep,
-      pooled    = p_pool
-    )))
-
-    if (choice == "best_only") {
-      selected_train <- cand_best
-      sample_design <- "best_only"
-      test_by <- adjust_cols
-
-    } else if (choice == "separate") {
-      selected_train <- cand_sep
-      sample_design <- "separate"
-      test_by <- c(adjust_cols, sample_col)
-
-    } else if (choice == "pooled") {
-      selected_train <- cand_pool
-      sample_design <- "pooled"
-      test_by <- adjust_cols
+      selected_train <- merge(
+        train_all,
+        keep_ids,
+        by = id_by,
+        all = FALSE,
+        sort = FALSE
+      )
     }
   }
 
+  sample_design <- if (pool_sample) {
+    "pooled"
+  } else if (select_sample) {
+    "selected_then_separate"
+  } else {
+    "separate"
+  }
 
   train_out <- data.table::copy(train_all)
   win_keys <- unique(selected_train[, .(cell_id, sample)])
@@ -2563,6 +2921,7 @@ forest_test <- function(
   train_out[, cell_id := NULL]
 
   idx_test_all <- integer()
+
   if (nrow(selected_train) > 0L) {
     for (i in seq_len(nrow(selected_train))) {
       cid <- selected_train$cell_id[i]
@@ -2570,33 +2929,46 @@ forest_test <- function(
       idx_test_all <- c(idx_test_all, idx_test_list[[cid]][[s_i]])
     }
   }
+
   idx_test_all <- unique(idx_test_all)
 
   in_test <- rep(FALSE, n)
   if (length(idx_test_all) > 0L) in_test[idx_test_all] <- TRUE
   if (!any(in_test)) stop("Testing subset is empty.")
 
-  # keep selected margin values for final test rows when uniquely defined
   selected_test_keys <- NULL
+
   if (length(select_margins) > 0L) {
-    selected_test_keys <- unique(selected_train[, c(adjust_cols, sample_col, select_margins), with = FALSE])
+    key_cols <- intersect(
+      unique(c(adjust_cols, sample_col, select_margins)),
+      names(selected_train)
+    )
+
+    selected_test_keys <- unique(selected_train[, ..key_cols])
   }
 
   dt_test <- data.table::data.table(
     score = scorev,
-    w     = wv,
-    cl    = clv
+    w = wv,
+    cl = clv
   )
+
   if (length(test_by) > 0L) dt_test[, (test_by) := data[, ..test_by]]
+
   dt_test <- dt_test[in_test]
 
   if (length(test_by) == 0L) {
     o <- crv1_mean(dt_test$score, dt_test$w, dt_test$cl)
+
     test_out <- data.table::data.table(
       train = FALSE,
       relevant = 1L,
       sample = NA_integer_,
-      G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+      G = o$G,
+      N = o$N,
+      coef = o$coef,
+      stderr = o$se,
+      t = o$t,
       tau_cutoff = NA_real_,
       p.raw = stats::pnorm(o$t)
     )
@@ -2606,13 +2978,18 @@ forest_test <- function(
     } else if (length(select_margins) > 0L) {
       for (cc in select_margins) test_out[, (cc) := NA]
     }
+
   } else {
     test_out <- dt_test[, {
       o <- crv1_mean(score, w, cl)
       data.table::data.table(
         train = FALSE,
         relevant = 1L,
-        G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+        G = o$G,
+        N = o$N,
+        coef = o$coef,
+        stderr = o$se,
+        t = o$t,
         tau_cutoff = NA_real_,
         p.raw = stats::pnorm(o$t)
       )
@@ -2621,7 +2998,11 @@ forest_test <- function(
     if (!(sample_col %in% names(test_out))) test_out[, (sample_col) := NA_integer_]
 
     if (!is.null(selected_test_keys)) {
-      merge_by <- c(adjust_cols, sample_col)
+      merge_by <- intersect(
+        unique(c(adjust_cols, sample_col, select_margins)),
+        names(test_out)
+      )
+      merge_by <- intersect(merge_by, names(selected_test_keys))
 
       if (length(merge_by) == 0L) {
         if (nrow(selected_test_keys) == 1L) {
@@ -2631,6 +3012,7 @@ forest_test <- function(
         }
       } else {
         selected_test_keys_u <- unique(selected_test_keys)
+
         test_out <- merge(
           test_out,
           selected_test_keys_u,
@@ -2642,7 +3024,11 @@ forest_test <- function(
     }
   }
 
-  results_out <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
+  results_out <- data.table::rbindlist(
+    list(train_out, test_out),
+    use.names = TRUE,
+    fill = TRUE
+  )
 
   global <- global_means_crv1(
     data = data,
@@ -2655,6 +3041,7 @@ forest_test <- function(
   )
 
   Xmeans <- Xmeans_all <- XSD <- NULL
+
   if (!is.null(x_names)) {
     cols_need <- unique(c(test_by, x_names))
     df_all <- data[, ..cols_need]
@@ -2663,6 +3050,7 @@ forest_test <- function(
     wmeans_dt <- function(df, w, by_cols) {
       DTtmp <- data.table::as.data.table(df)
       DTtmp[, w__ := w]
+
       if (length(by_cols) > 0L) {
         DTtmp[, lapply(.SD, function(x) w_mean(as.numeric(x), w__)),
               by = by_cols, .SDcols = x_names]
@@ -2675,6 +3063,7 @@ forest_test <- function(
     wsds_dt <- function(df, w, by_cols) {
       DTtmp <- data.table::as.data.table(df)
       DTtmp[, w__ := w]
+
       if (length(by_cols) > 0L) {
         DTtmp[, lapply(.SD, function(x) w_sd(as.numeric(x), w__)),
               by = by_cols, .SDcols = x_names]
@@ -2690,12 +3079,15 @@ forest_test <- function(
   }
 
   shares <- NULL
+
   if (do_shares) {
     denom_by <- c(
       adjust_cols,
-      if (!pool_sample && !select_sample) sample_col else character()
+      if (!pool_sample) sample_col else character()
     )
-    cols_need <- unique(c(denom_by, pool_margins))
+
+    denom_by <- intersect(denom_by, names(data))
+    cols_need <- intersect(unique(c(denom_by, pool_margins)), names(data))
 
     DT_all <- data[, ..cols_need]
     DT_tst <- data[in_test, ..cols_need]
@@ -2704,8 +3096,13 @@ forest_test <- function(
       DTsub <- data.table::as.data.table(DTsub)
       DTsub[, w := wsub]
 
-      by_num <- unique(c(denom_by, pool_margins))
-      num <- DTsub[, .(w_sum = sum(w)), by = by_num]
+      by_num <- intersect(unique(c(denom_by, pool_margins)), names(DTsub))
+
+      if (length(by_num) == 0L) {
+        num <- DTsub[, .(w_sum = sum(w))]
+      } else {
+        num <- DTsub[, .(w_sum = sum(w)), by = by_num]
+      }
 
       if (length(denom_by) == 0L) {
         num[, den_w := sum(DTsub$w)]
@@ -2719,15 +3116,24 @@ forest_test <- function(
       num
     }
 
-    sh     <- make_share_combo(DT_tst, wv[in_test])
+    sh <- make_share_combo(DT_tst, wv[in_test])
     sh_all <- make_share_combo(DT_all, wv)
 
-    data.table::setnames(sh,     "share", "share")
+    data.table::setnames(sh, "share", "share")
     data.table::setnames(sh_all, "share", "share_all")
 
-    by_merge <- unique(c(denom_by, pool_margins))
-    shares <- merge(sh, sh_all, by = by_merge, all = TRUE)
-    shares[is.na(share),     share := 0.0]
+    by_merge <- intersect(
+      unique(c(denom_by, pool_margins)),
+      intersect(names(sh), names(sh_all))
+    )
+
+    if (length(by_merge) == 0L) {
+      shares <- cbind(sh, share_all = sh_all$share_all[1L])
+    } else {
+      shares <- merge(sh, sh_all, by = by_merge, all = TRUE)
+    }
+
+    shares[is.na(share), share := 0.0]
     shares[is.na(share_all), share_all := 0.0]
 
     data.table::setcolorder(shares, c(denom_by, pool_margins, "share", "share_all"))
@@ -2735,21 +3141,19 @@ forest_test <- function(
 
   out <- list(
     results = results_out,
-    grid    = grid_out,
-    global  = global,
-    Xmeans  = Xmeans,
+    grid = grid_out,
+    global = global,
+    Xmeans = Xmeans,
     Xmeans_all = Xmeans_all,
     XSD = XSD,
     sample_design = sample_design
   )
+
   if (!is.null(shares)) out$shares <- shares
   if (!store_grid) out$grid <- NULL
 
   out
 }
-
-
-
 
 ##USED by CART_test and forest_test to estimate global means.
 global_means_crv1 <- function(
