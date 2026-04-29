@@ -164,7 +164,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
                  #tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
@@ -176,6 +176,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
 
   ################### 1 CHECK INPUT #####################
+  linear=match.arg(linear,c("none","Z","D","DZ","all"),several.ok=TRUE)
+  if ("all" %in% linear) {
+    linear <- c("none", "Z", "D", "DZ")
+  }
   screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
@@ -200,14 +204,14 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   if (is.null(condition)==TRUE) {
     if (is.null(Y)==TRUE) {
-      condition=c("simple","simple_linearZ","simple_linearD","simple_linearDZ")
+      condition="simple"
     } else condition="KR"
   }
 
-  condition=match.arg(condition,c("simple","simple_linearZ","simple_linearD","simple_linearDZ","simple_linearZD","KR","MW","AHS","all"),several.ok=TRUE) ##took out support for Kitagawa
+  condition=match.arg(condition,c("simple","KR","MW","AHS","all"),several.ok=TRUE)
   if (length(Y)>1) stop("More than one outcome currently not supported.")
   if ("all" %in% condition) {
-    condition=c("simple","simple_linearZ","simple_linearD","simple_linearDZ","simple_linearZD","KR","MW","AHS")
+    condition=c("simple","KR","MW","AHS")
   }
   if (is.null(Y)==TRUE) {
     if (any(condition %in% c("KR","AHS","MW"))) {
@@ -215,26 +219,20 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     }
   }
 
-  if (any(condition %in% c("simple_linearDZ", "simple_linearZD"))) {
-    condition <- unique(c(
-      condition[!condition %in% c("simple_linearDZ", "simple_linearZD")],
-      "simple_linearDZ"
-    ))
-  }
 
   if (Ysubsets<=1|is.integer(Ysubsets)==FALSE) stop("Ysubsets must be an integers larger than 1. Use #L for integer.")
   if (Dsubsets<2|is.integer(Dsubsets)==FALSE) stop("Dsubsets must be an integer larger than 1. Use #L for integer.")
   if (Zsubsets<2|is.integer(Zsubsets)==FALSE) stop("Zsubsets must be an integer larger than 1. Use #L for integer.")
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
-  else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample")
+  else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample","linear")
   else if (sum(pool=="none")==1) pool=c()
-  else if (is.null(pool)==FALSE) pool=match.arg(pool,c("zmargin","dval","yval","condition","sample"),several.ok=TRUE)
-  else pool=c("zmargin","dval","yval","sample")
+  else if (is.null(pool)==FALSE) pool=match.arg(pool,c("zmargin","dval","yval","condition","sample","linear"),several.ok=TRUE)
+  else pool=c("zmargin","dval","yval","sample","linear")
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
   else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample")
   else if (sum(select=="none")==1) select=c()
-  else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample"),several.ok=TRUE)
+  else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample","linear"),several.ok=TRUE)
   else select="condition"
 
   if (sum(sum(grepl("Z.hat",colnames(data))))) stop("Variable name beginning with Z.hat discovered, reserved for internal use. Please rename.")
@@ -279,13 +277,133 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
   if (sum(condition %in% c("AHS","MW","KR"))==0&is.null(Y)==FALSE) Y=NULL
-  time=rbind("Check input"=proc.time())
 
-  ###################### 2 Prepare data #########################3
+  ##Downgrade linear options if D or Z is binary:
+  ## Number of support points in original D and Z
   XW=X
   Zname=Z
   Dname=D
   Yname=Y
+
+  J <- length(unique(data[,get(Dname)]))
+  K <- length(unique(data[,get(Zname)]))
+
+  normalize_linear <- function(linear, J, K) {
+    linear <- unique(linear)
+
+    out <- character()
+
+    for (ll in linear) {
+      if (ll == "none") {
+        out <- c(out, "none")
+
+      } else if (ll == "Z") {
+        if (K > 2L) {
+          out <- c(out, "Z")
+        } else {
+          out <- c(out, "none")
+        }
+
+      } else if (ll == "D") {
+        if (J > 2L) {
+          out <- c(out, "D")
+        } else {
+          out <- c(out, "none")
+        }
+
+      } else if (ll == "DZ") {
+        z_lin <- K > 2L
+        d_lin <- J > 2L
+
+        if (z_lin && d_lin) {
+          out <- c(out, "DZ")
+        } else if (z_lin && !d_lin) {
+          out <- c(out, "Z")
+        } else if (!z_lin && d_lin) {
+          out <- c(out, "D")
+        } else {
+          out <- c(out, "none")
+        }
+
+      } else {
+        stop("Unknown linear option: ", ll)
+      }
+    }
+
+    unique(out)
+  }
+
+  linear <- normalize_linear(linear, J = J, K = K)
+
+  ## Conditions for which linear has an effect
+  linear_conditions <- c("simple", "AHS")
+
+  has_linear_conditions <- any(condition %in% linear_conditions)
+  has_other_conditions  <- any(!condition %in% linear_conditions)
+
+  ## If any non-linear-aware condition is requested, ordinary margins must also be present.
+  ## Otherwise KR/MW/etc. would have no valid non-linear block to use.
+  if (has_other_conditions && !"none" %in% linear) {
+    stop(
+      "When condition includes conditions other than ",
+      paste(linear_conditions, collapse = " or "),
+      ", linear must include 'none'. ",
+      "The non-linear-aware conditions ignore linearized variants and require ordinary margin rows. ",
+      "Use e.g. linear = c('none', ",
+      paste(sprintf("'%s'", setdiff(linear, "none")), collapse = ", "),
+      ")."
+    )
+  }
+
+  ## Inform the user that linear variants only apply to simple/AHS.
+  if (has_other_conditions && any(linear != "none")) {
+    msg_other <- paste(setdiff(condition, linear_conditions), collapse = ", ")
+    msg_linear <- paste(setdiff(linear, "none"), collapse = ", ")
+
+    message(
+      "Note: linear option(s) ",
+      msg_linear,
+      " only apply to condition(s) ",
+      paste(linear_conditions, collapse = ", "),
+      ". For the other requested condition(s) ",
+      msg_other,
+      ", only linear = 'none' will be used."
+    )
+  }
+
+  linear_conditions <- c("simple", "AHS")
+
+  ## Conditions that always need margin/binary versions
+  nonlinear_conditions <- setdiff(condition, linear_conditions)
+
+  ## Need binarized Z if:
+  ## - any non-linear-aware condition is requested, or
+  ## - simple/AHS are requested with linear = none or D
+  need_binarized_Z <-
+    length(nonlinear_conditions) > 0L ||
+    any(condition %in% linear_conditions) && any(linear %in% c("none", "D"))
+
+  ## Need original/linear Z if:
+  ## - simple/AHS are requested with linear = Z or DZ
+  need_linear_Z <-
+    any(condition %in% linear_conditions) && any(linear %in% c("Z", "DZ"))
+
+  ## Need binarized D if:
+  ## - any non-linear-aware condition is requested, or
+  ## - simple/AHS are requested with linear = none or Z
+  need_binarized_D <-
+    length(nonlinear_conditions) > 0L ||
+    any(condition %in% linear_conditions) && any(linear %in% c("none", "Z"))
+
+  ## Need original/linear D if:
+  ## - simple/AHS are requested with linear = D or DZ
+  need_linear_D <-
+    any(condition %in% linear_conditions) && any(linear %in% c("D", "DZ"))
+
+  time=rbind("Check input"=proc.time())
+
+  ###################### 2 Prepare data #########################3
+
 
   if (sum(c("MW","AHS") %in% condition)>0) {XWY=c(X,Y)} else {XWY=XW}
 
@@ -327,7 +445,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   ############### 3 Discretize Z, D and Y into subsets ###############
 
-  if (any(condition %in% c("KR","simple","AHS","MW","simple_linearZ"))){
+  if (need_binarized_D) {
     ##bin treatment
     data <- binarize_var(
       data    = data,
@@ -343,7 +461,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     J=Inf;Dbincol=NULL
   }
 
-  if (any(condition %in% c("KR","simple","AHS","MW","simple_linearD"))){
+  if (need_binarized_Z){
     ##bin instrument
     data <- binarize_var(
       data    = data,
@@ -374,29 +492,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   n=nrow(data)
 
-  ##Remove redundant linearized versions of the simple first satge stat.
-  has_DZ <- "simple_linearDZ" %in% condition
-
-  if (has_DZ && (J == 2 || K == 2)) {
-    condition <- setdiff(condition, "simple_linearDZ")
-
-    if (K == 2) condition <- union(condition, "simple_linearD")
-    if (J == 2) condition <- union(condition, "simple_linearZ")
-  }
-
-  if ("simple_linearZ" %in% condition && K == 2) {
-    condition <- union(setdiff(condition, "simple_linearZ"), "simple")
-  }
-
-  if ("simple_linearD" %in% condition && J == 2) {
-    condition <- union(setdiff(condition, "simple_linearD"), "simple")
-  }
-
-  has_margin_conditions <- any(condition %in% c("KR", "simple", "AHS", "MW","simple_linearD"))
-  has_linearZ_conditions <- any(condition %in% c("simple_linearZ",
-                                                 "simple_linearDZ"))
-
-
   if (J>2&("MW" %in% condition)) stop("Multivalued treatment not supported with condition MW.")
   if (J==2&K==2&is.null(X)==TRUE&!any(condition %in% c("AHS","MW","KR"))) {
     stop("Nothing to test with a binary treatment, a binary instrument, the simple first stage condition and no variables in X.")
@@ -407,69 +502,96 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
   margins=c()
 
-  ## Stack for margins of Z
-  if (K > 2 && any(condition %in% c("KR", "simple", "AHS", "MW",
-                                    "simple_linearD", "simple_linearZ", "simple_linearDZ"))) {
+  if (K > 2L && (need_binarized_Z || need_linear_Z)) {
 
     zmap_list <- list()
 
-    ## Margin-specific expansion:
+    ## Margin-specific expansion.
+    ##
     ## - lowest Z gets second-lowest margin, so Zbin >= zmargin gives 0
     ## - highest Z gets highest margin, so Zbin >= zmargin gives 1
     ## - intermediate Z gets current and next-higher margins, giving one 1 and one 0
-    if (has_margin_conditions) {
+    if (need_binarized_Z) {
       stopifnot(!is.null(Zbincol), Zbincol %in% names(data))
 
       zvals <- sort(unique(data[[Zbincol]]))
-      minZ  <- zvals[1L]
-      maxZ  <- zvals[length(zvals)]
+      zvals <- zvals[!is.na(zvals)]
 
-      zmap_list[[length(zmap_list) + 1L]] <- data[, {
+      if (length(zvals) < 2L) {
+        stop("Need at least two non-missing Z values to construct zmargin.")
+      }
+
+      minZ <- zvals[1L]
+      maxZ <- zvals[length(zvals)]
+
+      zmap_list[["margin"]] <- data[, {
         z0 <- get(Zbincol)
-        k  <- match(z0, zvals)
+        k0 <- match(z0, zvals)
 
-        if (z0 == minZ) {
+        if (is.na(z0) || is.na(k0)) {
+          zm <- NA_real_
+        } else if (z0 == minZ) {
           zm <- zvals[2L]
         } else if (z0 == maxZ) {
           zm <- zvals[length(zvals)]
         } else {
-          zm <- c(z0, zvals[k + 1L])
+          zm <- c(z0, zvals[k0 + 1L])
         }
 
-        .(rowid = .I, zmargin = zm)
+        .(rowid = .I, zmargin = zm, z_linear_copy = FALSE)
       }, by = id_]
     }
 
-    ## Linear-Z / linear-DZ copy:
-    ## only one extra copy per original row, with zmargin = NA.
-    if (has_linearZ_conditions) {
-      zmap_list[[length(zmap_list) + 1L]] <- data[
+    ## Linear-Z copy.
+    ##
+    ## One copy per original row, with zmargin = NA.
+    ## Later, these rows should only match linear %in% c("Z", "DZ")
+    ## in margin_index.
+    if (need_linear_Z) {
+      zmap_list[["linear"]] <- data[
         ,
-        .(rowid = .I, zmargin = NA_real_),
+        .(rowid = .I, zmargin = NA_real_, z_linear_copy = TRUE),
         by = id_
       ]
     }
 
     zmap <- data.table::rbindlist(zmap_list, use.names = TRUE)
 
-    ## Expand data according to zmap
     data <- data[zmap$rowid]
     data[, zmargin := zmap$zmargin]
+    data[, z_linear_copy := zmap$z_linear_copy]
 
     margins <- unique(c(margins, "zmargin"))
 
-    ## For margin rows, binarize Z at the margin.
-    if (has_margin_conditions) {
-      data[!is.na(zmargin), (Z) := as.integer(get(Zbincol) >= zmargin)]
-    }
+    ## Assign Z on the expanded rows.
+    ##
+    ## Margin rows use binarized Z at the local zmargin.
+    ## Linear rows keep the original Z.
+    data[z_linear_copy == FALSE, (Z) := as.integer(get(Zbincol) >= zmargin)]
+    data[z_linear_copy == TRUE,  (Z) := get(Zname)]
 
-    ## For linear-Z rows, keep the original Z.
-    if (has_linearZ_conditions) {
-      data[is.na(zmargin), (Z) := get(Zname)]
-    }
+    ## Drop temporary helper.
+    data[, z_linear_copy := NULL]
 
-    ## Drop temporary binarized-Z helper only if it exists.
     if (!is.null(Zbincol) && Zbincol %in% names(data)) {
+      data[, (Zbincol) := NULL]
+    }
+
+  } else if (need_linear_Z) {
+
+    ## No Z-margin stacking needed, but linear-Z designs need original Z.
+    data[, (Z) := get(Zname)]
+
+    if (!is.null(Zbincol) && Zbincol %in% names(data)) {
+      data[, (Zbincol) := NULL]
+    }
+
+  } else if (need_binarized_Z) {
+
+    ## Binary-Z case or otherwise no stacking needed.
+    ## If Zbincol exists, use it as the working binary Z.
+    if (!is.null(Zbincol) && Zbincol %in% names(data)) {
+      data[, (Z) := get(Zbincol)]
       data[, (Zbincol) := NULL]
     }
   }
@@ -546,6 +668,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     }
   }
 
+  has_margin_conditions <- (any(c("none","D") %in% linear) | any(c("KR","MW") %in% condition))
+  need_linear_Z <- any(condition %in% linear_conditions) && any(linear %in% c("Z", "DZ"))
+
+
   if (has_margin_conditions) {
     os_res <- test_one_sided_noncompliance(
       data = data[nonmissing_margin_i(data, "zmargin")],
@@ -573,9 +699,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   # Initialize helper
   if (!("min_cell_Z" %in% names(data))) data[, min_cell_Z := NA_integer_]
 
-  if (has_linearZ_conditions) {
+  if (need_linear_Z) {
     # Continuous Z: require group size, variation in Z, and variation in residualized Z
-    data[nonmissing_margin_i(data, "zmargin"), bad_Z := (
+    data[!nonmissing_margin_i(data, "zmargin"), bad_Z := (
       n_group < min_n |
         is.na(sdZ) | sdZ == 0 |
         is.na(sd_res) | sd_res == 0
@@ -670,42 +796,77 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   idx_blocks <- list()
 
+  ##HELPER
+  make_linear_blocks <- function(cond_name) {
+    blocks <- list()
+
+    ## ordinary margins: binarized Z and binarized D
+    if ("none" %in% linear) {
+      tmp <- os_res$threshold[one_sided == FALSE]
+
+      keep <- intersect(c("zmargin", "dmargin"), names(tmp))
+      tmp <- tmp[, ..keep]
+
+      if ("dmargin" %in% names(tmp)) {
+        data.table::setnames(tmp, "dmargin", "dval")
+      }
+
+      tmp[, condition := cond_name]
+      tmp[, linear := "none"]
+
+      blocks[["none"]] <- tmp
+    }
+
+    ## linear in D, margin in Z
+    if ("D" %in% linear) {
+      if (K > 2L) {
+        tmp <- data.table::data.table(zmargin = Zsup[-1L])
+      } else {
+        tmp <- data.table::data.table()
+      }
+
+      tmp[, condition := cond_name]
+      tmp[, linear := "D"]
+
+      blocks[["D"]] <- tmp
+    }
+
+    ## linear in Z, margin in D
+    if ("Z" %in% linear) {
+      if (J > 2L) {
+        tmp <- data.table::data.table(dval = Dsup[-1L])
+      } else {
+        tmp <- data.table::data.table()
+      }
+
+      tmp[, condition := cond_name]
+      tmp[, linear := "Z"]
+
+      blocks[["Z"]] <- tmp
+    }
+
+    ## linear in both Z and D
+    if ("DZ" %in% linear) {
+      tmp <- data.table::data.table()
+      tmp[, condition := cond_name]
+      tmp[, linear := "DZ"]
+
+      blocks[["DZ"]] <- tmp
+    }
+
+    data.table::rbindlist(blocks, use.names = TRUE, fill = TRUE)
+  }
+
   # simple
   if ("simple" %in% condition) {
-    tmp <- os_res$threshold[one_sided == FALSE]
-    keep <- intersect(c("zmargin", "dmargin"), names(tmp))
-    tmp <- tmp[, ..keep]
-    if ("dmargin" %in% names(tmp)) setnames(tmp, "dmargin", "dval")
-    tmp[, condition := "simple"]
-    idx_blocks[["simple"]] <- tmp
+    idx_blocks[["simple"]] <- make_linear_blocks("simple")
   }
 
-  if ("simple_linearD" %in% condition) {
-    if (K>2) tmp=data.table(zmargin=Zsup[-1]) else tmp=data.table()
-    tmp[, condition := "simple_linearD"]
-    idx_blocks[["simple_linearD"]] <- tmp
-  }
-
-  if ("simple_linearZ" %in% condition) {
-    tmp=data.table(dval=Dsup[-1])
-    tmp[, condition := "simple_linearZ"]
-    idx_blocks[["simple_linearZ"]] <- tmp
-  }
-
-  if ("simple_linearDZ" %in% condition) {
-    tmp=data.table(condition="simple_linearDZ")
-    idx_blocks[["simple_linearDZ"]] <- tmp
-  }
-
-  # AHS
+  ##AHS
   if ("AHS" %in% condition) {
-    tmp <- os_res$threshold[one_sided == FALSE]
-    keep <- intersect(c("zmargin", "dmargin"), names(tmp))
-    tmp <- tmp[, ..keep]
-    if ("dmargin" %in% names(tmp)) setnames(tmp, "dmargin", "dval")
-    tmp[, condition := "AHS"]
-    idx_blocks[["AHS"]] <- tmp
+    idx_blocks[["AHS"]] <- make_linear_blocks("AHS")
   }
+
   # MW
   if ("MW" %in% condition) {
     tmp <- os_res$threshold[one_sided == FALSE]
@@ -766,22 +927,62 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   }
 
   margin_index <- rbindlist(idx_blocks, use.names = TRUE, fill = TRUE)
-  margins=setdiff(names(margin_index),"Avals")
 
   # --------------------------------------------------
   # 2) Cross with zmargin-stacked data
   # --------------------------------------------------
+  ## Join margin_index onto data.
+  ## If zmargin exists on both sides, join by zmargin so margin-Z rows only
+  ## match margin-index rows with the same zmargin, while linear-Z rows
+  ## with zmargin = NA only match linear-index rows with zmargin = NA.
+  ##
+  ## Otherwise, use a dummy cross join.
 
-  data[, join_dummy__ := 1L]
-  margin_index[, join_dummy__ := 1L]
+  mi <- data.table::copy(margin_index)
 
-  data <- margin_index[
-    data,
-    on = "join_dummy__",
-    allow.cartesian = TRUE
-  ]
+  if ("zmargin" %in% names(data) && "zmargin" %in% names(mi)) {
 
-  data[, join_dummy__ := NULL]
+    ## Make sure both join columns have the same type.
+    data[, zmargin := as.numeric(zmargin)]
+    mi[, zmargin := as.numeric(zmargin)]
+
+    data <- mi[
+      data,
+      on = "zmargin",
+      allow.cartesian = TRUE
+    ]
+
+  } else {
+
+    data[, join_dummy__ := 1L]
+    mi[, join_dummy__ := 1L]
+
+    data <- mi[
+      data,
+      on = "join_dummy__",
+      allow.cartesian = TRUE
+    ]
+
+    data[, join_dummy__ := NULL]
+  }
+
+  nonredundant_margin_cols <- function(margin_index, data, exclude = c("Avals", "rowid", "join_dummy__")) {
+    cand <- intersect(names(margin_index), names(data))
+    cand <- setdiff(cand, exclude)
+
+    cand[vapply(cand, function(cc) {
+      x <- data[[cc]]
+
+      ## Keep if it has at least two distinct non-missing values,
+      ## or if it has one non-missing value plus NA, since NA is meaningful
+      ## for linear rows, e.g. zmargin = NA for linear-Z.
+      n_nonmiss <- data.table::uniqueN(x, na.rm = TRUE)
+      has_na <- any(is.na(x))
+
+      n_nonmiss >= 2L || (n_nonmiss >= 1L && has_na)
+    }, logical(1))]
+  }
+  margins <- nonredundant_margin_cols(margin_index, data)
 
   # --------------------------------------------------
   #  Create Q by condition
@@ -792,16 +993,53 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   Zcol   <- Z
   Zhat   <- paste0(Zcol, ".hat")
   data[, Q := NA_real_]
+
   if (!"dval" %in% colnames(data)) dval=1
 
-  # simple / AHS
-  if (any(c("AHS","simple","simple_linearZ") %in% condition)) {
-    data[condition %in% c("simple","AHS","simple_linearZ"),Q:=as.integer(get(Dbincol)>=dval)]
-  }
-  if (any(c("simple_linearD","simple_linearDZ") %in% condition)) {
-    data[condition %in% c("simple_linearD","simple_linearDZ"),Q:=get(Dname)]
-  }
+  linear_conditions <- c("simple", "AHS")
 
+  need_linear_Q <-
+    any(condition %in% linear_conditions) &&
+    any(linear %in% c("D", "DZ"))
+
+  need_binarized_Q <-
+    any(!condition %in% linear_conditions) ||
+    (
+      any(condition %in% linear_conditions) &&
+        any(linear %in% c("none", "Z"))
+    )
+
+
+  # simple / AHS
+  if ("linear" %in% names(data)) {
+    ## New linear-aware path
+
+    if (need_linear_Q) {
+      data[
+        condition %in% linear_conditions & linear %in% c("D", "DZ"),
+        Q := get(Dname)
+      ]
+    }
+
+    if (need_binarized_Q) {
+      stopifnot("dval" %in% names(data))
+      stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
+
+      data[
+        !condition %in% linear_conditions |
+          (condition %in% linear_conditions & linear %in% c("none", "Z")),
+        Q := as.integer(get(Dbincol) >= dval)
+      ]
+    }
+
+  } else {
+    ## Backward-compatible ordinary-margin path.
+    ## No linear column means no linear-D rows exist.
+    stopifnot("dval" %in% names(data))
+    stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
+
+    data[, Q := as.integer(get(Dbincol) >= dval)]
+  }
   # MW
   if ("MW" %in% condition) {
   data[condition == "MW",
@@ -990,6 +1228,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     data[, (helper_cols_Q) := NULL]
   }
 
+
   time=rbind(time,"Estimate nuisance for outcomes Q"=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
@@ -1098,6 +1337,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
         res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
       }
     }
+
 
   time=rbind(time,"Correct for multiple hypothesis testing"=proc.time())
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
