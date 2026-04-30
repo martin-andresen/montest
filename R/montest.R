@@ -400,6 +400,51 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   need_linear_D <-
     any(condition %in% linear_conditions) && any(linear %in% c("D", "DZ"))
 
+
+  ##Validate select/pool choices for CART
+  if (identical(testtype, "CART")) {
+    if (is.null(pool)) pool <- character()
+    if (is.null(select)) select <- character()
+
+    pool <- unique(as.character(pool))
+    select <- unique(as.character(select))
+
+    bad_pool <- setdiff(pool, "sample")
+    if (length(bad_pool) > 0L) {
+      stop(
+        "Invalid `pool` for testtype = \"CART\". ",
+        "For CART, `pool` may only be NULL, character(0), or \"sample\". ",
+        "Invalid entries: ",
+        paste(bad_pool, collapse = ", "),
+        call. = FALSE
+      )
+    }
+
+    allowed_select <- c("zmargin","dval","yval","condition","equation","sample","linear")
+    bad_select <- setdiff(select, allowed_select)
+    if (length(bad_select) > 0L) {
+      stop(
+        "Invalid `select` for testtype = \"CART\". ",
+        "For CART, `select` may only contain \"zmargin\",\"dval\",\"yval\",\"condition\",\"equation\",\"sample\",\"linear\". ",
+        "Invalid entries: ",
+        paste(bad_select, collapse = ", "),
+        call. = FALSE
+      )
+    }
+
+    overlap <- intersect(pool, select)
+    if (length(overlap) > 0L) {
+      stop(
+        "Invalid `pool`/`select` combination for testtype = \"CART\". ",
+        "CART does not allow overlap between `pool` and `select`. ",
+        "Overlapping entries: ",
+        paste(overlap, collapse = ", "),
+        call. = FALSE
+      )
+    }
+
+  }
+
   time=rbind("Check input"=proc.time())
 
   ###################### 2 Prepare data #########################3
@@ -614,7 +659,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
     # cluster totals within each sample x margins x cluster
     cl <- data[, .(
-      z_sum = sum(get(Z)),
+      z_sum = sum(get(Zname)),
       n_cl  = .N
     ), by = by_cl]
 
@@ -1061,7 +1106,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
 
     if (!"dval" %in% names(data)) {
-      if (J == 1L) {
+      if (J == 2L) {
         data[, dval := 1L]
       } else {
         stop("dval is missing but needed to construct binarized Q.")

@@ -174,46 +174,55 @@ CART_test <- function(
   stopifnot(all(svec %in% c(1L, 2L)))
 
   # ---------------- validate pool/select ----------------
-  allowed_opts <- c("dval", "zmargin", "yval", "equation", "sample", "condition","linear")
 
   if (is.null(pool)) pool <- character()
   pool <- unique(as.character(pool))
-  if (length(setdiff(pool, allowed_opts)) > 0L) {
-    stop("pool contains invalid entries: ", paste(setdiff(pool, allowed_opts), collapse = ", "))
+
+  # New rule: pool may only contain "sample"
+  bad_pool <- setdiff(pool, "sample")
+  if (length(bad_pool) > 0L) {
+    stop(
+      "`pool` may only contain \"sample\" in CART_test. Invalid entries: ",
+      paste(bad_pool, collapse = ", ")
+    )
   }
 
   if (is.null(select)) select <- character()
   select <- unique(as.character(select))
-  if (length(setdiff(select, allowed_opts)) > 0L) {
-    stop("select contains invalid entries: ", paste(setdiff(select, allowed_opts), collapse = ", "))
+
+  # New rule: select may contain "sample" and/or any variable listed in margins
+  allowed_select <- c("sample", margins)
+
+  bad_select <- setdiff(select, allowed_select)
+  if (length(bad_select) > 0L) {
+    stop(
+      "`select` may only contain \"sample\" and variables in `margins`. Invalid entries: ",
+      paste(bad_select, collapse = ", ")
+    )
   }
 
+  # No adaptivity: sample cannot be both pooled and selected over
   overlap <- intersect(pool, select)
   if (length(overlap) > 0L) {
-    stop("CART_test does not allow overlap between pool and select.")
-  }
-
-  bad_pool_margins <- setdiff(setdiff(pool, "sample"), margins)
-  if (length(bad_pool_margins) > 0L) {
-    stop("These pooled margins are not in `margins`: ", paste(bad_pool_margins, collapse = ", "))
-  }
-
-  bad_select_margins <- setdiff(setdiff(select, "sample"), margins)
-  if (length(bad_select_margins) > 0L) {
-    stop("These selected margins are not in `margins`: ", paste(bad_select_margins, collapse = ", "))
+    stop(
+      "CART_test does not allow overlap between `pool` and `select`: ",
+      paste(overlap, collapse = ", ")
+    )
   }
 
   pool_sample   <- "sample" %chin% pool
   select_sample <- "sample" %chin% select
 
-  pool_margins   <- intersect(pool, margins)
+  pool_margins   <- character()  # by construction, margins can no longer be pooled
   select_margins <- intersect(select, margins)
 
   # margins kept separate when defining fit-groups
-  sep_margins <- setdiff(margins, pool_margins)
+  # Since margins cannot be pooled, every margin remains a separate tree-fit cell.
+  sep_margins <- margins
 
-  # after selection/pooling, these define distinct testing strata
-  final_keep_margins <- setdiff(margins, union(pool_margins, select_margins))
+  # after selection, these define distinct testing strata
+  # margins in select_margins are selected over, so they are not kept as final strata
+  final_keep_margins <- setdiff(margins, select_margins)
 
   # ---------------- helpers ----------------
 
@@ -3226,7 +3235,7 @@ forest_test_core <- function(
 
   out
 }
-##USED by CART_test and forest_test to estimate global means.
+##USED by overlap and forest_test to estimate global means.
 global_means_crv1 <- function(
     data,
     scorev,
