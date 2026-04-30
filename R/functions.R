@@ -694,7 +694,6 @@ CART_test <- function(
       train_leaf[, p.raw := stats::pnorm(t)]
 
       prom <- select_leaves_local(train_leaf[is.finite(t), .(leaf, t)])
-      train_leaf[, selected_local := as.integer(leaf %in% prom)]
       train_leaf <- add_key_cols(train_leaf, key_dt, margins)
 
       dirs[[train_s]] <- list(
@@ -716,7 +715,7 @@ CART_test <- function(
     }
   }
 
-  # ---------------- collect candidate leaves ----------------
+  # ---------------- collect locally screened candidate leaves ----------------
   leaf_rows <- list()
   lr <- 0L
 
@@ -724,19 +723,28 @@ CART_test <- function(
     for (train_s in c(1L, 2L)) {
       obj <- fit_objs[[g]][[train_s]]
       if (is.null(obj)) next
+      if (length(obj$prom) == 0L) next
 
-      tl <- data.table::copy(obj$train_leaf)
+      tl <- data.table::copy(
+        obj$train_leaf[leaf %in% obj$prom & is.finite(t)]
+      )
+      if (nrow(tl) == 0L) next
+
       tl[, `:=`(
         fit_id = g,
         train_s = train_s,
         est_s = obj$est_s
       )]
+
       leaf_rows[[lr <- lr + 1L]] <- tl
     }
   }
 
-  leaf_tbl <- data.table::rbindlist(leaf_rows, use.names = TRUE, fill = TRUE)
-  leaf_tbl_use <- leaf_tbl[selected_local == 1L & is.finite(t)]
+  if (length(leaf_rows) == 0L) {
+    stop("Testing subset is empty (after local screening).")
+  }
+
+  leaf_tbl_use <- data.table::rbindlist(leaf_rows, use.names = TRUE, fill = TRUE)
 
   if (nrow(leaf_tbl_use) == 0L) {
     stop("Testing subset is empty (after local screening).")
@@ -833,12 +841,19 @@ CART_test <- function(
           # pooling key for final testing
           for (cc in final_keep_margins) {
             val <- NA
-            if (!is.null(obj$key_dt) && cc %chin% names(obj$key_dt)) val <- obj$key_dt[[cc]][1]
+            if (!is.null(obj$key_dt) && cc %chin% names(obj$key_dt)) {
+              val <- obj$key_dt[[cc]][1]
+            }
             job_dt[, (paste0(".pool_", cc)) := val]
           }
+
+          # Leaf should remain identified even when pooling over sample.
+          # pool = "sample" pools the two estimation samples, not different selected leaves.
+          job_dt[, .pool_leaf := as.integer(lf)]
+
+          # Only keep estimation sample as a pooling key when sample is NOT pooled.
           if (!pool_sample) {
             job_dt[, .pool_est_s := obj$est_s]
-            job_dt[, .pool_leaf := as.integer(lf)]
           }
 
           test_jobs[[tj_k <- tj_k + 1L]] <- job_dt
@@ -849,18 +864,8 @@ CART_test <- function(
 
   train_out <- data.table::rbindlist(train_rows, use.names = TRUE, fill = TRUE)
 
-  if (length(test_jobs) == 0L) stop("Testing subset is empty (after selection).")
   jobs_dt <- data.table::rbindlist(test_jobs, use.names = TRUE, fill = TRUE)
 
-  # ---------------- collapse testing jobs according to pooling ----------------
-  if (pool_sample) {
-    test_group_cols <- c(final_keep_margins)
-  } else {
-    test_group_cols <- c(final_keep_margins, "est_s", "leaf")
-  }
-  test_group_cols <- unique(test_group_cols)
-
-  # ---------------- testing: one test per pooled selected leaf-group ----------------
   # ---------------- collapse testing jobs according to pooling ----------------
   pool_cols <- grep("^\\.pool_", names(jobs_dt), value = TRUE)
 
@@ -920,10 +925,27 @@ CART_test <- function(
 
     o <- mean_test_crv1(y, w, cl)
 
+    sample_here <- unique(jobs_here$est_s)
+    leaf_here   <- unique(jobs_here$leaf)
+
     rr <- data.table::data.table(
       train = FALSE,
-      sample = if (!pool_sample) unique(jobs_here$est_s)[1] else NA_integer_,
-      leaf = if (!pool_sample) unique(jobs_here$leaf)[1] else NA_integer_,
+
+      # If pool = "sample", the test row pools across estimation samples,
+      # so sample is intentionally NA. Otherwise it should be identified.
+      sample = if (!pool_sample && length(sample_here) == 1L) {
+        as.integer(sample_here)
+      } else {
+        NA_integer_
+      },
+
+      # Leaf is now part of the pooling key, so this should usually be length 1.
+      leaf = if (length(leaf_here) == 1L) {
+        as.integer(leaf_here)
+      } else {
+        NA_integer_
+      },
+
       G = o$G,
       N = o$N,
       coef = o$coef,
@@ -952,6 +974,9 @@ CART_test <- function(
   if (!("relevant" %chin% names(results_out))) results_out[, relevant := NA_integer_]
   results_out[train == FALSE, relevant := NA_integer_]
   data.table::setorder(results_out, train)
+  if ("selected_local" %chin% names(results_out)) {
+    results_out[, selected_local := NULL]
+  }
 
   front_cols <- c(
     intersect(margins, names(results_out)),
@@ -2478,7 +2503,7 @@ forest_test_core <- function(
 
     if (length(choose_by) == 0L) {
       out <- select_groups_screen(cand, alpha = alpha)
-      return(unique(out[, ..id_by]))
+      return(unique(out[, .SD, .SDcols = id_by]))
     }
 
     ## Columns in choose_by are excluded from .SD by data.table.
@@ -2491,7 +2516,7 @@ forest_test_core <- function(
         sel <- select_groups_screen(.SD, alpha = alpha)
 
         if (length(id_nonby) > 0L) {
-          sel[, ..id_nonby]
+          sel[, .SD, .SDcols = id_nonby]
         } else {
           ## Needed when all id_by columns are in choose_by.
           ## Return one row per selected candidate; data.table will add choose_by.
@@ -2505,7 +2530,7 @@ forest_test_core <- function(
       out[, .selected_row__ := NULL]
     }
 
-    unique(out[, ..id_by])
+    unique(out[, .SD, .SDcols = id_by])
   }
 
   stopifnot(data.table::is.data.table(data))
@@ -2711,9 +2736,9 @@ forest_test_core <- function(
     idx_list <- list(seq_len(n))
     keys_list <- list(NULL)
   } else {
-    gid <- data.table::frankv(data[, ..cell_cols], ties.method = "dense")
+    gid <- data.table::frankv(data[, .SD, .SDcols = cell_cols], ties.method = "dense")
     idx_list <- split(seq_len(n), gid)
-    keys_list <- lapply(idx_list, function(idx) data[idx[1L], ..cell_cols])
+    keys_list <- lapply(idx_list, function(idx) data[idx[1L], .SD, .SDcols = cell_cols])
   }
 
   run_one_cell_idx <- function(idx, key_dt = NULL, cell_id = NA_integer_) {
@@ -2954,7 +2979,7 @@ forest_test_core <- function(
         best_p <- Inf
 
         for (r in seq_len(nrow(d))) {
-          ids_r <- d[seq_len(r), ..id_by]
+          ids_r <- d[seq_len(r), .SD, .SDcols = id_by]
           rows_r <- merge(
             train_all,
             unique(ids_r),
@@ -3028,13 +3053,13 @@ forest_test_core <- function(
       id_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
 
       if (length(choose_by) == 0L) {
-        keep_ids <- select_groups_screen(cand, alpha = alpha)[, ..id_by]
+        keep_ids <- select_groups_screen(cand, alpha = alpha)[, .SD, .SDcols = id_by]
       } else {
         keep_ids <- cand[
           ,
           select_groups_screen(.SD, alpha = alpha),
           by = choose_by
-        ][, ..id_by]
+        ][, .SD, .SDcols = id_by]
       }
 
       selected_train <- merge(
@@ -3082,7 +3107,7 @@ forest_test_core <- function(
       unique(c(adjust_cols, sample_col, separate_select_margins)),
       names(selected_train)
     )
-    selected_test_keys <- unique(selected_train[, ..key_cols])
+    selected_test_keys <- unique(selected_train[, .SD, .SDcols = key_cols])
   }
 
   dt_test <- data.table::data.table(
@@ -3091,7 +3116,9 @@ forest_test_core <- function(
     cl = clv
   )
 
-  if (length(test_by) > 0L) dt_test[, (test_by) := data[, ..test_by]]
+  if (length(test_by) > 0L) {
+    dt_test[, (test_by) := data[, .SD, .SDcols = test_by]]
+  }
 
   dt_test <- dt_test[in_test]
 
@@ -3182,8 +3209,8 @@ forest_test_core <- function(
 
   if (!is.null(x_names)) {
     cols_need <- unique(c(test_by, x_names))
-    df_all <- data[, ..cols_need]
-    df_tst <- data[in_test, ..cols_need]
+    df_all <- data[, .SD, .SDcols = cols_need]
+    df_tst <- data[in_test, .SD, .SDcols = cols_need]
 
     wmeans_dt <- function(df, w, by_cols) {
       DTtmp <- data.table::as.data.table(df)
@@ -3228,8 +3255,8 @@ forest_test_core <- function(
     denom_by <- intersect(denom_by, names(data))
     cols_need <- intersect(unique(c(denom_by, pool_margins)), names(data))
 
-    DT_all <- data[, ..cols_need]
-    DT_tst <- data[in_test, ..cols_need]
+    DT_all <- data[, .SD, .SDcols = cols_need]
+    DT_tst <- data[in_test, .SD, .SDcols = cols_need]
 
     make_share_combo <- function(DTsub, wsub) {
       DTsub <- data.table::as.data.table(DTsub)
@@ -3293,6 +3320,7 @@ forest_test_core <- function(
 
   out
 }
+
 ##USED by overlap and forest_test to estimate global means.
 global_means_crv1 <- function(
     data,
@@ -3318,7 +3346,7 @@ global_means_crv1 <- function(
     missing <- setdiff(by_cols, names(data))
     if (length(missing)) stop("global_means_crv1: missing grouping columns in data: ",
                               paste(missing, collapse = ", "))
-    dt_all[, (by_cols) := data[, ..by_cols]]
+    dt_all[, (by_cols) := data[, .SD, .SDcols = by_cols]]
   }
 
   # Compute
