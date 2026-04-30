@@ -504,15 +504,29 @@ CART_test <- function(
 
   add_key_cols <- function(dt, key_dt, all_margin_names) {
     if (length(all_margin_names) == 0L) return(dt)
+
+    if (is.null(key_dt) || ncol(key_dt) == 0L) {
+      stop("add_key_cols(): key_dt is empty although margins are required: ",
+           paste(all_margin_names, collapse = ", "))
+    }
+
+    missing_from_key <- setdiff(all_margin_names, names(key_dt))
+    if (length(missing_from_key) > 0L) {
+      stop("add_key_cols(): key_dt is missing margin columns: ",
+           paste(missing_from_key, collapse = ", "))
+    }
+
     for (cc in all_margin_names) {
-      if (!cc %chin% names(dt)) dt[, (cc) := NA]
+      val <- key_dt[[cc]][1]
+      if (is.na(val)) {
+        print(key_dt)
+        stop("add_key_cols(): margin column ", cc, " is NA in key_dt.")
+      }
+      dt[, (cc) := val]
     }
-    if (!is.null(key_dt) && ncol(key_dt) > 0L) {
-      for (cc in names(key_dt)) dt[, (cc) := key_dt[[cc]][1]]
-    }
+
     dt
   }
-
   build_tree_design <- function(df, pooled_cols) {
     if (length(pooled_cols) == 0L) {
       X <- as.data.frame(df[, ..x_names])

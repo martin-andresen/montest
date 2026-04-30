@@ -180,7 +180,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   if ("all" %in% linear) {
     linear <- c("none", "Z", "D", "DZ")
   }
-  screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none"))
+  screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
   gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
@@ -823,8 +823,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   time=rbind(time,"Stack data for Z margins and estimate nuisance for Z"=proc.time())
 
   #######STACK ACROSS MARGINS ##########
-  ##CONSTRUCT INDEX MATRIX OF MARGINS
-  # helper: all subsets of Y support
+
+  ## helper: all subsets of Y support
   all_subsets <- function(vals, min_size = 1L, max_size = length(vals)) {
     out <- vector("list", 0L)
     for (k in min_size:max_size) {
@@ -835,13 +835,13 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   # --------------------------------------------------
   # Build one unified condition index
-  #    Generic columns:
-  #      condition, equation, zmargin, dval, yval
+  #   Generic columns:
+  #     condition, linear, equation, zmargin, dval, yval, Avals
   # --------------------------------------------------
 
   idx_blocks <- list()
 
-  ##HELPER
+  ## helper for simple / AHS
   make_linear_blocks <- function(cond_name) {
     blocks <- list()
 
@@ -854,6 +854,17 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
       if ("dmargin" %in% names(tmp)) {
         data.table::setnames(tmp, "dmargin", "dval")
+      }
+
+      ## If D is binary, dval is not a meaningful margin for simple/AHS-none.
+      ## Missing dval will later be treated as threshold 1 only inside Q construction.
+      if (J == 2L && "dval" %in% names(tmp)) {
+        tmp[, dval := NULL]
+      }
+
+      ## If Z is binary, zmargin is not a meaningful margin.
+      if (K == 2L && "zmargin" %in% names(tmp)) {
+        tmp[, zmargin := NULL]
       }
 
       tmp[, condition := cond_name]
@@ -893,6 +904,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     ## linear in both Z and D
     if ("DZ" %in% linear) {
       tmp <- data.table::data.table()
+
       tmp[, condition := cond_name]
       tmp[, linear := "DZ"]
 
@@ -907,7 +919,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     idx_blocks[["simple"]] <- make_linear_blocks("simple")
   }
 
-  ##AHS
+  # AHS
   if ("AHS" %in% condition) {
     idx_blocks[["AHS"]] <- make_linear_blocks("AHS")
   }
@@ -915,78 +927,148 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   # MW
   if ("MW" %in% condition) {
     tmp <- os_res$threshold[one_sided == FALSE]
-    keep <- intersect(c("zmargin", "dmargin","direction"), names(tmp))
-    tmp <- tmp[, ..keep]
-    if ("dmargin" %in% names(tmp)) setnames(tmp, "dmargin", "dval")
-    tmp[, condition := "MW"]
-    eq_idx <- data.table(equation = 0:1, dummy__ = 1L)
-    tmp[, dummy__ := 1L]
-    tmp <- eq_idx[tmp, on = "dummy__", allow.cartesian = TRUE][, dummy__ := NULL]
 
-    if (nrow(os_res$threshold[one_sided==TRUE])>0) {
-      tmp <- tmp[!((direction == "Never-takers only"  & equation == 1L) | (direction == "Always-takers only" & equation == 0L))]
+    keep <- intersect(c("zmargin", "dmargin", "direction"), names(tmp))
+    tmp <- tmp[, ..keep]
+
+    if ("dmargin" %in% names(tmp)) {
+      data.table::setnames(tmp, "dmargin", "dval")
     }
-    tmp[, direction := NULL]
+
+    ## MW uses D.bin directly below. If D is binary, dval is not a meaningful
+    ## MW margin and should not enter margin_index.
+    if (J == 2L && "dval" %in% names(tmp)) {
+      tmp[, dval := NULL]
+    }
+
+    ## If Z is binary, zmargin is not a meaningful MW margin.
+    if (K == 2L && "zmargin" %in% names(tmp)) {
+      tmp[, zmargin := NULL]
+    }
+
+    tmp[, condition := "MW"]
+
+    eq_idx <- data.table::data.table(equation = 0:1, dummy__ = 1L)
+    tmp[, dummy__ := 1L]
+
+    tmp <- eq_idx[tmp, on = "dummy__", allow.cartesian = TRUE][
+      , dummy__ := NULL
+    ]
+
+    if (nrow(os_res$threshold[one_sided == TRUE]) > 0L &&
+        "direction" %in% names(tmp)) {
+      tmp <- tmp[
+        !(
+          (direction == "Never-takers only"  & equation == 1L) |
+            (direction == "Always-takers only" & equation == 0L)
+        )
+      ]
+    }
+
+    if ("direction" %in% names(tmp)) {
+      tmp[, direction := NULL]
+    }
+
     idx_blocks[["MW"]] <- tmp
   }
+
   # KR
   if ("KR" %in% condition) {
     tmp <- os_res$exact[trivial_exact == FALSE]
-    keep <- intersect(c("zmargin", "dval"), names(tmp))
+
+    keep <- intersect(c("zmargin", "dval", "dmargin"), names(tmp))
     tmp <- tmp[, ..keep]
-    if ("dmargin" %in% names(tmp)) setnames(tmp, "dmargin", "dval")
+
+    if ("dmargin" %in% names(tmp)) {
+      data.table::setnames(tmp, "dmargin", "dval")
+    }
+
+    ## If Z is binary, zmargin is not a meaningful KR margin.
+    if (K == 2L && "zmargin" %in% names(tmp)) {
+      tmp[, zmargin := NULL]
+    }
+
     tmp[, condition := "KR"]
 
     A_specs <- list()
 
     for (dv in Dsup) {
-      # admissible A sets at each exact treatment value:
-      # bottom d: only singleton sets (joint adds nothing)
-      # interior d: all nonempty subsets
-      # top d: all nonempty proper subsets
-      if (joint==FALSE) {
+      ## admissible A sets at each exact treatment value:
+      ## bottom d: only singleton sets
+      ## interior d: all nonempty subsets
+      ## top d: all nonempty proper subsets
+      if (joint == FALSE) {
         A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
       } else if (dv == min(Dsup)) {
         A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
       } else if (dv == max(Dsup)) {
-        A_list <- if (L >= 2L) all_subsets(Ysup, min_size = 1L, max_size = L - 1L) else list()
+        A_list <- if (L >= 2L) {
+          all_subsets(Ysup, min_size = 1L, max_size = L - 1L)
+        } else {
+          list()
+        }
       } else {
         A_list <- all_subsets(Ysup, min_size = 1L, max_size = L)
       }
 
       if (length(A_list)) {
-        A_specs[[as.character(dv)]] <- rbindlist(lapply(A_list, function(a) {
-          lbl <- paste0("{", paste(a, collapse = ","), "}")
-          data.table(
-            dval = dv,
-            yval = lbl,
-            Avals = list(a)
-          )
-        }))
+        A_specs[[as.character(dv)]] <- data.table::rbindlist(
+          lapply(A_list, function(a) {
+            lbl <- paste0("{", paste(a, collapse = ","), "}")
+            data.table::data.table(
+              dval = dv,
+              yval = lbl,
+              Avals = list(a)
+            )
+          }),
+          use.names = TRUE,
+          fill = TRUE
+        )
       }
     }
 
-    A_idx <- rbindlist(A_specs, use.names = TRUE, fill = TRUE)
+    A_idx <- data.table::rbindlist(A_specs, use.names = TRUE, fill = TRUE)
+
     tmp <- A_idx[tmp, on = "dval", allow.cartesian = TRUE]
+
     idx_blocks[["KR"]] <- tmp
   }
 
-  margin_index <- rbindlist(idx_blocks, use.names = TRUE, fill = TRUE)
+  margin_index <- data.table::rbindlist(idx_blocks, use.names = TRUE, fill = TRUE)
+
+  # Drop columns with no substantive variation in the margin index itself.
+  # This prevents variables like linear = "none" only, or dval all NA, from
+  # becoming margins later.
+  drop_nonvarying_index_cols <- function(mi,
+                                         always_keep = "condition",
+                                         exclude = c("Avals")) {
+    drop_cols <- setdiff(names(mi), c(always_keep, exclude))
+
+    for (cc in drop_cols) {
+      x <- mi[[cc]]
+      n_nonmiss <- data.table::uniqueN(x, na.rm = TRUE)
+
+      ## Drop if zero or one actual non-missing value.
+      ## NA versus one real value is not treated as meaningful margin variation.
+      if (n_nonmiss <= 1L) {
+        mi[, (cc) := NULL]
+      }
+    }
+
+    mi
+  }
+
+  margin_index <- drop_nonvarying_index_cols(margin_index)
+
+
 
   # --------------------------------------------------
-  # 2) Cross with zmargin-stacked data
+  # Cross with zmargin-stacked data
   # --------------------------------------------------
-  ## Join margin_index onto data.
-  ## If zmargin exists on both sides, join by zmargin so margin-Z rows only
-  ## match margin-index rows with the same zmargin, while linear-Z rows
-  ## with zmargin = NA only match linear-index rows with zmargin = NA.
-  ##
-  ## Otherwise, use a dummy cross join.
 
   mi <- data.table::copy(margin_index)
 
   if ("zmargin" %in% names(data) && "zmargin" %in% names(mi)) {
-
     ## Make sure both join columns have the same type.
     data[, zmargin := as.numeric(zmargin)]
     mi[, zmargin := as.numeric(zmargin)]
@@ -998,7 +1080,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     ]
 
   } else {
-
     data[, join_dummy__ := 1L]
     mi[, join_dummy__ := 1L]
 
@@ -1011,150 +1092,159 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     data[, join_dummy__ := NULL]
   }
 
-  nonredundant_margin_cols <- function(margin_index, data, exclude = c("Avals", "rowid", "join_dummy__")) {
+  # --------------------------------------------------
+  # Define margin variables
+  # --------------------------------------------------
+
+  nonredundant_margin_cols <- function(margin_index,
+                                       data,
+                                       exclude = c("Avals", "rowid", "join_dummy__")) {
     cand <- intersect(names(margin_index), names(data))
     cand <- setdiff(cand, exclude)
 
     cand[vapply(cand, function(cc) {
       x <- data[[cc]]
 
-      ## Keep if it has at least two distinct non-missing values,
-      ## or if it has one non-missing value plus NA, since NA is meaningful
-      ## for linear rows, e.g. zmargin = NA for linear-Z.
-      n_nonmiss <- data.table::uniqueN(x, na.rm = TRUE)
-      has_na <- any(is.na(x))
-
-      n_nonmiss >= 2L || (n_nonmiss >= 1L && has_na)
+      ## Keep only if there are at least two actual non-missing values.
+      ## NA versus one real value is not treated as meaningful variation.
+      data.table::uniqueN(x, na.rm = TRUE) >= 2L
     }, logical(1))]
   }
+
   margins <- nonredundant_margin_cols(margin_index, data)
 
   # --------------------------------------------------
-  #  Create Q by condition
+  # Create Q by condition
   # --------------------------------------------------
 
-  Dcol   <- Dbincol
-  Ycol   <- paste0(Y,".bin")
-  Zcol   <- Z
-  Zhat   <- paste0(Zcol, ".hat")
-  data[, Q := NA_real_]
+  Dcol <- Dbincol
+  Ycol <- paste0(Y, ".bin")
+  Zcol <- Z
+  Zhat <- paste0(Zcol, ".hat")
 
-  if (!"dval" %in% colnames(data)) dval=1
+  data[, Q := NA_real_]
 
   linear_conditions <- c("simple", "AHS")
 
-  need_linear_Q <-
-    any(condition %in% linear_conditions) &&
-    any(linear %in% c("D", "DZ"))
+  is_linear_condition <- data[["condition"]] %in% linear_conditions
+  is_MW <- data[["condition"]] == "MW"
+  is_KR <- data[["condition"]] == "KR"
 
-  need_binarized_Q <-
-    any(!condition %in% linear_conditions) ||
-    (
-      any(condition %in% linear_conditions) &&
-        any(linear %in% c("none", "Z"))
-    )
+  has_linear_col <- "linear" %in% names(data)
 
+  # ---------------- simple / AHS: linear-D Q ----------------
 
-  # simple / AHS
-  if (any(c("simple","AHS") %in% condition)) {
-    if ("linear" %in% names(data)) {
-      ## New linear-aware path
+  if (
+    has_linear_col &&
+    any(is_linear_condition & data[["linear"]] %in% c("D", "DZ"))
+  ) {
+    data[
+      condition %in% linear_conditions & linear %in% c("D", "DZ"),
+      Q := as.numeric(get(Dname))
+    ]
+  }
 
-      if (need_linear_Q) {
-        data[
-          condition %in% linear_conditions & linear %in% c("D", "DZ"),
-          Q := get(Dname)
-        ]
-      }
+  # ---------------- simple / AHS: binarized Q ----------------
 
-      if (need_binarized_Q) {
-        stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
+  binarized_rows <- if (has_linear_col) {
+    is_linear_condition & data[["linear"]] %in% c("none", "Z")
+  } else {
+    is_linear_condition
+  }
 
-        if (!"dval" %in% names(data)) {
-          if (J == 2L) {
-            data[, dval := 1L]
-          } else {
-            stop("dval is missing but needed to construct binarized Q.")
-          }
-        }
+  if (any(binarized_rows)) {
+    stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
 
-        data[, dval_Q__ := dval]
+    data[, dval_Q__ := NA_real_]
 
-        if (J == 1L) {
-          data[is.na(dval_Q__), dval_Q__ := 1L]
-        }
-
-        if (any(is.na(data[
-          !condition %in% linear_conditions |
-          (condition %in% linear_conditions & linear %in% c("none", "Z")),
-          dval_Q__
-        ]))) {
-          stop("dval contains NA in rows that need binarized Q.")
-        }
-
-        data[
-          !condition %in% linear_conditions |
-            (condition %in% linear_conditions & linear %in% c("none", "Z")),
-          Q := as.numeric(get(Dbincol) >= dval_Q__)
-        ]
-
-        data[, dval_Q__ := NULL]
-      }
-
-    } else {
-      ## Backward-compatible ordinary-margin path.
-      ## No linear column means no linear-D rows exist.
-      stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
-
-      if (!"dval" %in% names(data)) {
-        if (J == 2L) {
-          data[, dval := 1L]
-        } else {
-          stop("dval is missing but needed to construct binarized Q.")
-        }
-      }
-
-      data[, dval_Q__ := dval]
-
-      if (J == 1L) {
-        data[is.na(dval_Q__), dval_Q__ := 1L]
-      }
-
-      if (any(is.na(data$dval_Q__))) {
-        stop("dval contains NA in rows that need binarized Q.")
-      }
-
-      data[, Q := as.numeric(get(Dbincol) >= dval_Q__)]
-
-      data[, dval_Q__ := NULL]
+    if ("dval" %in% names(data)) {
+      data[binarized_rows, dval_Q__ := as.numeric(dval)]
     }
-  }
-  # MW
-  if ("MW" %in% condition) {
-  data[condition == "MW",
-       Q := equation * (
-         (1 - get(Zhat)) * get(Dcol) * get(Zcol) -
-           get(Zhat) * get(Dcol) * (1 - get(Zcol))
-       ) +
-         (1 - equation) * (
-           get(Zhat) * (1 - get(Dcol)) * (1 - get(Zcol)) -
-             (1 - get(Zhat)) * (1 - get(Dcol)) * get(Zcol)
-         )]
+
+    ## If D is binary, missing dval means threshold 1 internally.
+    ## This does NOT modify the margin variable dval.
+    if (J == 2L) {
+      data[binarized_rows & is.na(dval_Q__), dval_Q__ := 1]
+    }
+
+    ## If D is not binary, missing dval is a real problem for binarized Q.
+    if (any(is.na(data[binarized_rows, dval_Q__]))) {
+      stop(
+        "dval is missing in rows that need binarized Q, and D is not binary. ",
+        "For multivalued D, the margin index must provide dval for these rows.",
+        call. = FALSE
+      )
+    }
+
+    data[
+      binarized_rows,
+      Q := as.numeric(get(Dbincol) >= dval_Q__)
+    ]
+
+    data[, dval_Q__ := NULL]
   }
 
+  # ---------------- MW ----------------
 
-  # KR (cellwise + joint)
-  if ("KR" %in% condition) {
+  if (any(is_MW)) {
+    stopifnot(!is.null(Dcol), Dcol %in% names(data))
+    stopifnot(!is.null(Zcol), Zcol %in% names(data))
+    stopifnot(Zhat %in% names(data))
+    stopifnot("equation" %in% names(data))
+
+    data[
+      condition == "MW",
+      Q := equation * (
+        (1 - get(Zhat)) * get(Dcol) * get(Zcol) -
+          get(Zhat) * get(Dcol) * (1 - get(Zcol))
+      ) +
+        (1 - equation) * (
+          get(Zhat) * (1 - get(Dcol)) * (1 - get(Zcol)) -
+            (1 - get(Zhat)) * (1 - get(Dcol)) * get(Zcol)
+        )
+    ]
+  }
+
+  # ---------------- KR ----------------
+
+  if (any(is_KR)) {
+    stopifnot("dval" %in% names(data))
+    stopifnot("yval" %in% names(data))
+    stopifnot("Avals" %in% names(data))
+    stopifnot(!is.null(Dcol), Dcol %in% names(data))
+    stopifnot(Ycol %in% names(data))
+
     dmin <- min(data[[Dcol]], na.rm = TRUE)
 
-    data[condition == "KR" & dval == dmin,
-         Q := -as.integer(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-         by = .(dval, yval)]
+    data[
+      condition == "KR" & dval == dmin,
+      Q := -as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
+      by = .(dval, yval)
+    ]
 
-    data[condition == "KR" & dval > dmin,
-         Q := get(Dcol) -
-           as.integer(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-         by = .(dval, yval)]
+    data[
+      condition == "KR" & dval > dmin,
+      Q := as.numeric(get(Dcol)) -
+        as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
+      by = .(dval, yval)
+    ]
+  }
+
+  # ---------------- sanity check ----------------
+
+  if (any(is.na(data$Q))) {
+    bad_Q <- unique(data[
+      is.na(Q),
+      intersect(
+        c("condition", "linear", "equation", "zmargin", "dval", "yval"),
+        names(data)
+      ),
+      with = FALSE
+    ])
+
+    print(bad_Q)
+
+    stop("Some rows still have missing Q.", call. = FALSE)
   }
 
   time=rbind(time,"Stack data across margins"=proc.time())
@@ -1316,7 +1406,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   if (length(helper_cols_Q) > 0L) {
     data[, (helper_cols_Q) := NULL]
   }
-
 
   time=rbind(time,"Estimate nuisance for outcomes Q"=proc.time())
 
