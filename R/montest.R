@@ -1056,17 +1056,54 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
 
   # simple / AHS
-  if ("linear" %in% names(data)) {
-    ## New linear-aware path
+  if (any(c("simple","AHS") %in% condition)) {
+    if ("linear" %in% names(data)) {
+      ## New linear-aware path
 
-    if (need_linear_Q) {
-      data[
-        condition %in% linear_conditions & linear %in% c("D", "DZ"),
-        Q := get(Dname)
-      ]
-    }
+      if (need_linear_Q) {
+        data[
+          condition %in% linear_conditions & linear %in% c("D", "DZ"),
+          Q := get(Dname)
+        ]
+      }
 
-    if (need_binarized_Q) {
+      if (need_binarized_Q) {
+        stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
+
+        if (!"dval" %in% names(data)) {
+          if (J == 2L) {
+            data[, dval := 1L]
+          } else {
+            stop("dval is missing but needed to construct binarized Q.")
+          }
+        }
+
+        data[, dval_Q__ := dval]
+
+        if (J == 1L) {
+          data[is.na(dval_Q__), dval_Q__ := 1L]
+        }
+
+        if (any(is.na(data[
+          !condition %in% linear_conditions |
+          (condition %in% linear_conditions & linear %in% c("none", "Z")),
+          dval_Q__
+        ]))) {
+          stop("dval contains NA in rows that need binarized Q.")
+        }
+
+        data[
+          !condition %in% linear_conditions |
+            (condition %in% linear_conditions & linear %in% c("none", "Z")),
+          Q := as.numeric(get(Dbincol) >= dval_Q__)
+        ]
+
+        data[, dval_Q__ := NULL]
+      }
+
+    } else {
+      ## Backward-compatible ordinary-margin path.
+      ## No linear column means no linear-D rows exist.
       stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
 
       if (!"dval" %in% names(data)) {
@@ -1083,49 +1120,14 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
         data[is.na(dval_Q__), dval_Q__ := 1L]
       }
 
-      if (any(is.na(data[
-        !condition %in% linear_conditions |
-        (condition %in% linear_conditions & linear %in% c("none", "Z")),
-        dval_Q__
-      ]))) {
+      if (any(is.na(data$dval_Q__))) {
         stop("dval contains NA in rows that need binarized Q.")
       }
 
-      data[
-        !condition %in% linear_conditions |
-          (condition %in% linear_conditions & linear %in% c("none", "Z")),
-        Q := as.integer(get(Dbincol) >= dval_Q__)
-      ]
+      data[, Q := as.numeric(get(Dbincol) >= dval_Q__)]
 
       data[, dval_Q__ := NULL]
     }
-
-  } else {
-    ## Backward-compatible ordinary-margin path.
-    ## No linear column means no linear-D rows exist.
-    stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
-
-    if (!"dval" %in% names(data)) {
-      if (J == 2L) {
-        data[, dval := 1L]
-      } else {
-        stop("dval is missing but needed to construct binarized Q.")
-      }
-    }
-
-    data[, dval_Q__ := dval]
-
-    if (J == 1L) {
-      data[is.na(dval_Q__), dval_Q__ := 1L]
-    }
-
-    if (any(is.na(data$dval_Q__))) {
-      stop("dval contains NA in rows that need binarized Q.")
-    }
-
-    data[, Q := as.integer(get(Dbincol) >= dval_Q__)]
-
-    data[, dval_Q__ := NULL]
   }
   # MW
   if ("MW" %in% condition) {

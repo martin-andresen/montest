@@ -118,6 +118,74 @@ shrink_te_crossfit <- function(data,
   invisible(DT)
 }
 
+# ---------------- CART validation for pool/select ----------------
+
+validate_CART_pool_select <- function(testtype, pool, select, margins) {
+  if (!identical(testtype, "CART")) return(invisible(NULL))
+
+  `%chin%` <- data.table::`%chin%`
+
+  if (is.null(pool)) pool <- character()
+  if (is.null(select)) select <- character()
+  if (is.null(margins)) margins <- character()
+
+  pool <- unique(as.character(pool))
+  select <- unique(as.character(select))
+  margins <- unique(as.character(margins))
+
+  # CART rule 1: pool may only be empty or "sample"
+  bad_pool <- setdiff(pool, "sample")
+  if (length(bad_pool) > 0L) {
+    stop(
+      "Invalid `pool` for testtype = \"CART\".\n",
+      "For CART, `pool` may only be NULL, character(0), or \"sample\".\n",
+      "Invalid pooled variables: ",
+      paste(bad_pool, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  # CART rule 2: select may only contain "sample" and margin variables
+  allowed_select <- c("sample", margins)
+  bad_select <- setdiff(select, allowed_select)
+  if (length(bad_select) > 0L) {
+    stop(
+      "Invalid `select` for testtype = \"CART\".\n",
+      "For CART, `select` may only contain \"sample\" and variables listed in `margins`.\n",
+      "Invalid selected variables: ",
+      paste(bad_select, collapse = ", "),
+      "\nAllowed selected variables are: ",
+      if (length(allowed_select) > 0L) paste(allowed_select, collapse = ", ") else "<none>",
+      call. = FALSE
+    )
+  }
+
+  # CART rule 3: no adaptive overlap between pool and select
+  overlap <- intersect(pool, select)
+  if (length(overlap) > 0L) {
+    stop(
+      "Invalid `pool`/`select` combination for testtype = \"CART\".\n",
+      "CART does not allow the same variable to appear in both `pool` and `select`.\n",
+      "Overlapping variable(s): ",
+      paste(overlap, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  # Optional warning: selecting over sample without pooling sample is allowed,
+  # but it changes interpretation relative to pool = "sample".
+  if ("sample" %chin% select && !("sample" %chin% pool)) {
+    warning(
+      "For testtype = \"CART\", `sample` is in `select` but not in `pool`. ",
+      "This is allowed: CART will select across sample parts, but test-side results ",
+      "will remain separate by held-out sample part.",
+      call. = FALSE
+    )
+  }
+
+  invisible(NULL)
+}
+
 CART_test <- function(
     data,
     sample  = "sample",
@@ -1226,28 +1294,7 @@ crossfit_hat <- function(DT,
 
     f <- f_all[idx_s]
     if (data.table::uniqueN(f) < 2L) {
-      y_s <- y_all[idx_s]
-      w_s <- if (is.null(w_all)) NULL else w_all[idx_s]
-
-      if (n < 2L) {
-        mu <- if (is.null(w_s)) mean(y_s) else stats::weighted.mean(y_s, w_s)
-        return(rep(mu, n))
-      }
-
-      y_fin <- y_s[is.finite(y_s)]
-      if (length(y_fin) == 0L) return(rep(NA_real_, n))
-      if (!any(y_fin != y_fin[1L])) return(rep(y_fin[1L], n))
-
-      fit <- do.call(
-        grf::regression_forest,
-        c(list(
-          X = X_all[rid[idx_s], , drop = FALSE],
-          Y = y_s,
-          sample.weights = w_s,
-          compute.oob.predictions = TRUE
-        ), forest_opts)
-      )
-      return(as.numeric(predict(fit)$predictions))
+      return(within_oob_idx(idx_s))
     }
 
     pos_by_fold <- split(seq_len(n), f)
@@ -1575,15 +1622,6 @@ fit_models <- function(DT,
     list(pred = p, var = vv)
   }
 
-  within_oob_idx <- function(idx_s) {
-    n <- length(idx_s)
-    if (n == 0L) {
-      return(list(pred = numeric(), var = if (shrink) numeric() else NULL))
-    }
-    fit <- build_forest_idx(forest_type, idx_s, compute.oob.predictions = TRUE)
-    predict_oob_with_optional_var(fit, n)
-  }
-
   compute_aipw_vec <- function(idx_s, tau_vec) {
     n <- length(idx_s)
     if (n == 0L) return(numeric())
@@ -1652,16 +1690,22 @@ fit_models <- function(DT,
     ) else NULL
 
     if (is.null(folds_all)) {
-      res1 <- if (length(idx1)) within_oob_idx(idx1) else {
+      res1 <- if (!is.null(fit1) && length(idx1)) {
+        predict_oob_with_optional_var(fit1, length(idx1))
+      } else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
-      res2 <- if (length(idx2)) within_oob_idx(idx2) else {
+
+      res2 <- if (!is.null(fit2) && length(idx2)) {
+        predict_oob_with_optional_var(fit2, length(idx2))
+      } else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
     } else {
       res1 <- if (length(idx1)) within_pred_idx(idx1) else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
+
       res2 <- if (length(idx2)) within_pred_idx(idx2) else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
