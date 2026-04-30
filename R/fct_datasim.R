@@ -226,12 +226,31 @@ fct_datasim <- function(
     }
   }
 
-  gamma_good_z <- cbind(0, t(apply(eta_good, 1L, cumsum)))
-  gamma_bad_z  <- cbind(0, t(apply(eta_bad,  1L, cumsum)))
+  row_cumsum_with_zero <- function(M) {
+    M <- as.matrix(M)
 
+    if (ncol(M) == 0L) {
+      return(matrix(0, nrow = nrow(M), ncol = 1L))
+    }
+
+    out <- M
+
+    if (ncol(M) >= 2L) {
+      for (kk in 2:ncol(M)) {
+        out[, kk] <- out[, kk - 1L] + M[, kk]
+      }
+    }
+
+    cbind(0, out)
+  }
+
+  gamma_good_z <- row_cumsum_with_zero(eta_good)
+  gamma_bad_z  <- row_cumsum_with_zero(eta_bad)
+
+  ## Must always be defined, even when excl_bad is NULL
   gamma_z <- gamma_good_z[cbind(seq_len(n), Z + 1L)]
 
-  if (!is.null(excl_bad)) {
+  if (!is.null(excl_bad) && any(viol)) {
     gamma_z[viol] <- gamma_bad_z[cbind(which(viol), Z[viol] + 1L)]
   }
 

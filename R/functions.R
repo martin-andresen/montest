@@ -174,7 +174,7 @@ CART_test <- function(
   stopifnot(all(svec %in% c(1L, 2L)))
 
   # ---------------- validate pool/select ----------------
-  allowed_opts <- c("dmargin", "zmargin", "ybin", "equation", "sample", "condition")
+  allowed_opts <- c("dval", "zmargin", "yval", "equation", "sample", "condition","linear")
 
   if (is.null(pool)) pool <- character()
   pool <- unique(as.character(pool))
@@ -190,8 +190,7 @@ CART_test <- function(
 
   overlap <- intersect(pool, select)
   if (length(overlap) > 0L) {
-    stop("forest_test_core() does not allow overlap between pool and select. ",
-         "Use forest_test() for adaptive overlap.")
+    stop("CART_test does not allow overlap between pool and select.")
   }
 
   bad_pool_margins <- setdiff(setdiff(pool, "sample"), margins)
