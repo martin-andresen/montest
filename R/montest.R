@@ -1132,57 +1132,97 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   has_linear_col <- "linear" %in% names(data)
 
-  # ---------------- simple / AHS: linear-D Q ----------------
+  linear_requested__ <- unique(as.character(linear))
+  if (is.null(linear_requested__) || length(linear_requested__) == 0L) {
+    linear_requested__ <- "none"
+  }
 
-  if (
-    has_linear_col &&
-    any(is_linear_condition & data[["linear"]] %in% c("D", "DZ"))
-  ) {
+  Dvals__ <- sort(unique(stats::na.omit(data[[Dname]])))
+  D_is_binary__ <- length(Dvals__) <= 2L && all(Dvals__ %in% c(0, 1))
+
+
+  # ---------------- simple / AHS: linear-D Q ----------------
+  # If there is a linear column, only rows with linear D/DZ get raw D.
+  # If there is no linear column, the whole simple/AHS block follows the requested linear argument.
+
+  linear_D_rows <- if (has_linear_col) {
+    is_linear_condition & data[["linear"]] %in% c("D", "DZ")
+  } else {
+    is_linear_condition & any(linear_requested__ %in% c("D", "DZ"))
+  }
+
+  if (any(linear_D_rows)) {
+    stopifnot(!is.null(Dname), Dname %in% names(data))
+
     data[
-      condition %in% linear_conditions & linear %in% c("D", "DZ"),
+      linear_D_rows,
       Q := as.numeric(get(Dname))
     ]
   }
 
-  # ---------------- simple / AHS: binarized Q ----------------
+
+  # ---------------- simple / AHS: binarized-D Q ----------------
+  # These are rows where Q should be 1(D >= dval).
+  # If there is no linear column and linear = "D", this is FALSE, as desired.
 
   binarized_rows <- if (has_linear_col) {
     is_linear_condition & data[["linear"]] %in% c("none", "Z")
   } else {
-    is_linear_condition
+    is_linear_condition & any(linear_requested__ %in% c("none", "Z"))
   }
 
   if (any(binarized_rows)) {
-    stopifnot(!is.null(Dbincol), Dbincol %in% names(data))
+    stopifnot(!is.null(Dname), Dname %in% names(data))
 
     data[, dval_Q__ := NA_real_]
 
     if ("dval" %in% names(data)) {
-      data[binarized_rows, dval_Q__ := as.numeric(dval)]
+      data[
+        binarized_rows,
+        dval_Q__ := as.numeric(dval)
+      ]
     }
 
-    ## If D is binary, missing dval means threshold 1 internally.
-    ## This does NOT modify the margin variable dval.
-    if (J == 2L) {
-      data[binarized_rows & is.na(dval_Q__), dval_Q__ := 1]
+    # If D is binary, missing dval means threshold 1 internally.
+    # This does NOT modify the margin variable dval.
+    if (D_is_binary__) {
+      data[
+        binarized_rows & is.na(dval_Q__),
+        dval_Q__ := 1
+      ]
     }
 
-    ## If D is not binary, missing dval is a real problem for binarized Q.
+    # If D is multivalued, missing dval is a problem only for rows that
+    # actually need binarized Q.
     if (any(is.na(data[binarized_rows, dval_Q__]))) {
+      bad <- data[
+        binarized_rows & is.na(dval_Q__),
+        .N,
+        by = intersect(
+          c("condition", "linear", "dval", "zmargin", "yval", "equation"),
+          names(data)
+        )
+      ]
+
+      print(bad)
+
       stop(
-        "dval is missing in rows that need binarized Q, and D is not binary. ",
-        "For multivalued D, the margin index must provide dval for these rows.",
+        "dval is missing in rows that need binarized Q. ",
+        "Because D is not binary, the margin index must provide dval for ",
+        "ordinary simple/AHS rows or linear='none'/'Z' rows.",
         call. = FALSE
       )
     }
 
     data[
       binarized_rows,
-      Q := as.numeric(get(Dbincol) >= dval_Q__)
+      Q := as.numeric(get(Dname) >= dval_Q__)
     ]
 
     data[, dval_Q__ := NULL]
   }
+
+  rm(Dvals__, D_is_binary__, linear_requested__)
 
   # ---------------- MW ----------------
 
@@ -1367,7 +1407,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
         msg <- paste(bad_margins[[margins]], collapse = ", ")
         message(
           "Dropping ", nrow(bad_margins),
-          " margin cell(s) because at least one sample part / condition cell has no usable variation in Q: ",
+          " margin cell(s) because at least one sample part has no usable variation in Q: ",
           msg
         )
       } else {
@@ -1376,7 +1416,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
         })
         message(
           "Dropping ", nrow(bad_margins),
-          " margin cell(s) because at least one sample part / condition cell has no usable variation in Q:\n",
+          " margin cell(s) because at least one sample part has no usable variation in Q:\n",
           paste("  -", bad_labels, collapse = "\n")
         )
       }
