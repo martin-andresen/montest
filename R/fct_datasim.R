@@ -173,6 +173,10 @@ fct_datasim <- function(
         pz[, k + 1L] <- pz[, k] + alpha_arr[, j, k]
       }
 
+      if (any(pz <= 0 | pz >= 1)) {
+        stop("Requested alpha values imply infeasible threshold probabilities.")
+      }
+
       pz <- pmin(pmax(pz, eps), 1 - eps)
 
       q <- stats::quantile(

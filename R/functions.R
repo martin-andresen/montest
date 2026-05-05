@@ -2251,6 +2251,7 @@ forest_test <- function(
 
   design_score <- function(fit, pool_eff, select_eff, design_row) {
     tr <- data.table::as.data.table(fit$results)[train == TRUE & relevant == 1L]
+    special_sample_pool <- isTRUE(fit$sample_pool_after_margin_select)
     tr_cl <- NULL
 
     if (!is.null(fit$train_cluster)) {
@@ -2410,6 +2411,12 @@ forest_test <- function(
     ## Safety: dimensions that were selected but explicitly not pooled should be separate.
     selected_not_pooled <- setdiff(intersect(select_eff, dim_cols), pool_eff)
     separate_cols <- unique(c(separate_cols, selected_not_pooled))
+
+    ## In the option-2 design, sample was requested pooled, but the valid
+    ## training-side selected objects are sample-specific.
+    if (special_sample_pool && sample_col %in% dim_cols) {
+      separate_cols <- unique(c(separate_cols, sample_col))
+    }
 
     score_by_groups(tr, separate_cols)
   }
@@ -2691,6 +2698,14 @@ forest_test_core <- function(
   pool_margins   <- intersect(pool, margins)
   select_margins <- intersect(select, margins)
 
+  ## Special valid version of pool="sample" with margin selection:
+  ## select margins separately by training sample, test separately by holdout sample,
+  ## then raw-pool only margin keys selected by both sample directions.
+  sample_pool_after_margin_select <-
+    pool_sample &&
+    length(select_margins) > 0L &&
+    !select_sample
+
   pool_before_margins       <- setdiff(pool_margins, select_margins)
   pool_after_select_margins <- intersect(pool_margins, select_margins)
   separate_select_margins   <- setdiff(select_margins, pool_margins)
@@ -2701,7 +2716,7 @@ forest_test_core <- function(
   test_by <- unique(c(
     adjust_cols,
     separate_select_margins,
-    if (!pool_sample) sample_col else character()
+    if (!pool_sample || sample_pool_after_margin_select) sample_col else character()
   ))
 
   do_shares <- (length(pool_margins) > 0L)
@@ -3187,7 +3202,9 @@ forest_test_core <- function(
   has_selection <- (length(select_margins) > 0L) || select_sample
 
   if (has_selection) {
+
     if (length(pool_after_select_margins) > 0L) {
+
       cand_by <- unique(c(
         adjust_cols,
         if (!pool_sample) sample_col else character(),
@@ -3218,39 +3235,6 @@ forest_test_core <- function(
 
       id_by <- cand_by
 
-      select_pooled_prefix <- function(cand_grp) {
-        ok <- is.finite(cand_grp$sel_t)
-        if (!any(ok)) return(cand_grp[0])
-
-        d <- data.table::copy(cand_grp[ok])
-        data.table::setorderv(d, "sel_t")
-
-        if (screen == "none") return(d)
-        if (screen == "minimum") return(d[1L])
-
-        best_r <- 1L
-        best_p <- Inf
-
-        for (r in seq_len(nrow(d))) {
-          ids_r <- d[seq_len(r), .SD, .SDcols = id_by]
-          rows_r <- merge(
-            train_all,
-            unique(ids_r),
-            by = id_by,
-            all = FALSE,
-            sort = FALSE
-          )
-
-          pp <- pooled_p_from_rows(rows_r)
-          if (is.finite(pp) && pp < best_p) {
-            best_p <- pp
-            best_r <- r
-          }
-        }
-
-        d[seq_len(best_r)]
-      }
-
       keep_ids <- select_keep_ids(
         cand = cand,
         choose_by = choose_by,
@@ -3266,16 +3250,28 @@ forest_test_core <- function(
         sort = FALSE
       )
 
-    } else if (pool_sample && length(select_margins) > 0L && !select_sample) {
-      cand_by <- unique(c(adjust_cols, select_margins, "cell_id"))
+    } else if (sample_pool_after_margin_select) {
+
+      ## Do NOT select margins using sample-pooled training statistics.
+      ## Select separately by training sample.
+      cand_by <- unique(c(
+        adjust_cols,
+        sample_col,
+        select_margins,
+        "cell_id"
+      ))
 
       cand <- train_all[
         ,
-        .(sel_t = pooled_t_from_rows(.SD)),
+        .(sel_t = mean(t, na.rm = TRUE)),
         by = cand_by
       ]
 
-      choose_by <- adjust_cols
+      choose_by <- unique(c(
+        adjust_cols,
+        sample_col
+      ))
+
       id_by <- cand_by
 
       keep_ids <- select_keep_ids(
@@ -3294,19 +3290,37 @@ forest_test_core <- function(
       )
 
     } else {
-      agg_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
 
-      cand <- train_all[, .(sel_t = mean(t, na.rm = TRUE)), by = agg_by]
+      agg_by <- unique(c(
+        adjust_cols,
+        sample_col,
+        select_margins,
+        "cell_id"
+      ))
+
+      cand <- train_all[
+        ,
+        .(sel_t = mean(t, na.rm = TRUE)),
+        by = agg_by
+      ]
 
       choose_by <- c(
         adjust_cols,
         if (!select_sample && !pool_sample) sample_col else character()
       )
 
-      id_by <- unique(c(adjust_cols, sample_col, select_margins, "cell_id"))
+      id_by <- unique(c(
+        adjust_cols,
+        sample_col,
+        select_margins,
+        "cell_id"
+      ))
 
       if (length(choose_by) == 0L) {
-        keep_ids <- select_groups_screen(cand, alpha = alpha)[, .SD, .SDcols = id_by]
+        keep_ids <- select_groups_screen(
+          cand,
+          alpha = alpha
+        )[, .SD, .SDcols = id_by]
       } else {
         keep_ids <- cand[
           ,
@@ -3325,7 +3339,9 @@ forest_test_core <- function(
     }
   }
 
-  sample_design <- if (pool_sample) {
+  sample_design <- if (sample_pool_after_margin_select) {
+    "pooled_matching_after_sample_specific_margin_selection"
+  } else if (pool_sample) {
     "pooled"
   } else if (select_sample) {
     "selected_then_separate"
@@ -3367,13 +3383,30 @@ forest_test_core <- function(
     key_cols <- intersect(
       unique(c(
         adjust_cols,
-        if (!pool_sample) sample_col else character(),
+        if (!pool_sample || sample_pool_after_margin_select) sample_col else character(),
         separate_select_margins
       )),
       names(selected_train)
     )
 
     selected_test_keys <- unique(selected_train[, .SD, .SDcols = key_cols])
+
+    ## In the special mode, selected_train$sample is the training sample.
+    ## The final test row lives in the opposite holdout sample.
+    if (
+      sample_pool_after_margin_select &&
+      sample_col %in% names(selected_test_keys)
+    ) {
+      selected_test_keys[
+        ,
+        (sample_col) := data.table::fifelse(
+          get(sample_col) == 1L,
+          2L,
+          1L
+        )
+      ]
+    }
+
   } else {
     selected_test_keys <- NULL
   }
@@ -3390,6 +3423,8 @@ forest_test_core <- function(
 
   dt_test <- dt_test[in_test]
 
+  ## First build the valid final tests.
+  ## In sample_pool_after_margin_select mode this is intentionally sample-specific.
   if (length(test_by) == 0L) {
     o <- crv1_mean(dt_test$score, dt_test$w, dt_test$cl)
 
@@ -3407,7 +3442,9 @@ forest_test_core <- function(
     )
 
     if (!is.null(selected_test_keys) && nrow(selected_test_keys) == 1L) {
-      for (cc in separate_select_margins) test_out[, (cc) := selected_test_keys[[cc]][1L]]
+      for (cc in separate_select_margins) {
+        test_out[, (cc) := selected_test_keys[[cc]][1L]]
+      }
     } else if (length(separate_select_margins) > 0L) {
       for (cc in separate_select_margins) test_out[, (cc) := NA]
     }
@@ -3428,18 +3465,26 @@ forest_test_core <- function(
       )
     }, by = test_by]
 
-    if (!(sample_col %in% names(test_out))) test_out[, (sample_col) := NA_integer_]
+    if (!(sample_col %in% names(test_out))) {
+      test_out[, (sample_col) := NA_integer_]
+    }
 
     if (!is.null(selected_test_keys)) {
       merge_by <- intersect(
-        unique(c(adjust_cols, sample_col, separate_select_margins)),
+        unique(c(
+          adjust_cols,
+          if (!pool_sample || sample_pool_after_margin_select) sample_col else character(),
+          separate_select_margins
+        )),
         names(test_out)
       )
       merge_by <- intersect(merge_by, names(selected_test_keys))
 
       if (length(merge_by) == 0L) {
         if (nrow(selected_test_keys) == 1L) {
-          for (cc in separate_select_margins) test_out[, (cc) := selected_test_keys[[cc]][1L]]
+          for (cc in separate_select_margins) {
+            test_out[, (cc) := selected_test_keys[[cc]][1L]]
+          }
         } else {
           for (cc in separate_select_margins) test_out[, (cc) := NA]
         }
@@ -3454,6 +3499,77 @@ forest_test_core <- function(
           sort = FALSE
         )
       }
+    }
+  }
+
+  ## Now implement option 2:
+  ## if both holdout sample directions selected the same non-sample key,
+  ## raw-pool those observations; otherwise keep sample-specific rows.
+  if (sample_pool_after_margin_select) {
+    pool_key <- setdiff(test_by, sample_col)
+    pool_key <- intersect(pool_key, names(test_out))
+
+    if (length(pool_key) > 0L) {
+      common_keys <- test_out[
+        ,
+        .(n_sample = data.table::uniqueN(get(sample_col))),
+        by = pool_key
+      ][
+        n_sample == 2L,
+        .SD,
+        .SDcols = pool_key
+      ]
+
+      if (nrow(common_keys) > 0L) {
+        dt_common <- merge(
+          dt_test,
+          common_keys,
+          by = pool_key,
+          all = FALSE,
+          sort = FALSE
+        )
+
+        test_out_pool <- dt_common[, {
+          o <- crv1_mean(score, w, cl)
+          data.table::data.table(
+            train = FALSE,
+            relevant = 1L,
+            G = o$G,
+            N = o$N,
+            coef = o$coef,
+            stderr = o$se,
+            t = o$t,
+            tau_cutoff = NA_real_,
+            p.raw = stats::pnorm(o$t)
+          )
+        }, by = pool_key]
+
+        test_out_pool[, (sample_col) := NA_integer_]
+        test_out_pool[, sample_pool_status := "pooled_matching"]
+
+        test_out_single <- test_out[
+          !common_keys,
+          on = pool_key
+        ]
+
+        if (nrow(test_out_single) > 0L) {
+          test_out_single[, sample_pool_status := "separate_unmatched"]
+        }
+
+        test_out <- data.table::rbindlist(
+          list(test_out_pool, test_out_single),
+          use.names = TRUE,
+          fill = TRUE
+        )
+
+      } else {
+        test_out[, sample_pool_status := "separate_unmatched"]
+      }
+
+    } else {
+      ## Degenerate case: no non-sample key.
+      ## There is nothing meaningful to selectively match on.
+      test_out[, sample_pool_status := "separate_unmatched"]
     }
   }
 
@@ -3517,7 +3633,7 @@ forest_test_core <- function(
     denom_by <- c(
       adjust_cols,
       separate_select_margins,
-      if (!pool_sample) sample_col else character()
+      if (!pool_sample || sample_pool_after_margin_select) sample_col else character()
     )
 
     denom_by <- intersect(denom_by, names(data))
@@ -3581,7 +3697,7 @@ forest_test_core <- function(
     Xmeans_all = Xmeans_all,
     XSD = XSD,
     sample_design = sample_design,
-    train_cluster = train_cluster_all
+    sample_pool_after_margin_select = sample_pool_after_margin_select,
   )
 
   if (!is.null(shares)) out$shares <- shares

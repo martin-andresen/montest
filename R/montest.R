@@ -473,7 +473,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   ##OUTER SPLIT
   if (is.null(stratify)==TRUE) {
     if (is.null(cluster)==TRUE&Zsubsets>0) strat=Z else strat=NULL
-  }
+  } else strat=NULL
   make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=strat)
 
   ##OPTIONAL INNER SPLIT
