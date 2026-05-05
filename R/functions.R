@@ -3697,7 +3697,7 @@ forest_test_core <- function(
     Xmeans_all = Xmeans_all,
     XSD = XSD,
     sample_design = sample_design,
-    sample_pool_after_margin_select = sample_pool_after_margin_select,
+    sample_pool_after_margin_select = sample_pool_after_margin_select
   )
 
   if (!is.null(shares)) out$shares <- shares
