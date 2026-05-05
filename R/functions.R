@@ -194,7 +194,6 @@ CART_test <- function(
     margins = NULL,
     weight  = NULL,
     cluster = NULL,
-    pool    = NULL,
     select  = NULL,
     cp = 0.0,
     maxrankcp = 10L,
@@ -241,55 +240,32 @@ CART_test <- function(
   svec <- as.integer(data[[sample_col]])
   stopifnot(all(svec %in% c(1L, 2L)))
 
-  # ---------------- validate pool/select ----------------
-
-  if (is.null(pool)) pool <- character()
-  pool <- unique(as.character(pool))
-
-  # New rule: pool may only contain "sample"
-  bad_pool <- setdiff(pool, "sample")
-  if (length(bad_pool) > 0L) {
-    stop(
-      "`pool` may only contain \"sample\" in CART_test. Invalid entries: ",
-      paste(bad_pool, collapse = ", ")
-    )
-  }
+  # ---------------- validate select ----------------
 
   if (is.null(select)) select <- character()
   select <- unique(as.character(select))
 
-  # New rule: select may contain "sample" and/or any variable listed in margins
-  allowed_select <- c("sample", margins)
+  allowed_select <- c(sample_col, margins)
 
   bad_select <- setdiff(select, allowed_select)
   if (length(bad_select) > 0L) {
     stop(
-      "`select` may only contain \"sample\" and variables in `margins`. Invalid entries: ",
+      "`select` may only contain the sample column and variables in `margins`. Invalid entries: ",
       paste(bad_select, collapse = ", ")
     )
   }
 
-  # No adaptivity: sample cannot be both pooled and selected over
-  overlap <- intersect(pool, select)
-  if (length(overlap) > 0L) {
-    stop(
-      "CART_test does not allow overlap between `pool` and `select`: ",
-      paste(overlap, collapse = ", ")
-    )
-  }
-
-  pool_sample   <- "sample" %chin% pool
-  select_sample <- "sample" %chin% select
-
-  pool_margins   <- character()  # by construction, margins can no longer be pooled
+  select_sample <- sample_col %chin% select
   select_margins <- intersect(select, margins)
 
-  # margins kept separate when defining fit-groups
-  # Since margins cannot be pooled, every margin remains a separate tree-fit cell.
+  # CART_test does not pool across sample halves.
+  pool_sample <- FALSE
+  pool_margins <- character()
+
+  # Margins are always fit separately. There is no margin pooling in CART_test.
   sep_margins <- margins
 
-  # after selection, these define distinct testing strata
-  # margins in select_margins are selected over, so they are not kept as final strata
+  # Margins selected over are not final reporting strata.
   final_keep_margins <- setdiff(margins, select_margins)
 
   # ---------------- helpers ----------------
@@ -529,24 +505,15 @@ CART_test <- function(
 
     dt
   }
-  build_tree_design <- function(df, pooled_cols) {
-    if (length(pooled_cols) == 0L) {
-      X <- as.data.frame(df[, ..x_names])
-      return(X)
-    }
-    X0 <- as.data.frame(df[, ..x_names])
-    P0 <- as.data.frame(df[, ..pooled_cols])
-    for (cc in names(P0)) P0[[cc]] <- factor(P0[[cc]])
-    MM <- stats::model.matrix(~ . - 1, data = P0)
-    X <- cbind(X0, as.data.frame(MM))
-    X
+  build_tree_design <- function(df) {
+    as.data.frame(df[, ..x_names])
   }
 
   fit_one_tree_group <- function(df_group, train_sample) {
     dtr <- df_group[df_group[[sample_col]] == train_sample]
     if (nrow(dtr) < 2L) return(NULL)
 
-    Xtr <- build_tree_design(dtr, pool_margins)
+    Xtr <- build_tree_design(dtr)
     df_tr <- data.frame(.y = as.numeric(dtr[[scores_col]]), Xtr, check.names = FALSE)
     w_tr <- if (!is.null(weight_col)) as.numeric(dtr[[weight_col]]) else NULL
 
@@ -578,7 +545,7 @@ CART_test <- function(
       }
     }
 
-    Xall <- build_tree_design(df_group, pool_margins)
+    Xall <- build_tree_design(df_group)
     leaf_all <- as.integer(rpart:::pred.rpart(tree, as.matrix(Xall)))
     list(tree = tree, leaf_all = leaf_all)
   }
@@ -849,14 +816,12 @@ CART_test <- function(
             job_dt[, (paste0(".pool_", cc)) := val]
           }
 
-          # Leaf should remain identified even when pooling over sample.
-          # pool = "sample" pools the two estimation samples, not different selected leaves.
-          job_dt[, .pool_leaf := as.integer(lf)]
+          # Leaf IDs are only meaningful within a fitted tree and training direction.
+          # Never pool numeric leaf IDs across different trees.
+          job_dt[, .pool_leaf := paste(g, train_s, as.integer(lf), sep = "_")]
 
-          # Only keep estimation sample as a pooling key when sample is NOT pooled.
-          if (!pool_sample) {
-            job_dt[, .pool_est_s := obj$est_s]
-          }
+          # CART_test never pools across sample halves.
+          job_dt[, .pool_est_s := obj$est_s]
 
           test_jobs[[tj_k <- tj_k + 1L]] <- job_dt
         }
@@ -868,7 +833,7 @@ CART_test <- function(
 
   jobs_dt <- data.table::rbindlist(test_jobs, use.names = TRUE, fill = TRUE)
 
-  # ---------------- collapse testing jobs according to pooling ----------------
+  # ---------------- collapse testing jobs by selected tree/leaf/sample direction ----------------
   pool_cols <- grep("^\\.pool_", names(jobs_dt), value = TRUE)
 
   # ---------------- testing: one test per pooled job-group ----------------
@@ -933,9 +898,8 @@ CART_test <- function(
     rr <- data.table::data.table(
       train = FALSE,
 
-      # If pool = "sample", the test row pools across estimation samples,
-      # so sample is intentionally NA. Otherwise it should be identified.
-      sample = if (!pool_sample && length(sample_here) == 1L) {
+      # CART_test keeps estimation sample directions separate.
+      sample = if (length(sample_here) == 1L) {
         as.integer(sample_here)
       } else {
         NA_integer_

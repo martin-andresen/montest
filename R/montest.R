@@ -409,14 +409,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     pool <- unique(as.character(pool))
     select <- unique(as.character(select))
 
-    bad_pool <- setdiff(pool, "sample")
-    if (length(bad_pool) > 0L) {
+    if (length(pool) > 0L) {
       stop(
-        "Invalid `pool` for testtype = \"CART\". ",
-        "For CART, `pool` may only be NULL, character(0), or \"sample\". ",
-        "Invalid entries: ",
-        paste(bad_pool, collapse = ", "),
-        call. = FALSE
+        "Pooling margins/sample incompatible with testtype = \"CART\". "
       )
     }
 
