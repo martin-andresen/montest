@@ -483,15 +483,17 @@ CART_test <- function(
       ))
     }
 
+    # Farb- / FGK-style screen:
+    # unlike the other CART screens, this is a one-tier local screen.
+    # It keeps all locally non-significantly-positive leaves from each fitted tree,
+    # rather than choosing the single most promising tree/sample direction.
     if (screen == "fgk_relevant") {
-      j <- which.min(dtf$t)
-      bf <- as.integer(dtf$fit_id[j])
-      bt <- as.integer(dtf$train_s[j])
-      return(data.table::data.table(
-        best_fit_id = bf,
-        best_train_s = bt,
-        sel_leaves = list(as.integer(dtf[fit_id == bf & train_s == bt, leaf]))
-      ))
+      return(dtf[, .(
+        sel_leaves = list(as.integer(leaf))
+      ), by = .(
+        best_fit_id = fit_id,
+        best_train_s = train_s
+      )])
     }
 
     j <- which.min(dtf$t)
@@ -2249,9 +2251,15 @@ forest_test <- function(
 
   design_score <- function(fit, pool_eff, select_eff, design_row) {
     tr <- data.table::as.data.table(fit$results)[train == TRUE & relevant == 1L]
+    tr_cl <- NULL
+
+    if (!is.null(fit$train_cluster)) {
+      tr_cl <- data.table::as.data.table(fit$train_cluster)[relevant == 1L]
+    }
+
     if (nrow(tr) == 0L) return(Inf)
 
-    pooled_train_p <- function(dt) {
+    pooled_train_p_independent <- function(dt) {
       ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
       if (!any(ok)) return(Inf)
 
@@ -2267,16 +2275,103 @@ forest_test <- function(
       stats::pnorm(t_pool)
     }
 
+    pooled_train_p_cluster <- function(comp) {
+      if (is.null(comp) || nrow(comp) == 0L) return(Inf)
+
+      totals <- comp[
+        ,
+        .(
+          U_m = sum(U_gm),
+          W_m = sum(W_gm)
+        ),
+        by = train_row_id
+      ]
+
+      totals <- totals[is.finite(W_m) & W_m > 0]
+      if (nrow(totals) == 0L) return(Inf)
+
+      totals[, theta := U_m / W_m]
+
+      comp <- merge(
+        comp,
+        totals[, .(train_row_id, theta, W_m)],
+        by = "train_row_id",
+        all = FALSE,
+        sort = FALSE
+      )
+
+      comp[, psi := (U_gm - theta * W_gm) / W_m]
+
+      hyp_ids <- sort(unique(comp$train_row_id))
+      cl_ids  <- sort(unique(comp$cl))
+
+      M <- length(hyp_ids)
+      G <- length(cl_ids)
+
+      if (M == 0L || G < 2L) return(Inf)
+
+      hyp_pos <- match(comp$train_row_id, hyp_ids)
+      cl_pos  <- match(comp$cl, cl_ids)
+
+      Psi <- matrix(0, nrow = G, ncol = M)
+      Psi[cbind(cl_pos, hyp_pos)] <- comp$psi
+
+      V <- (G / pmax.int(G - 1L, 1L)) * crossprod(Psi)
+
+      theta <- totals[match(hyp_ids, train_row_id), theta]
+
+      ok <- is.finite(theta) & is.finite(diag(V)) & diag(V) > 0
+      if (!any(ok)) return(Inf)
+
+      theta <- theta[ok]
+      V <- V[ok, ok, drop = FALSE]
+
+      if (length(theta) == 1L) {
+        a <- 1
+      } else {
+        a <- 1 / diag(V)
+        a <- a / sum(a)
+      }
+
+      theta_pool <- sum(a * theta)
+      se_pool <- sqrt(as.numeric(t(a) %*% V %*% a))
+
+      if (!is.finite(se_pool) || se_pool <= 0) return(Inf)
+
+      stats::pnorm(theta_pool / se_pool)
+    }
+
     score_by_groups <- function(dt, separate_cols) {
       separate_cols <- intersect(separate_cols, names(dt))
 
+      ## Prefer cluster-aware scoring if train_cluster is available.
+      if (!is.null(tr_cl) && nrow(tr_cl) > 0L) {
+        separate_cols_cl <- intersect(separate_cols, names(tr_cl))
+
+        if (length(separate_cols_cl) == 0L) {
+          return(pooled_train_p_cluster(tr_cl))
+        }
+
+        pp <- tr_cl[
+          ,
+          .(p_pool = pooled_train_p_cluster(.SD)),
+          by = separate_cols_cl
+        ]$p_pool
+
+        pp <- pp[is.finite(pp)]
+        if (!length(pp)) return(Inf)
+
+        return(min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE))
+      }
+
+      ## Fallback to old independent-IVW scoring.
       if (length(separate_cols) == 0L) {
-        return(pooled_train_p(dt))
+        return(pooled_train_p_independent(dt))
       }
 
       pp <- dt[
         ,
-        .(p_pool = pooled_train_p(.SD)),
+        .(p_pool = pooled_train_p_independent(.SD)),
         by = separate_cols
       ]$p_pool
 
@@ -2877,22 +2972,68 @@ forest_test_core <- function(
       p.raw = stats::pnorm(res$t_stat)
     )
 
+    ## Cluster-level contributions for covariance-aware pooling of train-side
+    ## selected/pooled estimates. One row per cell/sample/cluster.
+    train_cl <- NULL
+
+    if (nrow(res) > 0L) {
+      train_cl <- data.table::rbindlist(lapply(seq_len(nrow(res)), function(rr) {
+        ss <- res$sample[rr]
+        cc <- res$pred[rr]
+
+        dt[
+          sample == ss & pred <= cc,
+          .(
+            U_gm = sum(w * score),
+            W_gm = sum(w)
+          ),
+          by = cl
+        ][
+          ,
+          `:=`(
+            cell_id = cell_id,
+            sample = ss
+          )
+        ]
+      }), use.names = TRUE, fill = TRUE)
+
+      if (!is.null(train_cl) && nrow(train_cl) > 0L) {
+        data.table::setcolorder(train_cl, c("cell_id", "sample", "cl", "U_gm", "W_gm"))
+
+        if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+          for (cc in names(key_dt)) train_cl[, (cc) := key_dt[[cc]][1]]
+          data.table::setcolorder(
+            train_cl,
+            c("cell_id", names(key_dt), "sample", "cl", "U_gm", "W_gm")
+          )
+        }
+      }
+    }
+
     if (!is.null(key_dt) && ncol(key_dt) > 0L) {
       for (cc in names(key_dt)) train_out[, (cc) := key_dt[[cc]][1]]
       data.table::setcolorder(train_out, c("cell_id", names(key_dt), "train", "relevant", "sample"))
     }
 
-    list(train = train_out, grid = grid_out, idx_test = idx_test_by_sample)
+    list(
+      train = train_out,
+      train_cl = train_cl,
+      grid = grid_out,
+      idx_test = idx_test_by_sample
+    )
   }
 
   n_cells <- length(idx_list)
+
   train_list <- vector("list", n_cells)
+  train_cl_list <- vector("list", n_cells)
   grid_list  <- if (store_grid) vector("list", n_cells) else NULL
   idx_test_list <- vector("list", n_cells)
 
   for (g in seq_len(n_cells)) {
     ans <- run_one_cell_idx(idx_list[[g]], keys_list[[g]], cell_id = g)
     train_list[[g]] <- ans$train
+    train_cl_list[[g]] <- ans$train_cl
     idx_test_list[[g]] <- ans$idx_test
     if (store_grid) grid_list[[g]] <- ans$grid
 
@@ -2904,13 +3045,114 @@ forest_test_core <- function(
   train_all <- data.table::rbindlist(train_list, use.names = TRUE, fill = TRUE)
   train_all[, train_row_id := .I]
 
+  train_cluster_all <- data.table::rbindlist(
+    train_cl_list,
+    use.names = TRUE,
+    fill = TRUE
+  )
+
+  if (!is.null(train_cluster_all) && nrow(train_cluster_all) > 0L) {
+    train_cluster_all <- merge(
+      train_cluster_all,
+      train_all[, .(cell_id, sample, train_row_id)],
+      by = c("cell_id", "sample"),
+      all.x = TRUE,
+      sort = FALSE
+    )
+  }
+
   grid_out <- if (store_grid) {
     data.table::rbindlist(grid_list, use.names = TRUE, fill = TRUE)
   } else {
     NULL
   }
 
-  pooled_t_from_rows <- function(dt) {
+  cluster_ivw_t_from_train_rows <- function(dt_rows) {
+    if (
+      is.null(train_cluster_all) ||
+      nrow(train_cluster_all) == 0L ||
+      !"train_row_id" %in% names(dt_rows)
+    ) {
+      return(NA_real_)
+    }
+
+    row_ids <- unique(dt_rows$train_row_id)
+    row_ids <- row_ids[is.finite(row_ids)]
+
+    if (!length(row_ids)) return(NA_real_)
+
+    comp <- train_cluster_all[train_row_id %in% row_ids]
+
+    if (nrow(comp) == 0L) return(NA_real_)
+
+    totals <- comp[
+      ,
+      .(
+        U_m = sum(U_gm),
+        W_m = sum(W_gm)
+      ),
+      by = train_row_id
+    ]
+
+    totals <- totals[is.finite(W_m) & W_m > 0]
+    if (nrow(totals) == 0L) return(NA_real_)
+
+    totals[, theta := U_m / W_m]
+
+    comp <- merge(
+      comp,
+      totals[, .(train_row_id, theta, W_m)],
+      by = "train_row_id",
+      all = FALSE,
+      sort = FALSE
+    )
+
+    comp[, psi := (U_gm - theta * W_gm) / W_m]
+
+    hyp_ids <- sort(unique(comp$train_row_id))
+    cl_ids  <- sort(unique(comp$cl))
+
+    M <- length(hyp_ids)
+    G <- length(cl_ids)
+
+    if (M == 0L || G < 2L) return(NA_real_)
+
+    hyp_pos <- match(comp$train_row_id, hyp_ids)
+    cl_pos  <- match(comp$cl, cl_ids)
+
+    Psi <- matrix(0, nrow = G, ncol = M)
+    Psi[cbind(cl_pos, hyp_pos)] <- comp$psi
+
+    V <- (G / pmax.int(G - 1L, 1L)) * crossprod(Psi)
+
+    theta <- totals[match(hyp_ids, train_row_id), theta]
+
+    ok <- is.finite(theta) & is.finite(diag(V)) & diag(V) > 0
+    if (!any(ok)) return(NA_real_)
+
+    theta <- theta[ok]
+    V <- V[ok, ok, drop = FALSE]
+
+    M <- length(theta)
+
+    if (M == 1L) {
+      a <- 1
+    } else {
+      ## Keep inverse-variance weights, but compute the SE using the full
+      ## cluster covariance matrix.
+      a <- 1 / diag(V)
+      a <- a / sum(a)
+    }
+
+    theta_pool <- sum(a * theta)
+    se_pool <- sqrt(as.numeric(t(a) %*% V %*% a))
+
+    if (!is.finite(se_pool) || se_pool <= 0) return(NA_real_)
+
+    theta_pool / se_pool
+  }
+
+  pooled_t_from_rows_independent <- function(dt) {
     ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
     if (!any(ok)) return(NA_real_)
 
@@ -2922,6 +3164,17 @@ forest_test_core <- function(
     se_pool <- sqrt(1 / sum(ivar))
 
     theta_pool / se_pool
+  }
+
+  pooled_t_from_rows <- function(dt) {
+    ## Use cluster-aware pooling whenever train_row_id is available.
+    ## This is especially important when pooling overlapping margins.
+    tt <- cluster_ivw_t_from_train_rows(dt)
+
+    if (is.finite(tt)) return(tt)
+
+    ## Fallback for cases without cluster contribution data.
+    pooled_t_from_rows_independent(dt)
   }
 
   pooled_p_from_rows <- function(dt) {
@@ -3082,6 +3335,14 @@ forest_test_core <- function(
 
   train_out <- data.table::copy(train_all)
   train_out[train_row_id %in% selected_train$train_row_id, relevant := 1L]
+
+  if (!is.null(train_cluster_all) && nrow(train_cluster_all) > 0L) {
+    train_cluster_all[
+      ,
+      relevant := as.integer(train_row_id %in% selected_train$train_row_id)
+    ]
+  }
+
   train_out[, c("cell_id", "train_row_id") := NULL]
 
   idx_test_all <- integer()
@@ -3104,10 +3365,17 @@ forest_test_core <- function(
 
   if (length(separate_select_margins) > 0L) {
     key_cols <- intersect(
-      unique(c(adjust_cols, sample_col, separate_select_margins)),
+      unique(c(
+        adjust_cols,
+        if (!pool_sample) sample_col else character(),
+        separate_select_margins
+      )),
       names(selected_train)
     )
+
     selected_test_keys <- unique(selected_train[, .SD, .SDcols = key_cols])
+  } else {
+    selected_test_keys <- NULL
   }
 
   dt_test <- data.table::data.table(
@@ -3312,7 +3580,8 @@ forest_test_core <- function(
     Xmeans = Xmeans,
     Xmeans_all = Xmeans_all,
     XSD = XSD,
-    sample_design = sample_design
+    sample_design = sample_design,
+    train_cluster = train_cluster_all
   )
 
   if (!is.null(shares)) out$shares <- shares
