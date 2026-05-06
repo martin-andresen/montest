@@ -3278,16 +3278,12 @@ forest_test_core <- function(
         }, by = pool_key]
 
         test_out_pool[, (sample_col) := NA_integer_]
-        test_out_pool[, sample_pool_status := "pooled_matching"]
+
 
         test_out_single <- test_out[
           !common_keys,
           on = pool_key
         ]
-
-        if (nrow(test_out_single) > 0L) {
-          test_out_single[, sample_pool_status := "separate_unmatched"]
-        }
 
         test_out <- data.table::rbindlist(
           list(test_out_pool, test_out_single),
@@ -3295,8 +3291,6 @@ forest_test_core <- function(
           fill = TRUE
         )
 
-      } else {
-        test_out[, sample_pool_status := "separate_unmatched"]
       }
 
     } else {
