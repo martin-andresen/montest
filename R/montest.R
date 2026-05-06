@@ -223,6 +223,9 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   if (Ysubsets<=1|is.integer(Ysubsets)==FALSE) stop("Ysubsets must be an integers larger than 1. Use #L for integer.")
   if (Dsubsets<2|is.integer(Dsubsets)==FALSE) stop("Dsubsets must be an integer larger than 1. Use #L for integer.")
   if (Zsubsets<2|is.integer(Zsubsets)==FALSE) stop("Zsubsets must be an integer larger than 1. Use #L for integer.")
+
+
+  ##VALIDATE POOL/SELECT
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
   else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample","linear")
   else if (sum(pool=="none")==1) pool=c()
@@ -234,6 +237,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   else if (sum(select=="none")==1) select=c()
   else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample","linear"),several.ok=TRUE)
   else select="condition"
+
+  if ("sample" %in% intersect(pool,select)) {
+    stop("Sample cannot appear in both pool and select. Adaptive selection or pooling across sample halves might invalidate sample splitting.")
+  }
 
   if (sum(sum(grepl("Z.hat",colnames(data))))) stop("Variable name beginning with Z.hat discovered, reserved for internal use. Please rename.")
   if (sum(sum(grepl("D.hat",colnames(data))))) stop("Variable name beginning with D.hat discovered, reserved for internal use. Please rename.")

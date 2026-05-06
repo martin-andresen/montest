@@ -2213,128 +2213,21 @@ forest_test <- function(
 
   adaptive_dims <- intersect(pool, select)
 
+  if (sample_col %in% adaptive_dims) {
+    stop(
+      "`sample` cannot appear in both `pool` and `select`.\n",
+      "This would adaptively choose between sample-pooled and sample-separated ",
+      "testing using both sample halves. Put `sample` in either `pool` or `select`, ",
+      "but not both."
+    )
+  }
+
   design_score <- function(fit, pool_eff, select_eff, design_row) {
     tr <- data.table::as.data.table(fit$results)[train == TRUE & relevant == 1L]
 
     if (nrow(tr) == 0L) return(Inf)
+    if (!("p.raw" %in% names(tr))) return(Inf)
 
-    dim_cols <- intersect(unique(c(margins, sample_col)), names(tr))
-
-    adaptive_sample_pool <-
-      sample_col %in% names(design_row) &&
-      as.character(design_row[[sample_col]]) == "selected_then_pooled"
-
-    adaptive_sample_separate <-
-      sample_col %in% names(design_row) &&
-      as.character(design_row[[sample_col]]) == "selected_then_separate"
-
-    ## Non-sample adaptive dimensions are scored exactly as they appear in the
-    ## clean effective design returned by forest_test_core():
-    ## - pooled_before_search has already removed the margin from the core grouping;
-    ##
-    ## Therefore no IVW is needed for non-sample margins.
-    non_sample_dims <- setdiff(dim_cols, sample_col)
-
-    if (adaptive_sample_pool) {
-
-      group_cols <- intersect(
-        setdiff(non_sample_dims, pool_eff),
-        names(tr)
-      )
-
-      pooled_p_independent <- function(dt) {
-        ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
-        if (!any(ok)) return(Inf)
-
-        theta <- dt$coef[ok]
-        se <- dt$stderr[ok]
-
-        ivar <- 1 / se^2
-        theta_pool <- sum(ivar * theta) / sum(ivar)
-        se_pool <- sqrt(1 / sum(ivar))
-
-        if (!is.finite(se_pool) || se_pool <= 0) return(Inf)
-
-        stats::pnorm(theta_pool / se_pool)
-      }
-
-      ## No non-sample key remains separate: ordinary sample-pooled score.
-      if (length(group_cols) == 0L) {
-        pp <- pooled_p_independent(tr)
-        if (!is.finite(pp)) return(Inf)
-        return(pp)
-      }
-
-      ## Count how many sample directions selected each non-sample key.
-      key_status <- tr[
-        ,
-        .(n_sample = data.table::uniqueN(get(sample_col))),
-        by = group_cols
-      ]
-
-      common_keys <- key_status[
-        n_sample == 2L,
-        .SD,
-        .SDcols = group_cols
-      ]
-
-      single_keys <- key_status[
-        n_sample == 1L,
-        .SD,
-        .SDcols = group_cols
-      ]
-
-      pp_list <- list()
-
-      ## For keys selected in both sample directions, score by IVW-pooled
-      ## training p-value across sample halves.
-      if (nrow(common_keys) > 0L) {
-        tr_common <- merge(
-          tr,
-          common_keys,
-          by = group_cols,
-          all = FALSE,
-          sort = FALSE
-        )
-
-        pp_common <- tr_common[
-          ,
-          .(p = pooled_p_independent(.SD)),
-          by = group_cols
-        ]$p
-
-        pp_list[[length(pp_list) + 1L]] <- pp_common
-      }
-
-      ## For keys selected in only one sample direction, keep them separate.
-      ## Score by their ordinary training p-values.
-      if (nrow(single_keys) > 0L) {
-        tr_single <- merge(
-          tr,
-          single_keys,
-          by = group_cols,
-          all = FALSE,
-          sort = FALSE
-        )
-
-        pp_single <- tr_single$p.raw
-
-        pp_list[[length(pp_list) + 1L]] <- pp_single
-      }
-
-      pp <- unlist(pp_list, use.names = FALSE)
-      pp <- pp[is.finite(pp)]
-
-      if (!length(pp)) return(Inf)
-
-      return(min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE))
-    }
-
-    ## Sample-separated mode, and all non-sample adaptive designs:
-    ## score by ordinary training-side p-values, multiplicity adjusted over
-    ## the train rows produced by that valid design.
-    ##
-    ## This deliberately uses no IVW across sample halves.
     pp <- tr$p.raw
     pp <- pp[is.finite(pp)]
 
@@ -2377,14 +2270,10 @@ forest_test <- function(
   select_base <- setdiff(select, adaptive_dims)
 
   design_opts_by_dim <- lapply(adaptive_dims, function(dd) {
-    if (dd == sample_col) {
-      c("selected_then_pooled", "selected_then_separate")
-    } else {
       c(
         "pooled_before_search",
         "selected_then_separate"
       )
-    }
   })
 
   names(design_opts_by_dim) <- adaptive_dims
@@ -2400,22 +2289,7 @@ forest_test <- function(
     for (dd in adaptive_dims) {
       choice <- as.character(design_row[[dd]])
 
-      if (dd == sample_col) {
 
-        if (choice == "selected_then_pooled") {
-          ## Candidate design: sample-pooled final testing.
-          ## The core is allowed to receive sample in pool only.
-          pool_eff <- c(pool_eff, dd)
-
-        } else if (choice == "selected_then_separate") {
-          ## Candidate design: sample-specific selection/testing.
-          select_eff <- c(select_eff, dd)
-
-        } else {
-          stop("Invalid sample adaptive design: ", choice)
-        }
-
-      } else {
 
         if (choice == "pooled_before_search") {
           ## Pool this non-sample margin before the forest/grid search.
@@ -2433,7 +2307,6 @@ forest_test <- function(
         } else {
           stop("Unknown adaptive design choice: ", choice)
         }
-      }
     }
 
     pool_eff <- unique(pool_eff)
@@ -2653,10 +2526,8 @@ forest_test_core <- function(
 
   if (length(overlap_margins) > 0L) {
     stop(
-      "forest_test_core() does not allow non-sample margins in both `pool` and `select`: ",
-      paste(overlap_margins, collapse = ", "),
-      ". Use forest_test() to adaptively choose pooled_before_search versus ",
-      "selected_then_separate."
+      "forest_test_core() does not allow any margin or sample in both `pool` and `select`: ",
+      paste(overlap_margins, collapse = ", ")
     )
   }
 
