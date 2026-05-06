@@ -202,7 +202,7 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
   There are a total of (J-1)(K-1) such conditions.
-  \item \code{condition=="MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
+  \item \code{condition=="MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
   and exclusion conditional on instrument validity. This is only allowed for a binary treatment. There are a total of 2K such conditions.
 }
 }
