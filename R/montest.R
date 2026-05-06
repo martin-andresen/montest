@@ -407,7 +407,6 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   need_linear_D <-
     any(condition %in% linear_conditions) && any(linear %in% c("D", "DZ"))
 
-
   ##Validate select/pool choices for CART
   if (identical(testtype, "CART")) {
     if (is.null(pool)) pool <- character()
@@ -722,7 +721,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   if (has_margin_conditions) {
     os_res <- test_one_sided_noncompliance(
       data = data[nonmissing_margin_i(data, "zmargin")],
-      D = D,
+      D = paste0(D,".bin"),
       Z = Z,
       zmargin_var = margins
     )
@@ -1433,6 +1432,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
         margin_index <- margin_index[is.na(drop_bad_Q__)][, drop_bad_Q__ := NULL]
       }
     }
+  }
+
+  if (nrow(data)==0) {
+    stop("No remaining residual variation for any margins. Likely identification issue - does X perfecly explain Z or D?.")
   }
 
   ## ------------------------------------------------------------
