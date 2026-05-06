@@ -8,7 +8,6 @@
 ##     j = treatment margin D >= j
 ##     k = instrument margin Z: k - 1 -> k
 ##  Note: alpha reparametrized in probability space.
-
 fct_datasim <- function(
     setup, n,
     J = 1, K = 1,
@@ -17,10 +16,11 @@ fct_datasim <- function(
     excl_bad = NULL,
     alpha_good = 0.132,
     alpha_bad  = -0.273,
-    gap = 1.0,
     gamma_bad = 1.25,
     tau = rep(1, J),
-    eps = 1e-6
+    eps = 1e-6,
+    min_cell_prob = 0.02,
+    return_design = FALSE
 ) {
 
   p <- 3
@@ -59,16 +59,21 @@ fct_datasim <- function(
 
     if (length(x) == 1L) {
       arr <- array(x, dim = c(n, J, K))
+
     } else if (length(x) == n) {
       arr <- array(rep(x, each = J * K), dim = c(J, K, n))
       arr <- aperm(arr, c(3, 1, 2))
+
     } else if (length(x) == J * K) {
       mat <- matrix(x, nrow = J, ncol = K)
       arr <- array(rep(mat, each = n), dim = c(n, J, K))
+
     } else if (is.matrix(x) && all(dim(x) == c(J, K))) {
       arr <- array(rep(x, each = n), dim = c(n, J, K))
+
     } else if (length(x) == n * J * K) {
       arr <- array(x, dim = c(n, J, K))
+
     } else {
       stop(
         name, " must have length 1, n, J*K, or n*J*K, ",
@@ -103,9 +108,11 @@ fct_datasim <- function(
     viol <- rep(TRUE, n)
   } else {
     viol <- eval(parse(text = condition), envir = Xdf)
+
     if (!is.logical(viol) || length(viol) != n) {
       stop("condition must evaluate to a logical vector of length n")
     }
+
     viol[is.na(viol)] <- FALSE
   }
 
@@ -137,8 +144,7 @@ fct_datasim <- function(
 
   base <- b + errors[, 1]
 
-  alpha_good_arr <- make_alpha_array(alpha_good, "alpha_good")
-  alpha_bad_arr  <- alpha_good_arr
+  alpha_eff_arr <- make_alpha_array(alpha_good, "alpha_good")
 
   if (!is.null(mono_bad)) {
     if (!all(c("j", "k") %in% names(mono_bad))) {
@@ -155,56 +161,212 @@ fct_datasim <- function(
         stop("mono_bad contains invalid j or k")
       }
 
-      alpha_bad_arr[, j, k] <- alpha_bad_eval[, j, k]
+      alpha_eff_arr[viol, j, k] <- alpha_bad_eval[viol, j, k]
     }
   }
 
-  make_shift <- function(alpha_arr, base, gap, eps) {
-    c_j <- (seq_len(J) - 1L) * gap
+  choose_p0_feasible <- function(
+    alpha_arr, J, K,
+    eps = 1e-6,
+    min_cell_prob = 0.02
+  ) {
+    n <- dim(alpha_arr)[1]
+
+    delta <- array(0, dim = c(n, J, K + 1L))
+
+    for (k in seq_len(K)) {
+      delta[, , k + 1L] <- delta[, , k] + alpha_arr[, , k]
+    }
+
+    lower <- matrix(NA_real_, nrow = n, ncol = J)
+    upper <- matrix(NA_real_, nrow = n, ncol = J)
+
+    for (j in seq_len(J)) {
+      dmin <- apply(delta[, j, , drop = FALSE], 1, min)
+      dmax <- apply(delta[, j, , drop = FALSE], 1, max)
+
+      lower[, j] <- eps - dmin
+      upper[, j] <- 1 - eps - dmax
+    }
+
+    if (any(lower >= upper)) {
+      bad <- which(lower >= upper, arr.ind = TRUE)[1, ]
+
+      stop(
+        "Alpha values are infeasible for treatment margin j = ",
+        bad[2], ". No baseline p0 can keep probabilities inside (0, 1)."
+      )
+    }
+
+    ## Required baseline gaps between adjacent treatment margins.
+    ## Need:
+    ##   p0_j + delta_jz >= p0_{j+1} + delta_{j+1,z} + min_cell_prob
+    ## for every z.
+    ##
+    ## Equivalently:
+    ##   p0_j - p0_{j+1} >=
+    ##   min_cell_prob + max_z(delta_{j+1,z} - delta_{jz})
+    req_gap <- NULL
+
+    if (J >= 2L) {
+      req_gap <- matrix(NA_real_, nrow = n, ncol = J - 1L)
+
+      for (j in seq_len(J - 1L)) {
+        diff_delta <- delta[, j + 1L, , drop = FALSE] -
+          delta[, j, , drop = FALSE]
+
+        req_gap[, j] <- min_cell_prob + apply(diff_delta, 1, max)
+      }
+    }
+
+    p0 <- matrix(NA_real_, nrow = n, ncol = J)
+
+    if (J == 1L) {
+      p0[, 1L] <- 0.5 * (lower[, 1L] + upper[, 1L])
+
+    } else {
+      ## Deterministic constructive solution.
+      ## Start from the lowest feasible final margin, then move upward.
+      p0[, J] <- lower[, J]
+
+      for (j in (J - 1L):1L) {
+        p0[, j] <- pmax(
+          lower[, j],
+          p0[, j + 1L] + req_gap[, j]
+        )
+      }
+
+      ## Check upper bounds.
+      too_high <- p0 > upper
+
+      if (any(too_high)) {
+        bad <- which(too_high, arr.ind = TRUE)[1, ]
+
+        stop(
+          "Could not choose feasible baseline probabilities. ",
+          "Requested alpha values require too much probability mass between ",
+          "treatment margins. First failure at unit ", bad[1],
+          ", treatment margin j = ", bad[2], "."
+        )
+      }
+
+      ## Optional: add common upward slack where possible to avoid sitting exactly
+      ## at lower bounds. This preserves all required gaps.
+      slack_up <- apply(upper - p0, 1, min)
+      p0 <- p0 + 0.5 * slack_up
+    }
+
+    pz <- array(NA_real_, dim = c(n, J, K + 1L))
+
+    for (j in seq_len(J)) {
+      for (z in 0:K) {
+        pz[, j, z + 1L] <- p0[, j] + delta[, j, z + 1L]
+      }
+    }
+
+    if (any(pz <= eps | pz >= 1 - eps)) {
+      bad_range <- range(pz, finite = TRUE)
+
+      stop(
+        "Final probabilities are outside (eps, 1 - eps). ",
+        "Range was [", signif(bad_range[1], 4), ", ",
+        signif(bad_range[2], 4), "]."
+      )
+    }
+
+    if (J >= 2L) {
+      for (j in seq_len(J - 1L)) {
+        gap_j <- pz[, j, ] - pz[, j + 1L, ]
+
+        if (any(gap_j < min_cell_prob - 1e-10)) {
+          stop(
+            "Final probabilities violate nesting for margins j = ",
+            j, " and j + 1 = ", j + 1, "."
+          )
+        }
+      }
+    }
+
+    list(
+      p0 = p0,
+      pz = pz,
+      delta = delta,
+      lower = lower,
+      upper = upper,
+      req_gap = req_gap
+    )
+  }
+
+  make_shift_from_alpha_targets <- function(
+    alpha_arr, base, J, K,
+    eps = 1e-6,
+    min_cell_prob = 0.02
+  ) {
+    n <- length(base)
+
+    design <- choose_p0_feasible(
+      alpha_arr = alpha_arr,
+      J = J,
+      K = K,
+      eps = eps,
+      min_cell_prob = min_cell_prob
+    )
+
+    p0 <- design$p0
+    pz <- design$pz
+
+    cutoffs <- matrix(NA_real_, nrow = n, ncol = J)
     shift <- array(0, dim = c(n, J, K + 1L))
 
     for (j in seq_len(J)) {
-      p0 <- mean(base > c_j[j])
-
-      pz <- matrix(NA_real_, nrow = n, ncol = K + 1L)
-      pz[, 1L] <- p0
-
-      for (k in seq_len(K)) {
-        pz[, k + 1L] <- pz[, k] + alpha_arr[, j, k]
-      }
-
-      if (any(pz <= 0 | pz >= 1)) {
-        stop("Requested alpha values imply infeasible threshold probabilities.")
-      }
-
-      pz <- pmin(pmax(pz, eps), 1 - eps)
-
-      q <- stats::quantile(
+      cutoffs[, j] <- stats::quantile(
         base,
-        probs = as.vector(1 - pz),
+        probs = 1 - p0[, j],
         type = 8,
         names = FALSE
       )
 
-      shift[, j, ] <- c_j[j] - matrix(q, nrow = n, ncol = K + 1L)
+      q <- stats::quantile(
+        base,
+        probs = as.vector(1 - pz[, j, ]),
+        type = 8,
+        names = FALSE
+      )
+
+      q <- matrix(q, nrow = n, ncol = K + 1L)
+
+      shift[, j, ] <- cutoffs[, j] - q
     }
 
-    shift
+    list(
+      shift = shift,
+      cutoffs = cutoffs,
+      p0 = p0,
+      pz = pz,
+      delta = design$delta,
+      lower = design$lower,
+      upper = design$upper
+    )
   }
 
-  shift_good <- make_shift(alpha_good_arr, base, gap, eps)
-  shift_bad  <- make_shift(alpha_bad_arr,  base, gap, eps)
+  shift_obj <- make_shift_from_alpha_targets(
+    alpha_arr = alpha_eff_arr,
+    base = base,
+    J = J,
+    K = K,
+    eps = eps,
+    min_cell_prob = min_cell_prob
+  )
 
-  L <- matrix(NA_real_, n, J)
+  shift <- shift_obj$shift
+  cutoffs <- shift_obj$cutoffs
+
+  L <- matrix(NA_real_, nrow = n, ncol = J)
 
   for (j in seq_len(J)) {
-    sh <- shift_good[cbind(seq_len(n), j, Z + 1L)]
+    sh <- shift[cbind(seq_len(n), j, Z + 1L)]
 
-    if (!is.null(mono_bad)) {
-      sh[viol] <- shift_bad[cbind(which(viol), j, Z[viol] + 1L)]
-    }
-
-    raw_j <- base + sh - (j - 1L) * gap
+    raw_j <- base + sh - cutoffs[, j]
 
     if (j == 1L) {
       L[, j] <- raw_j
@@ -251,7 +413,6 @@ fct_datasim <- function(
   gamma_good_z <- row_cumsum_with_zero(eta_good)
   gamma_bad_z  <- row_cumsum_with_zero(eta_bad)
 
-  ## Must always be defined, even when excl_bad is NULL
   gamma_z <- gamma_good_z[cbind(seq_len(n), Z + 1L)]
 
   if (!is.null(excl_bad) && any(viol)) {
@@ -259,11 +420,130 @@ fct_datasim <- function(
   }
 
   tau_D <- rep(0, n)
+
   for (j in seq_len(J)) {
     tau_D <- tau_D + tau[j] * as.numeric(D >= j)
   }
 
   Y <- as.vector(tau_D + gamma_z + X %*% betaXY + errors[, 2])
 
-  data.frame(Y, D, Z, X)
+  out <- data.frame(Y, D, Z, X)
+
+  if (return_design) {
+    expected_first_stage <- matrix(NA_real_, nrow = J, ncol = K)
+    rownames(expected_first_stage) <- paste0("D_ge_", seq_len(J))
+    colnames(expected_first_stage) <- paste0("Z_margin_", seq_len(K))
+
+    for (j in seq_len(J)) {
+      for (k in seq_len(K)) {
+        expected_first_stage[j, k] <- mean(alpha_eff_arr[, j, k])
+      }
+    }
+
+    expected_first_stage_by_condition <- NULL
+
+    if (!is.null(condition)) {
+      expected_first_stage_by_condition <- list(
+        good = matrix(NA_real_, nrow = J, ncol = K),
+        bad  = matrix(NA_real_, nrow = J, ncol = K)
+      )
+
+      rownames(expected_first_stage_by_condition$good) <- paste0("D_ge_", seq_len(J))
+      colnames(expected_first_stage_by_condition$good) <- paste0("Z_margin_", seq_len(K))
+
+      rownames(expected_first_stage_by_condition$bad) <- paste0("D_ge_", seq_len(J))
+      colnames(expected_first_stage_by_condition$bad) <- paste0("Z_margin_", seq_len(K))
+
+      for (j in seq_len(J)) {
+        for (k in seq_len(K)) {
+          expected_first_stage_by_condition$good[j, k] <-
+            if (any(!viol)) mean(alpha_eff_arr[!viol, j, k]) else NA_real_
+
+          expected_first_stage_by_condition$bad[j, k] <-
+            if (any(viol)) mean(alpha_eff_arr[viol, j, k]) else NA_real_
+        }
+      }
+    }
+
+    realized_first_stage <- matrix(NA_real_, nrow = J, ncol = K)
+    rownames(realized_first_stage) <- paste0("D_ge_", seq_len(J))
+    colnames(realized_first_stage) <- paste0("Z_margin_", seq_len(K))
+
+    for (j in seq_len(J)) {
+      Dj <- as.numeric(D >= j)
+
+      for (k in seq_len(K)) {
+        left  <- Z == k - 1L
+        right <- Z == k
+
+        realized_first_stage[j, k] <-
+          if (any(left) && any(right)) {
+            mean(Dj[right]) - mean(Dj[left])
+          } else {
+            NA_real_
+          }
+      }
+    }
+
+    realized_first_stage_by_condition <- NULL
+
+    if (!is.null(condition)) {
+      realized_first_stage_by_condition <- list(
+        good = matrix(NA_real_, nrow = J, ncol = K),
+        bad  = matrix(NA_real_, nrow = J, ncol = K)
+      )
+
+      rownames(realized_first_stage_by_condition$good) <- paste0("D_ge_", seq_len(J))
+      colnames(realized_first_stage_by_condition$good) <- paste0("Z_margin_", seq_len(K))
+
+      rownames(realized_first_stage_by_condition$bad) <- paste0("D_ge_", seq_len(J))
+      colnames(realized_first_stage_by_condition$bad) <- paste0("Z_margin_", seq_len(K))
+
+      for (j in seq_len(J)) {
+        Dj <- as.numeric(D >= j)
+
+        for (k in seq_len(K)) {
+          left_good  <- !viol & Z == k - 1L
+          right_good <- !viol & Z == k
+
+          left_bad  <- viol & Z == k - 1L
+          right_bad <- viol & Z == k
+
+          realized_first_stage_by_condition$good[j, k] <-
+            if (any(left_good) && any(right_good)) {
+              mean(Dj[right_good]) - mean(Dj[left_good])
+            } else {
+              NA_real_
+            }
+
+          realized_first_stage_by_condition$bad[j, k] <-
+            if (any(left_bad) && any(right_bad)) {
+              mean(Dj[right_bad]) - mean(Dj[left_bad])
+            } else {
+              NA_real_
+            }
+        }
+      }
+    }
+
+    attr(out, "design") <- list(
+      expected_first_stage = expected_first_stage,
+      expected_first_stage_by_condition = expected_first_stage_by_condition,
+      realized_first_stage = realized_first_stage,
+      realized_first_stage_by_condition = realized_first_stage_by_condition,
+      p0 = shift_obj$p0,
+      pz = shift_obj$pz,
+      delta = shift_obj$delta,
+      lower = shift_obj$lower,
+      upper = shift_obj$upper,
+      alpha_eff_arr = alpha_eff_arr,
+      cutoffs = shift_obj$cutoffs,
+      realized_D_dist = prop.table(table(factor(D, levels = 0:J))),
+      realized_Z_dist = prop.table(table(factor(Z, levels = 0:K))),
+      condition_share = mean(viol),
+      min_cell_prob = min_cell_prob
+    )
+  }
+
+  out
 }
