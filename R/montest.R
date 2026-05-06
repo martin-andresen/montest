@@ -395,17 +395,33 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   need_linear_Z <-
     any(condition %in% linear_conditions) && any(linear %in% c("Z", "DZ"))
 
-  ## Need binarized D if:
+  ## Need margin conditions if:
+  ## - ordinary simple/AHS rows are requested, linear = "none"
+  ## - linear-D simple/AHS rows are requested, linear = "D"
+  ## - KR/MW are requested
+  ##
+  ## These rows require the one-sided monotonicity pre-check, which itself
+  ## needs the binarized treatment margin variable D.bin.
+  has_margin_conditions <-
+    any(c("none", "D") %in% linear) ||
+    any(c("KR", "MW") %in% condition)
+
+  ## Need binarized D for Q construction if:
   ## - any non-linear-aware condition is requested, or
   ## - simple/AHS are requested with linear = none or Z
-  need_binarized_D <-
+  need_binarized_D_for_Q <-
     length(nonlinear_conditions) > 0L ||
-    any(condition %in% linear_conditions) && any(linear %in% c("none", "Z"))
+    (any(condition %in% linear_conditions) && any(linear %in% c("none", "Z")))
+
+  ## Need binarized D for the one-sided monotonicity screen.
+  need_binarized_D_for_os <- has_margin_conditions
+
+  ## Actually create D.bin if either Q construction or the one-sided screen needs it.
+  need_binarized_D <- need_binarized_D_for_Q || need_binarized_D_for_os
 
   ## Need original/linear D if:
   ## - simple/AHS are requested with linear = D or DZ
-  need_linear_D <-
-    any(condition %in% linear_conditions) && any(linear %in% c("D", "DZ"))
+  need_linear_D <- any(condition %in% linear_conditions) && any(linear %in% c("D", "DZ"))
 
   ##Validate select/pool choices for CART
   if (identical(testtype, "CART")) {
@@ -714,24 +730,39 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
     }
   }
 
-  has_margin_conditions <- (any(c("none","D") %in% linear) | any(c("KR","MW") %in% condition))
   need_linear_Z <- any(condition %in% linear_conditions) && any(linear %in% c("Z", "DZ"))
 
 
   if (has_margin_conditions) {
+    if (is.null(Dbincol) || !(Dbincol %in% names(data))) {
+      stop(
+        "Internal error: one-sided margin conditions require `", paste0(D, ".bin"),
+        "`, but binarized D was not created.",
+        call. = FALSE
+      )
+    }
+
     os_res <- test_one_sided_noncompliance(
       data = data[nonmissing_margin_i(data, "zmargin")],
-      D = paste0(D,".bin"),
+      D = Dbincol,
       Z = Z,
       zmargin_var = margins
     )
-    osmargins=margins
-    if (nrow(os_res$threshold[one_sided==TRUE])>0) os_res
-    if (nrow(os_res$threshold[one_sided==FALSE])==0&sum(condition %in% c("KR","MW"))==0) {
-      stop("One-sided noncompliance for all margins of Z and D - all specified conditions are trivially satisfied.")
+
+    osmargins <- margins
+
+    if (nrow(os_res$threshold[one_sided == TRUE]) > 0) os_res
+
+    if (
+      nrow(os_res$threshold[one_sided == FALSE]) == 0 &&
+      sum(condition %in% c("KR", "MW")) == 0
+    ) {
+      stop(
+        "One-sided noncompliance for all margins of Z and D - ",
+        "all specified conditions are trivially satisfied."
+      )
     }
   }
-
   ##Check for residual variation in Z
   byvars <- c("sample", margins)
   Zhat <- paste0(Z, ".hat")
