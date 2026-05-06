@@ -209,10 +209,10 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
 \examples{
 \dontrun{
 
-#Generate data - Simulation DGP from Farbmacher et. al.
-data=fct_datasim(setup="A",dgp=2,n=3000)
+#Generate data - Simulation DGP generalized from Farbmacher et. al.
+data=fct_datasim(setup="A",n=3000)
 
-# Simple monotonicity-style test
+# Simple monotonicity test
 out <- montest(
   data = data,
   D = "D",
@@ -228,7 +228,9 @@ out2 <- montest(
   Z = "Z",
   Y="Y",
   X = c("Xvar1", "Xvar2", "Xvar3"),
-  condition = c("simple","KR","MW"))
+  condition = c("simple","KR","MW"),
+  select=c("yval","equation"),
+  pool="sample")
 }
 
 }

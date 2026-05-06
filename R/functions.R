@@ -285,8 +285,17 @@ CART_test <- function(
     }
 
     if (screen == "fgk_relevant") {
+      dtf <- dt_train_leaf[is.finite(t)]
+      if (nrow(dtf) == 0L) return(integer())
+
+      L <- nrow(dtf)
       thr <- stats::qnorm(1 - alpha / L)
-      keep <- dt_train_leaf[t < thr, leaf]
+      keep <- dtf[t < thr, leaf]
+
+      if (length(keep) == 0L) {
+        keep <- dtf[which.min(t), leaf]
+      }
+
       return(as.integer(keep))
     }
 
