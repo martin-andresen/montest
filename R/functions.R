@@ -2215,174 +2215,132 @@ forest_test <- function(
 
   design_score <- function(fit, pool_eff, select_eff, design_row) {
     tr <- data.table::as.data.table(fit$results)[train == TRUE & relevant == 1L]
-    special_sample_pool <- isTRUE(fit$sample_pool_after_margin_select)
-    tr_cl <- NULL
-
-    if (!is.null(fit$train_cluster)) {
-      tr_cl <- data.table::as.data.table(fit$train_cluster)[relevant == 1L]
-    }
 
     if (nrow(tr) == 0L) return(Inf)
 
-    pooled_train_p_independent <- function(dt) {
-      ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
-      if (!any(ok)) return(Inf)
-
-      theta <- dt$coef[ok]
-      se    <- dt$stderr[ok]
-
-      ivar <- 1 / se^2
-
-      theta_pool <- sum(ivar * theta) / sum(ivar)
-      se_pool    <- sqrt(1 / sum(ivar))
-      t_pool     <- theta_pool / se_pool
-
-      stats::pnorm(t_pool)
-    }
-
-    pooled_train_p_cluster <- function(comp) {
-      if (is.null(comp) || nrow(comp) == 0L) return(Inf)
-
-      totals <- comp[
-        ,
-        .(
-          U_m = sum(U_gm),
-          W_m = sum(W_gm)
-        ),
-        by = train_row_id
-      ]
-
-      totals <- totals[is.finite(W_m) & W_m > 0]
-      if (nrow(totals) == 0L) return(Inf)
-
-      totals[, theta := U_m / W_m]
-
-      comp <- merge(
-        comp,
-        totals[, .(train_row_id, theta, W_m)],
-        by = "train_row_id",
-        all = FALSE,
-        sort = FALSE
-      )
-
-      comp[, psi := (U_gm - theta * W_gm) / W_m]
-
-      hyp_ids <- sort(unique(comp$train_row_id))
-      cl_ids  <- sort(unique(comp$cl))
-
-      M <- length(hyp_ids)
-      G <- length(cl_ids)
-
-      if (M == 0L || G < 2L) return(Inf)
-
-      hyp_pos <- match(comp$train_row_id, hyp_ids)
-      cl_pos  <- match(comp$cl, cl_ids)
-
-      Psi <- matrix(0, nrow = G, ncol = M)
-      Psi[cbind(cl_pos, hyp_pos)] <- comp$psi
-
-      V <- (G / pmax.int(G - 1L, 1L)) * crossprod(Psi)
-
-      theta <- totals[match(hyp_ids, train_row_id), theta]
-
-      ok <- is.finite(theta) & is.finite(diag(V)) & diag(V) > 0
-      if (!any(ok)) return(Inf)
-
-      theta <- theta[ok]
-      V <- V[ok, ok, drop = FALSE]
-
-      if (length(theta) == 1L) {
-        a <- 1
-      } else {
-        a <- 1 / diag(V)
-        a <- a / sum(a)
-      }
-
-      theta_pool <- sum(a * theta)
-      se_pool <- sqrt(as.numeric(t(a) %*% V %*% a))
-
-      if (!is.finite(se_pool) || se_pool <= 0) return(Inf)
-
-      stats::pnorm(theta_pool / se_pool)
-    }
-
-    score_by_groups <- function(dt, separate_cols) {
-      separate_cols <- intersect(separate_cols, names(dt))
-
-      ## Prefer cluster-aware scoring if train_cluster is available.
-      if (!is.null(tr_cl) && nrow(tr_cl) > 0L) {
-        separate_cols_cl <- intersect(separate_cols, names(tr_cl))
-
-        if (length(separate_cols_cl) == 0L) {
-          return(pooled_train_p_cluster(tr_cl))
-        }
-
-        pp <- tr_cl[
-          ,
-          .(p_pool = pooled_train_p_cluster(.SD)),
-          by = separate_cols_cl
-        ]$p_pool
-
-        pp <- pp[is.finite(pp)]
-        if (!length(pp)) return(Inf)
-
-        return(min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE))
-      }
-
-      ## Fallback to old independent-IVW scoring.
-      if (length(separate_cols) == 0L) {
-        return(pooled_train_p_independent(dt))
-      }
-
-      pp <- dt[
-        ,
-        .(p_pool = pooled_train_p_independent(.SD)),
-        by = separate_cols
-      ]$p_pool
-
-      pp <- pp[is.finite(pp)]
-      if (!length(pp)) return(Inf)
-
-      min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE)
-    }
-
-    ## Dimensions that can define separate train-side hypotheses.
     dim_cols <- intersect(unique(c(margins, sample_col)), names(tr))
 
-    ## Start from the effective final design:
-    ## anything not in pool_eff remains separate.
-    separate_cols <- setdiff(dim_cols, pool_eff)
+    adaptive_sample_pool <-
+      sample_col %in% names(design_row) &&
+      as.character(design_row[[sample_col]]) == "selected_then_pooled"
 
-    ## Now override using the adaptive design labels.
-    ## selected_then_pooled   => pool over this dimension when scoring
-    ## selected_then_separate => keep this dimension separate when scoring
-    for (dd in intersect(names(design_row), dim_cols)) {
-      choice <- as.character(design_row[[dd]])
+    adaptive_sample_separate <-
+      sample_col %in% names(design_row) &&
+      as.character(design_row[[sample_col]]) == "selected_then_separate"
 
-      if (choice == "selected_then_pooled") {
-        separate_cols <- setdiff(separate_cols, dd)
+    ## Non-sample adaptive dimensions are scored exactly as they appear in the
+    ## clean effective design returned by forest_test_core():
+    ## - pooled_before_search has already removed the margin from the core grouping;
+    ##
+    ## Therefore no IVW is needed for non-sample margins.
+    non_sample_dims <- setdiff(dim_cols, sample_col)
+
+    if (adaptive_sample_pool) {
+
+      group_cols <- intersect(
+        setdiff(non_sample_dims, pool_eff),
+        names(tr)
+      )
+
+      pooled_p_independent <- function(dt) {
+        ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
+        if (!any(ok)) return(Inf)
+
+        theta <- dt$coef[ok]
+        se <- dt$stderr[ok]
+
+        ivar <- 1 / se^2
+        theta_pool <- sum(ivar * theta) / sum(ivar)
+        se_pool <- sqrt(1 / sum(ivar))
+
+        if (!is.finite(se_pool) || se_pool <= 0) return(Inf)
+
+        stats::pnorm(theta_pool / se_pool)
       }
 
-      if (choice == "selected_then_separate") {
-        separate_cols <- unique(c(separate_cols, dd))
+      ## No non-sample key remains separate: ordinary sample-pooled score.
+      if (length(group_cols) == 0L) {
+        pp <- pooled_p_independent(tr)
+        if (!is.finite(pp)) return(Inf)
+        return(pp)
       }
 
-      if (choice == "pooled_before_search") {
-        separate_cols <- setdiff(separate_cols, dd)
+      ## Count how many sample directions selected each non-sample key.
+      key_status <- tr[
+        ,
+        .(n_sample = data.table::uniqueN(get(sample_col))),
+        by = group_cols
+      ]
+
+      common_keys <- key_status[
+        n_sample == 2L,
+        .SD,
+        .SDcols = group_cols
+      ]
+
+      single_keys <- key_status[
+        n_sample == 1L,
+        .SD,
+        .SDcols = group_cols
+      ]
+
+      pp_list <- list()
+
+      ## For keys selected in both sample directions, score by IVW-pooled
+      ## training p-value across sample halves.
+      if (nrow(common_keys) > 0L) {
+        tr_common <- merge(
+          tr,
+          common_keys,
+          by = group_cols,
+          all = FALSE,
+          sort = FALSE
+        )
+
+        pp_common <- tr_common[
+          ,
+          .(p = pooled_p_independent(.SD)),
+          by = group_cols
+        ]$p
+
+        pp_list[[length(pp_list) + 1L]] <- pp_common
       }
+
+      ## For keys selected in only one sample direction, keep them separate.
+      ## Score by their ordinary training p-values.
+      if (nrow(single_keys) > 0L) {
+        tr_single <- merge(
+          tr,
+          single_keys,
+          by = group_cols,
+          all = FALSE,
+          sort = FALSE
+        )
+
+        pp_single <- tr_single$p.raw
+
+        pp_list[[length(pp_list) + 1L]] <- pp_single
+      }
+
+      pp <- unlist(pp_list, use.names = FALSE)
+      pp <- pp[is.finite(pp)]
+
+      if (!length(pp)) return(Inf)
+
+      return(min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE))
     }
 
-    ## Safety: dimensions that were selected but explicitly not pooled should be separate.
-    selected_not_pooled <- setdiff(intersect(select_eff, dim_cols), pool_eff)
-    separate_cols <- unique(c(separate_cols, selected_not_pooled))
+    ## Sample-separated mode, and all non-sample adaptive designs:
+    ## score by ordinary training-side p-values, multiplicity adjusted over
+    ## the train rows produced by that valid design.
+    ##
+    ## This deliberately uses no IVW across sample halves.
+    pp <- tr$p.raw
+    pp <- pp[is.finite(pp)]
 
-    ## In the option-2 design, sample was requested pooled, but the valid
-    ## training-side selected objects are sample-specific.
-    if (special_sample_pool && sample_col %in% dim_cols) {
-      separate_cols <- unique(c(separate_cols, sample_col))
-    }
+    if (!length(pp)) return(Inf)
 
-    score_by_groups(tr, separate_cols)
+    min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE)
   }
 
   run_core <- function(pool_eff, select_eff) {
@@ -2424,7 +2382,6 @@ forest_test <- function(
     } else {
       c(
         "pooled_before_search",
-        "selected_then_pooled",
         "selected_then_separate"
       )
     }
@@ -2444,12 +2401,14 @@ forest_test <- function(
       choice <- as.character(design_row[[dd]])
 
       if (dd == sample_col) {
+
         if (choice == "selected_then_pooled") {
-          # Run core with sample in pool only.
+          ## Candidate design: sample-pooled final testing.
+          ## The core is allowed to receive sample in pool only.
           pool_eff <- c(pool_eff, dd)
 
         } else if (choice == "selected_then_separate") {
-          # Run core with sample in select only.
+          ## Candidate design: sample-specific selection/testing.
           select_eff <- c(select_eff, dd)
 
         } else {
@@ -2457,25 +2416,46 @@ forest_test <- function(
         }
 
       } else {
-        if (choice == "pooled_before_search") {
-          pool_eff <- c(pool_eff, dd)
 
-        } else if (choice == "selected_then_pooled") {
+        if (choice == "pooled_before_search") {
+          ## Pool this non-sample margin before the forest/grid search.
           pool_eff <- c(pool_eff, dd)
-          select_eff <- c(select_eff, dd)
 
         } else if (choice == "selected_then_separate") {
+          ## Select over this non-sample margin and keep final tests separate.
           select_eff <- c(select_eff, dd)
 
+        } else if (choice == "selected_then_pooled") {
+          stop(
+            "Internal error: selected_then_pooled is no longer allowed for non-sample margins."
+          )
+
         } else {
-          stop("Unknown adaptive design choice.")
+          stop("Unknown adaptive design choice: ", choice)
         }
       }
     }
 
+    pool_eff <- unique(pool_eff)
+    select_eff <- unique(select_eff)
+
+    ## Non-sample overlap should never be passed to the core.
+    bad_overlap <- setdiff(intersect(pool_eff, select_eff), sample_col)
+    if (length(bad_overlap) > 0L) {
+      stop(
+        "Internal error: adaptive design produced non-sample overlap: ",
+        paste(bad_overlap, collapse = ", ")
+      )
+    }
+
+    ## Sample overlap should also never be passed to the core.
+    if (sample_col %in% pool_eff && sample_col %in% select_eff) {
+      stop("Internal error: adaptive design produced sample in both pool and select.")
+    }
+
     list(
-      pool = unique(pool_eff),
-      select = unique(select_eff)
+      pool = pool_eff,
+      select = select_eff
     )
   }
 
@@ -2512,11 +2492,14 @@ forest_test <- function(
     parts <- strsplit(x, "; ", fixed = TRUE)[[1]]
 
     sum(vapply(parts, function(p) {
+      dim <- sub("=.*$", "", p)
       val <- sub("^[^=]+=", "", p)
 
+      if (dim == sample_col && val == "selected_then_pooled") return(0L)
+      if (dim == sample_col && val == "selected_then_separate") return(1L)
+
       if (val == "pooled_before_search") return(0L)
-      if (val == "selected_then_pooled") return(1L)
-      if (val == "selected_then_separate") return(2L)
+      if (val == "selected_then_separate") return(1L)
 
       99L
     }, integer(1)))
@@ -2529,8 +2512,12 @@ forest_test <- function(
   out$adaptive_dims <- adaptive_dims
   out$adaptive_design <- names_design[winner_i]
   out$adaptive_scores <- data.table::data.table(
+    design_id = seq_along(names_design),
     design = names_design,
-    score = scores_design
+    score = scores_design,
+    winner = seq_along(names_design) == winner_i,
+    pool = vapply(pool_designs, function(z) paste(z, collapse = ","), character(1L)),
+    select = vapply(select_designs, function(z) paste(z, collapse = ","), character(1L))
   )[order(score)]
 
   out$adaptive_pool <- pool_designs[[winner_i]]
@@ -2653,14 +2640,25 @@ forest_test_core <- function(
 
   if (pool_sample && select_sample) {
     stop(
-      "forest_test_core() no longer accepts sample in both pool and select. ",
-      "Use forest_test(), which evaluates sample=selected_then_pooled and ",
-      "sample=selected_then_separate as two separate designs."
+      "forest_test_core() does not accept sample in both `pool` and `select`. ",
+      "Use forest_test(), which evaluates sample-pooled and sample-separated ",
+      "as separate adaptive designs."
     )
   }
 
   pool_margins   <- intersect(pool, margins)
   select_margins <- intersect(select, margins)
+
+  overlap_margins <- intersect(pool_margins, select_margins)
+
+  if (length(overlap_margins) > 0L) {
+    stop(
+      "forest_test_core() does not allow non-sample margins in both `pool` and `select`: ",
+      paste(overlap_margins, collapse = ", "),
+      ". Use forest_test() to adaptively choose pooled_before_search versus ",
+      "selected_then_separate."
+    )
+  }
 
   ## Special valid version of pool="sample" with margin selection:
   ## select margins separately by training sample, test separately by holdout sample,
@@ -2670,10 +2668,8 @@ forest_test_core <- function(
     length(select_margins) > 0L &&
     !select_sample
 
-  pool_before_margins       <- setdiff(pool_margins, select_margins)
-  pool_after_select_margins <- intersect(pool_margins, select_margins)
-  separate_select_margins   <- setdiff(select_margins, pool_margins)
-
+  pool_before_margins <- pool_margins
+  separate_select_margins <- select_margins
   cell_cols <- setdiff(margins, pool_before_margins)
   adjust_cols <- setdiff(cell_cols, select_margins)
 
@@ -2951,44 +2947,6 @@ forest_test_core <- function(
       p.raw = stats::pnorm(res$t_stat)
     )
 
-    ## Cluster-level contributions for covariance-aware pooling of train-side
-    ## selected/pooled estimates. One row per cell/sample/cluster.
-    train_cl <- NULL
-
-    if (nrow(res) > 0L) {
-      train_cl <- data.table::rbindlist(lapply(seq_len(nrow(res)), function(rr) {
-        ss <- res$sample[rr]
-        cc <- res$pred[rr]
-
-        dt[
-          sample == ss & pred <= cc,
-          .(
-            U_gm = sum(w * score),
-            W_gm = sum(w)
-          ),
-          by = cl
-        ][
-          ,
-          `:=`(
-            cell_id = cell_id,
-            sample = ss
-          )
-        ]
-      }), use.names = TRUE, fill = TRUE)
-
-      if (!is.null(train_cl) && nrow(train_cl) > 0L) {
-        data.table::setcolorder(train_cl, c("cell_id", "sample", "cl", "U_gm", "W_gm"))
-
-        if (!is.null(key_dt) && ncol(key_dt) > 0L) {
-          for (cc in names(key_dt)) train_cl[, (cc) := key_dt[[cc]][1]]
-          data.table::setcolorder(
-            train_cl,
-            c("cell_id", names(key_dt), "sample", "cl", "U_gm", "W_gm")
-          )
-        }
-      }
-    }
-
     if (!is.null(key_dt) && ncol(key_dt) > 0L) {
       for (cc in names(key_dt)) train_out[, (cc) := key_dt[[cc]][1]]
       data.table::setcolorder(train_out, c("cell_id", names(key_dt), "train", "relevant", "sample"))
@@ -2996,7 +2954,6 @@ forest_test_core <- function(
 
     list(
       train = train_out,
-      train_cl = train_cl,
       grid = grid_out,
       idx_test = idx_test_by_sample
     )
@@ -3005,14 +2962,12 @@ forest_test_core <- function(
   n_cells <- length(idx_list)
 
   train_list <- vector("list", n_cells)
-  train_cl_list <- vector("list", n_cells)
   grid_list  <- if (store_grid) vector("list", n_cells) else NULL
   idx_test_list <- vector("list", n_cells)
 
   for (g in seq_len(n_cells)) {
     ans <- run_one_cell_idx(idx_list[[g]], keys_list[[g]], cell_id = g)
     train_list[[g]] <- ans$train
-    train_cl_list[[g]] <- ans$train_cl
     idx_test_list[[g]] <- ans$idx_test
     if (store_grid) grid_list[[g]] <- ans$grid
 
@@ -3024,21 +2979,7 @@ forest_test_core <- function(
   train_all <- data.table::rbindlist(train_list, use.names = TRUE, fill = TRUE)
   train_all[, train_row_id := .I]
 
-  train_cluster_all <- data.table::rbindlist(
-    train_cl_list,
-    use.names = TRUE,
-    fill = TRUE
-  )
 
-  if (!is.null(train_cluster_all) && nrow(train_cluster_all) > 0L) {
-    train_cluster_all <- merge(
-      train_cluster_all,
-      train_all[, .(cell_id, sample, train_row_id)],
-      by = c("cell_id", "sample"),
-      all.x = TRUE,
-      sort = FALSE
-    )
-  }
 
   grid_out <- if (store_grid) {
     data.table::rbindlist(grid_list, use.names = TRUE, fill = TRUE)
@@ -3046,175 +2987,13 @@ forest_test_core <- function(
     NULL
   }
 
-  cluster_ivw_t_from_train_rows <- function(dt_rows) {
-    if (
-      is.null(train_cluster_all) ||
-      nrow(train_cluster_all) == 0L ||
-      !"train_row_id" %in% names(dt_rows)
-    ) {
-      return(NA_real_)
-    }
-
-    row_ids <- unique(dt_rows$train_row_id)
-    row_ids <- row_ids[is.finite(row_ids)]
-
-    if (!length(row_ids)) return(NA_real_)
-
-    comp <- train_cluster_all[train_row_id %in% row_ids]
-
-    if (nrow(comp) == 0L) return(NA_real_)
-
-    totals <- comp[
-      ,
-      .(
-        U_m = sum(U_gm),
-        W_m = sum(W_gm)
-      ),
-      by = train_row_id
-    ]
-
-    totals <- totals[is.finite(W_m) & W_m > 0]
-    if (nrow(totals) == 0L) return(NA_real_)
-
-    totals[, theta := U_m / W_m]
-
-    comp <- merge(
-      comp,
-      totals[, .(train_row_id, theta, W_m)],
-      by = "train_row_id",
-      all = FALSE,
-      sort = FALSE
-    )
-
-    comp[, psi := (U_gm - theta * W_gm) / W_m]
-
-    hyp_ids <- sort(unique(comp$train_row_id))
-    cl_ids  <- sort(unique(comp$cl))
-
-    M <- length(hyp_ids)
-    G <- length(cl_ids)
-
-    if (M == 0L || G < 2L) return(NA_real_)
-
-    hyp_pos <- match(comp$train_row_id, hyp_ids)
-    cl_pos  <- match(comp$cl, cl_ids)
-
-    Psi <- matrix(0, nrow = G, ncol = M)
-    Psi[cbind(cl_pos, hyp_pos)] <- comp$psi
-
-    V <- (G / pmax.int(G - 1L, 1L)) * crossprod(Psi)
-
-    theta <- totals[match(hyp_ids, train_row_id), theta]
-
-    ok <- is.finite(theta) & is.finite(diag(V)) & diag(V) > 0
-    if (!any(ok)) return(NA_real_)
-
-    theta <- theta[ok]
-    V <- V[ok, ok, drop = FALSE]
-
-    M <- length(theta)
-
-    if (M == 1L) {
-      a <- 1
-    } else {
-      ## Keep inverse-variance weights, but compute the SE using the full
-      ## cluster covariance matrix.
-      a <- 1 / diag(V)
-      a <- a / sum(a)
-    }
-
-    theta_pool <- sum(a * theta)
-    se_pool <- sqrt(as.numeric(t(a) %*% V %*% a))
-
-    if (!is.finite(se_pool) || se_pool <= 0) return(NA_real_)
-
-    theta_pool / se_pool
-  }
-
-  pooled_t_from_rows_independent <- function(dt) {
-    ok <- is.finite(dt$coef) & is.finite(dt$stderr) & dt$stderr > 0
-    if (!any(ok)) return(NA_real_)
-
-    theta <- dt$coef[ok]
-    se <- dt$stderr[ok]
-
-    ivar <- 1 / se^2
-    theta_pool <- sum(ivar * theta) / sum(ivar)
-    se_pool <- sqrt(1 / sum(ivar))
-
-    theta_pool / se_pool
-  }
-
-  pooled_t_from_rows <- function(dt) {
-    ## Use cluster-aware pooling whenever train_row_id is available.
-    ## This is especially important when pooling overlapping margins.
-    tt <- cluster_ivw_t_from_train_rows(dt)
-
-    if (is.finite(tt)) return(tt)
-
-    ## Fallback for cases without cluster contribution data.
-    pooled_t_from_rows_independent(dt)
-  }
-
-  pooled_p_from_rows <- function(dt) {
-    tt <- pooled_t_from_rows(dt)
-    if (!is.finite(tt)) return(Inf)
-    stats::pnorm(tt)
-  }
 
   selected_train <- train_all
   has_selection <- (length(select_margins) > 0L) || select_sample
 
   if (has_selection) {
 
-    if (length(pool_after_select_margins) > 0L) {
-
-      cand_by <- unique(c(
-        adjust_cols,
-        if (!pool_sample) sample_col else character(),
-        separate_select_margins,
-        select_margins,
-        "cell_id"
-      ))
-
-      if (pool_sample) {
-        cand <- train_all[
-          ,
-          .(sel_t = pooled_t_from_rows(.SD)),
-          by = cand_by
-        ]
-      } else {
-        cand <- train_all[
-          ,
-          .(sel_t = mean(t, na.rm = TRUE)),
-          by = cand_by
-        ]
-      }
-
-      choose_by <- unique(c(
-        adjust_cols,
-        if (!select_sample && !pool_sample) sample_col else character(),
-        separate_select_margins
-      ))
-
-      id_by <- cand_by
-
-      keep_ids <- select_keep_ids(
-        cand = cand,
-        choose_by = choose_by,
-        id_by = id_by,
-        alpha = alpha
-      )
-
-      selected_train <- merge(
-        train_all,
-        unique(keep_ids),
-        by = id_by,
-        all = FALSE,
-        sort = FALSE
-      )
-
-    } else if (sample_pool_after_margin_select) {
+     if (sample_pool_after_margin_select) {
 
       ## Do NOT select margins using sample-pooled training statistics.
       ## Select separately by training sample.
@@ -3316,13 +3095,6 @@ forest_test_core <- function(
   train_out <- data.table::copy(train_all)
   train_out[train_row_id %in% selected_train$train_row_id, relevant := 1L]
 
-  if (!is.null(train_cluster_all) && nrow(train_cluster_all) > 0L) {
-    train_cluster_all[
-      ,
-      relevant := as.integer(train_row_id %in% selected_train$train_row_id)
-    ]
-  }
-
   train_out[, c("cell_id", "train_row_id") := NULL]
 
   idx_test_all <- integer()
@@ -3355,12 +3127,9 @@ forest_test_core <- function(
 
     selected_test_keys <- unique(selected_train[, .SD, .SDcols = key_cols])
 
-    ## In the special mode, selected_train$sample is the training sample.
+    ## selected_train$sample is the training sample.
     ## The final test row lives in the opposite holdout sample.
-    if (
-      sample_pool_after_margin_select &&
-      sample_col %in% names(selected_test_keys)
-    ) {
+    if (sample_col %in% names(selected_test_keys)) {
       selected_test_keys[
         ,
         (sample_col) := data.table::fifelse(
