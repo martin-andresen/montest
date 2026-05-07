@@ -164,7 +164,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="overlap",
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
                  #tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
@@ -176,6 +176,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
 
   ################### 1 CHECK INPUT #####################
+  target=match.arg(target,c("overlap","ATE"))
   linear=match.arg(linear,c("none","Z","D","DZ","all"),several.ok=TRUE)
   if ("all" %in% linear) {
     linear <- c("none", "Z", "D", "DZ")
@@ -1488,6 +1489,7 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
   if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances - use OOB for forest.
 
+  if (target=="ATE") {
   if (any(condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR"))) {
     if (length(condition)>1) i=which(data$condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR")) else i=NULL
     fit_models(data,
@@ -1540,10 +1542,49 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
                aipw.clip=aipw.clip,
                shrink=(shrink>0))
   }
+  } else {
+    data[,scores:=(get(Zcol)-get(Zhat))*(Q-Q.hat)]
+    if (testtype=="forest") {
+
+    if (any(condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR","MW"))) {
+      if (length(condition)>1) i=which(data$condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR","MW")) else i=NULL
+      fit_models(data,
+               i=i,
+               forest_type = "regression",
+               y_name="scores",
+               x_names=X,
+               folds=foldname,
+               margins = margins,
+               weight_name = weight,
+               cluster_name = cluster,
+               forest_opts = Cparameters,
+               aipw.clip=aipw.clip,
+               shrink=(shrink>0),
+               compute_scores=FALSE)
+     }
+      if (any(condition %in% "AHS")) {
+      if (length(condition)>1) i=which(data$condition %in% "AHS") else i=NULL
+      fit_models(data,
+                 i=i,
+                 forest_type = "regression",
+                 y_name="scores",
+                 x_names=c(X,y_name_lhs),
+                 folds=foldname,
+                 margins = margins,
+                 weight_name = weight,
+                 cluster_name = cluster,
+                 forest_opts = Cparameters,
+                 aipw.clip=aipw.clip,
+                 shrink=(shrink>0),
+                 compute_scores=FALSE)
+      }
+
+    }
+  }
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
-  if (shrink>0) {
+  if (shrink>0&testtype=="forest") {
     shrink_te_crossfit(
     data        = data,
     pred        = "pred",
