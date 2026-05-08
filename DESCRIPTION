@@ -16,5 +16,6 @@ Imports:
     stats,
     graphics,
     utils,
-    rpart
+    rpart,
+    fixest
 RoxygenNote: 7.3.3

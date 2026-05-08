@@ -1,6 +1,44 @@
 
 
 ##################################################### HELPER FUNCTIONS ######################################
+
+append_to_main_rhs <- function(fml, y_name) {
+  fml <- if (inherits(fml, "formula")) fml else stats::as.formula(fml)
+
+  split_top_pipe <- function(expr) {
+    if (is.call(expr) && identical(expr[[1L]], as.name("|"))) {
+      c(split_top_pipe(expr[[2L]]), list(expr[[3L]]))
+    } else {
+      list(expr)
+    }
+  }
+
+  rebuild_pipe <- function(parts) {
+    if (length(parts) == 1L) return(parts[[1L]])
+    Reduce(function(a, b) call("|", a, b), parts)
+  }
+
+  has_lhs <- length(fml) == 3L
+  lhs <- if (has_lhs) fml[[2L]] else NULL
+  rhs <- if (has_lhs) fml[[3L]] else fml[[2L]]
+
+  parts <- split_top_pipe(rhs)
+
+  parts[[1L]] <- if (identical(parts[[1L]], quote(1))) {
+    as.name(y_name)
+  } else {
+    call("+", parts[[1L]], as.name(y_name))
+  }
+
+  new_rhs <- rebuild_pipe(parts)
+
+  if (has_lhs) {
+    stats::as.formula(call("~", lhs, new_rhs), env = environment(fml))
+  } else {
+    stats::as.formula(call("~", new_rhs), env = environment(fml))
+  }
+}
+
 shrink_te_crossfit <- function(data,
                                pred,
                                pred_var,
@@ -1356,6 +1394,353 @@ crossfit_hat <- function(DT,
 
   invisible(DT)
 }
+
+##VALIDATE IV FORMULA
+split_top_pipe <- function(expr) {
+  if (is.call(expr) && identical(expr[[1L]], as.name("|"))) {
+    c(split_top_pipe(expr[[2L]]), list(expr[[3L]]))
+  } else {
+    list(expr)
+  }
+}
+
+rebuild_pipe <- function(parts) {
+  if (length(parts) == 0L) return(NULL)
+  if (length(parts) == 1L) return(parts[[1L]])
+  Reduce(function(a, b) call("|", a, b), parts)
+}
+
+parse_iv_formula <- function(fml) {
+  fml <- if (inherits(fml, "formula")) {
+    fml
+  } else {
+    stats::as.formula(fml, env = parent.frame())
+  }
+
+  env <- environment(fml)
+
+  # Handles R's nested parse of:
+  #   Y ~ X | D ~ Z
+  # as:
+  #   (Y ~ X | D) ~ Z
+  #
+  # Also handles omitted Y:
+  #   ~ X | D ~ Z
+  # which can parse as:
+  #   (~ X | D) ~ Z
+  if (length(fml) == 3L &&
+      is.call(fml[[2L]]) &&
+      identical(fml[[2L]][[1L]], as.name("~"))) {
+
+    left_fml <- fml[[2L]]
+
+    if (length(left_fml) == 3L) {
+      # left side is: Y ~ X | D
+      has_lhs <- TRUE
+      lhs <- left_fml[[2L]]
+      left_rhs <- left_fml[[3L]]
+    } else if (length(left_fml) == 2L) {
+      # left side is: ~ X | D
+      has_lhs <- FALSE
+      lhs <- NULL
+      left_rhs <- left_fml[[2L]]
+    } else {
+      stop("Malformed nested formula.")
+    }
+
+    z_expr <- fml[[3L]]
+
+    left_parts <- split_top_pipe(left_rhs)
+
+    d_expr <- left_parts[[length(left_parts)]]
+    rf_parts <- left_parts[-length(left_parts)]
+
+    iv <- call("~", d_expr, z_expr)
+
+    return(list(
+      formula = fml,
+      env = env,
+      has_lhs = has_lhs,
+      lhs = lhs,
+      rf_parts = rf_parts,
+      iv = iv
+    ))
+  }
+
+  # Normal formula parse:
+  #   Y ~ X | fe | D ~ Z
+  #   ~ X | fe | D ~ Z
+  has_lhs <- length(fml) == 3L
+
+  lhs <- if (has_lhs) fml[[2L]] else NULL
+  rhs <- if (has_lhs) fml[[3L]] else fml[[2L]]
+
+  parts <- split_top_pipe(rhs)
+
+  iv_flags <- vapply(
+    parts,
+    function(x) is.call(x) && identical(x[[1L]], as.name("~")),
+    logical(1L)
+  )
+
+  iv <- if (any(iv_flags)) {
+    parts[[tail(which(iv_flags), 1L)]]
+  } else {
+    NULL
+  }
+
+  rf_parts <- if (any(iv_flags)) {
+    parts[!iv_flags]
+  } else {
+    parts
+  }
+
+  list(
+    formula = fml,
+    env = env,
+    has_lhs = has_lhs,
+    lhs = lhs,
+    rf_parts = rf_parts,
+    iv = iv
+  )
+}
+
+validate_iv <- function(fml, data) {
+  parsed <- parse_iv_formula(fml)
+
+  errors <- character()
+
+  lhs <- parsed$lhs
+  rf_parts <- parsed$rf_parts
+  iv <- parsed$iv
+  env <- parsed$env
+  has_lhs <- parsed$has_lhs
+
+  Y <- if (has_lhs) all.vars(lhs) else NULL
+
+  if (has_lhs && length(Y) != 1L) {
+    errors <- c(errors, "If supplied, the outcome side must contain exactly one variable.")
+  }
+
+  if (is.null(iv)) {
+    errors <- c(errors, "No IV part found. Expected an endogenous variable with instrument, e.g. D ~ Z.")
+    D <- NULL
+    Z <- NULL
+  } else {
+    D <- all.vars(iv[[2L]])
+    Z <- all.vars(iv[[3L]])
+
+    if (length(D) != 1L) {
+      errors <- c(errors, "Exactly one endogenous variable is required.")
+    }
+
+    if (!is.symbol(iv[[2L]])) {
+      errors <- c(errors, "The endogenous variable must be a bare non-empty variable name, e.g. D ~ Z.")
+    }
+
+    if (length(Z) < 1L) {
+      errors <- c(errors, "At least one instrument is required.")
+    }
+  }
+
+  if (length(rf_parts) == 0L) {
+    errors <- c(errors, "No reduced-form RHS found before the IV part.")
+    covars_expr <- NULL
+    fe_expr <- NULL
+  } else {
+    covars_expr <- rf_parts[[1L]]
+    fe_expr <- if (length(rf_parts) >= 2L) rf_parts[[2L]] else NULL
+  }
+
+  X <- if (!is.null(covars_expr)) {
+    unique(all.vars(covars_expr))
+  } else {
+    character()
+  }
+
+  FE <- if (!is.null(fe_expr)) {
+    unique(all.vars(fe_expr))
+  } else {
+    character()
+  }
+
+  variables <- unique(c(Y, X, FE, D, Z))
+  missing <- setdiff(variables, names(data))
+
+  if (length(missing)) {
+    errors <- c(errors, paste("Missing variables:", paste(missing, collapse = ", ")))
+  }
+
+  if (length(errors)) {
+    stop(paste(errors, collapse = "\n"), call. = FALSE)
+  }
+
+  rf_rhs_expr <- rebuild_pipe(rf_parts)
+
+  reduced_form_rhs <- stats::as.formula(
+    call("~", rf_rhs_expr),
+    env = env
+  )
+
+  reduced_form_formula <- if (has_lhs) {
+    stats::as.formula(
+      call("~", lhs, rf_rhs_expr),
+      env = env
+    )
+  } else {
+    NULL
+  }
+
+  null_if_empty <- function(x) {
+    if (is.null(x) || length(x) == 0L) NULL else x
+  }
+
+  list(
+    ok = TRUE,
+    errors = NULL,
+    formula = parsed$formula,
+    reduced_form_rhs = reduced_form_rhs,
+    reduced_form_formula = reduced_form_formula,
+    variables = null_if_empty(variables),
+    X = null_if_empty(X),
+    Y = null_if_empty(Y),
+    D = null_if_empty(D),
+    Z = null_if_empty(Z),
+    FE = null_if_empty(FE),
+    has_lhs = has_lhs,
+    iv = iv
+  )
+}
+
+null_if_empty <- function(x) {
+  if (is.null(x) || length(x) == 0L) NULL else x
+}
+
+make_safe_name <- function(x) {
+  x <- as.character(x)
+  x <- gsub("[^A-Za-z0-9_]", "_", x)
+  x <- gsub("_+", "_", x)
+  x <- gsub("^_|_$", "", x)
+  x
+}
+
+one_hot_fe <- function(DT,
+                       FE,
+                       drop_first = TRUE,
+                       na_level = TRUE,
+                       prefix_sep = "__") {
+  new_names_all <- character()
+
+  if (is.null(FE) || length(FE) == 0L) {
+    return(NULL)
+  }
+
+  for (fe_name in FE) {
+    v <- DT[[fe_name]]
+
+    if (na_level) {
+      v_chr <- as.character(v)
+      v_chr[is.na(v_chr)] <- "__NA__"
+    } else {
+      v_chr <- as.character(v)
+    }
+
+    levs <- sort(unique(v_chr))
+    levs <- levs[!is.na(levs)]
+
+    if (drop_first && length(levs) > 0L) {
+      levs <- levs[-1L]
+    }
+
+    new_names <- paste0(fe_name, prefix_sep, make_safe_name(levs))
+
+    for (jj in seq_along(levs)) {
+      lv <- levs[jj]
+      nm <- new_names[jj]
+
+      if (lv == "__NA__" && na_level) {
+        DT[, (nm) := as.integer(is.na(get(fe_name)))]
+      } else {
+        DT[, (nm) := as.integer(as.character(get(fe_name)) == lv)]
+      }
+    }
+
+    new_names_all <- c(new_names_all, new_names)
+  }
+
+  null_if_empty(new_names_all)
+}
+
+##REDUCED FORM FITTED VALUES USING FEOLS
+parametric_hat <- function(                 fml,
+                                            data,
+                                            outcome_name,
+                                            margins = NULL,
+                                            weight_name = NULL,
+                                            pred_name = NULL,
+                                            i = NULL,
+                                            fixest_opts = list()) {
+  if (is.null(pred_name)) pred_name <- paste0(outcome_name, ".hat")
+
+  if (is.null(i)) {
+    i <- seq_len(nrow(data))
+  } else {
+    i <- as.integer(i)
+  }
+
+  fml <- if (inherits(fml, "formula")) fml else stats::as.formula(fml)
+
+  rhs <- if (length(fml) == 2L) {
+    fml[[2L]]
+  } else {
+    fml[[3L]]
+  }
+
+  fml_full <- stats::as.formula(
+    call("~", as.name(outcome_name), rhs),
+    env = environment(fml)
+  )
+
+  if (!(pred_name %chin% names(data))) {
+    data[, (pred_name) := NA_real_]
+  } else {
+    data[i, (pred_name) := NA_real_]
+  }
+
+  group_list <- if (is.null(margins) || length(margins) == 0L) {
+    list(i)
+  } else {
+    gid <- data[i, interaction(.SD, drop = TRUE), .SDcols = margins]
+    split(i, gid)
+  }
+
+  w_fml <- if (!is.null(weight_name)) {
+    stats::as.formula(paste0("~", weight_name))
+  } else {
+    NULL
+  }
+
+  for (idx in group_list) {
+    fit <- do.call(
+      fixest::feols,
+      c(
+        list(
+          fml = fml_full,
+          data = data[idx],
+          weights = w_fml,
+          notes = FALSE,
+          warn = FALSE
+        ),
+        fixest_opts
+      )
+    )
+
+    data[idx, (pred_name) := as.numeric(stats::predict(fit, newdata = data[idx]))]
+  }
+
+  invisible(data)
+}
+
 
 # ========= Helper: Estimate causal/regression/instrumental forests =========
 fit_models <- function(DT,

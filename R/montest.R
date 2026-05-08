@@ -1,27 +1,27 @@
 #' Monotonicity and LATE assumptions tests using sample splitting and machine learning
 #'
 #' \code{montest()} searches for violations of monotonicity and LATE assumptions in
-#' data-adaptive subsets of the sample and across various margins. It combines sample splitting,
+#' data-adaptive subsets of the sample and across various margins using parametric and semiparametric methods. It combines sample splitting,
 #' cross-fitting, and generalized random forest (or CART-based subset search) to identify
 #' regions of the covariate space or margins of the instrument or treatment where test
 #' statistics are most negative, and then evaluates those regions in the held-out sample.
 #' The function supports several testable conditions, including a simple test of whether
-#' the first stage is negative \code{"simple"}, the Kwan and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrment and treatment),
+#' the first stage is negative \code{"simple"}, the Kwan and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrument and treatment),
 #' the Mourifie and Wan (2017) conditions  \code{"MW"}, and the first stage conditional on Y-test from
 #' Andresen, Huber and Sloczynski (2026) \code{"AHS"}. Multivalued instruments, treatments and outcomes
 #' are expanded across margins and discretized into bins before estimation. See Details.
 #'
 #' @param data A \code{data.frame} or \code{data.table} containing the analysis sample.
 #'   Observations with missing values in any variables used by the call are dropped.
-#' @param D Character scalar giving the name of the treatment variable.
-#' @param Z Character scalar giving the name of the instrumental variable. \bold{Importantly, Z should be coded so that higher values weakly increases treatment.}
-#' @param X Optional character vector of covariate names used for subset discovery and
-#'   nuisance estimation.
-#' @param Y Optional character scalar for the outcome variable. Required for tests other
-#'   than \code{"simple"}.
+#' @param fml A fixest-style formula on the form Y~X|fe|D~Z that specified the IV call to be tested. Importantly, the instrument Z should be coded so that higher values of Z imply weakly higher values of D for everyone - positive monotonicity.
+#' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
+#' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or (the default) using semiparametric methods. In the latter case,
+#' all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
+#' @param one.hot boolean indicating whether fixed effects should be one-hot encoded or added as a continuous variable. Default is TRUE.
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
 #'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted, only \code{"simple"} is allowed.
+#'  @param target a scalar equal to either "ATE" or "overlap" to determine whether the function should target the average treatment effect ("ATE") in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap").
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuissances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
@@ -160,12 +160,12 @@
 #' @seealso montestplot LATEtest
 #' @export
 
-montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
+montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="overlap",
-                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="ATE",
+                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE, one.hot=TRUE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
                  #tune.Qparameters="none",tune.Zparameters="none",tune.Cparameters="none",tune.Yparameters="none",tune.Dparameters="none",
                  #tune.num.trees=200,tune.num.reps=50,tune.num.draws=1000,tunetype="one" ##tuning options
@@ -176,7 +176,33 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
 
   ################### 1 CHECK INPUT #####################
-  target=match.arg(target,c("overlap","ATE"))
+  ##Check formula and validate
+  v=validate_iv(fml,data)
+  X=v$X
+  Y=v$Y
+  D=v$D
+  Z=v$Z
+  FE=v$FE
+  fml_rf=v$reduced_form_rhs
+
+
+  ##One-hot encode FE or add to X
+  if (!is.null(FE)) {
+    if (one_hot) {
+      fe_dummies <- one_hot_fe(
+        DT = DT,
+        FE = FE,
+        drop_first = TRUE
+      )
+
+      X <- null_if_empty(unique(c(X, fe_dummies)))
+
+    } else {
+      X <- null_if_empty(unique(c(X, FE)))
+    }
+  }
+
+  target=match.arg(target,c("ATE","overlap"))
   linear=match.arg(linear,c("none","Z","D","DZ","all"),several.ok=TRUE)
   if ("all" %in% linear) {
     linear <- c("none", "Z", "D", "DZ")
@@ -661,7 +687,8 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
 
   ##estimate Z.hat for each margin in stacked data
   if (is.null(X)==FALSE) {
-    crossfit_hat(
+    if (parametric==FALSE) {
+      crossfit_hat(
       data,
       y_name = Z,
       x_names = X,
@@ -671,6 +698,15 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
       folds=foldname,
       mode=ifelse(("Z" %in% crossfit & is.null(foldname)==TRUE),"across","within")
     )
+    } else {
+      parametric_hat(
+              fml_rf,
+              data=data,
+             outcome_name=Z,
+             margins = margins,
+             weight_name = weight,
+             fixest_opts = Zparameters)
+    }
   } else { ##leave-cluster out mean
     zhat <- paste0(Z, ".hat")
     by_cl <- c("sample", margins, cluster)
@@ -1323,8 +1359,10 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
   time=rbind(time,"Stack data across margins"=proc.time())
 
   ##Estimate Q.hat in stacked data
+  if (is.null(X)==FALSE) {
   if (any(condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR"))) {
     if (length(condition)>1) i=which(data$condition %in%  c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR")) else i=NULL
+    if (parametric==FALSE) {
     crossfit_hat(
       data,
       i=i,
@@ -1336,11 +1374,22 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
       mode=ifelse(("Q" %in% crossfit & is.null(foldname)==TRUE),"across","within"),
       forest_opts = Qparameters
     )
+    } else {
+      parametric_hat(
+          fml_rf,
+          data=data,
+          outcome_name="Q",
+          i=i,
+          margins = margins,
+          weight_name = weight,
+          fixest_opts = Qparameters)
+    }
   }
 
   if (("AHS" %in% condition)>0) {
     if (length(condition)>1) i=which(data$condition=="AHS") else i=NULL
     yname_lhs= if (Y.res==TRUE) paste0(Y,".res") else Y
+    if (!parametric) {
     crossfit_hat(
       data,
       i=i,
@@ -1352,6 +1401,19 @@ montest=function(data,D,Z,X=NULL,Y=NULL,condition=NULL,inner.folds=NULL,crossfit
       mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
       forest_opts = Qparameters
     )
+    } else {
+      parametric_hat(
+           append_to_main_rhs(fml_rf, y_name_lhs),
+           data=data,
+           outcome_name="Q",
+           i=i,
+           margins = margins,
+           weight_name = weight,
+           fixest_opts = Qparameters)
+    }
+  }
+  } else {
+    ##LEAVE CLUSTER OUT MEAN Q
   }
   ## Check for usable (residual) variation in Q
   byvars <- c("sample", margins)

@@ -6,10 +6,7 @@
 \usage{
 montest(
   data,
-  D,
-  Z,
-  X = NULL,
-  Y = NULL,
+  fml,
   condition = NULL,
   inner.folds = NULL,
   crossfit = NULL,
@@ -35,12 +32,15 @@ montest(
   select = NULL,
   shrink = 0,
   linear = "none",
+  target = "ATE",
   cp = 0,
   maxrankcp = 10L,
   rpart_options = NULL,
   alpha = 0.05,
   prune = TRUE,
   screen = "stepdown",
+  parametric = FALSE,
+  one.hot = TRUE,
   Zparameters = list(),
   Yparameters = list(),
   Qparameters = list(),
@@ -52,19 +52,13 @@ montest(
 \item{data}{A \code{data.frame} or \code{data.table} containing the analysis sample.
 Observations with missing values in any variables used by the call are dropped.}
 
-\item{D}{Character scalar giving the name of the treatment variable.}
-
-\item{Z}{Character scalar giving the name of the instrumental variable. \bold{Importantly, Z should be coded so that higher values weakly increases treatment.}}
-
-\item{X}{Optional character vector of covariate names used for subset discovery and
-nuisance estimation.}
-
-\item{Y}{Optional character scalar for the outcome variable. Required for tests other
-than \code{"simple"}.}
+\item{fml}{A fixest-style formula on the form Y~X|fe|D~Z that specified the IV call to be tested. Importantly, the instrument Z should be coded so that higher values of Z imply weakly higher values of D for everyone - positive monotonicity.
+The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.}
 
 \item{condition}{Character vector selecting which tests to run. Allowed values are any combination of
-\code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
-If \code{Y} is omitted, only \code{"simple"} is allowed.}
+ \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
+ If \code{Y} is omitted, only \code{"simple"} is allowed.
+@param target a scalar equal to either "ATE" or "overlap" to determine whether the function should target the average treatment effect ("ATE") in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap").}
 
 \item{inner.folds}{Optional integer giving the number of within-sample folds used for
 cross-fitting nuisance functions and, optionally, forest predictions. Set to
@@ -122,6 +116,11 @@ testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \item{cp, maxrankcp, alpha, prune, }{Tuning parameters for the CART-based search
 routine. See Details.}
 
+\item{parametric}{A boolean indicating whether nuisances should be estimated using the parametric functional form specified or (the default) using semiparametric methods. In the latter case,
+all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.}
+
+\item{one.hot}{boolean indicating whether fixed effects should be one-hot encoded or added as a continuous variable. Default is TRUE.}
+
 \item{Zparameters, Yparameters, Qparameters, Dparameters, Cparameters}{Named lists of
 additional arguments passed to the underlying GRF estimation routines for different
 nuisance or target models.See regression_forest and causal_forest for details.
@@ -155,12 +154,12 @@ A named list:
 }
 \description{
 \code{montest()} searches for violations of monotonicity and LATE assumptions in
-data-adaptive subsets of the sample and across various margins. It combines sample splitting,
+data-adaptive subsets of the sample and across various margins using parametric and semiparametric methods. It combines sample splitting,
 cross-fitting, and generalized random forest (or CART-based subset search) to identify
 regions of the covariate space or margins of the instrument or treatment where test
 statistics are most negative, and then evaluates those regions in the held-out sample.
 The function supports several testable conditions, including a simple test of whether
-the first stage is negative \code{"simple"}, the Kwan and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrment and treatment),
+the first stage is negative \code{"simple"}, the Kwan and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrument and treatment),
 the Mourifie and Wan (2017) conditions  \code{"MW"}, and the first stage conditional on Y-test from
 Andresen, Huber and Sloczynski (2026) \code{"AHS"}. Multivalued instruments, treatments and outcomes
 are expanded across margins and discretized into bins before estimation. See Details.
@@ -202,17 +201,17 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
   There are a total of (J-1)(K-1) such conditions.
-  \item \code{condition=="MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
+  \item \code{condition=="MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
   and exclusion conditional on instrument validity. This is only allowed for a binary treatment. There are a total of 2K such conditions.
 }
 }
 \examples{
 \dontrun{
 
-#Generate data - Simulation DGP generalized from Farbmacher et. al.
-data=fct_datasim(setup="A",n=3000)
+#Generate data - Simulation DGP from Farbmacher et. al.
+data=fct_datasim(setup="A",dgp=2,n=3000)
 
-# Simple monotonicity test
+# Simple monotonicity-style test
 out <- montest(
   data = data,
   D = "D",
@@ -228,9 +227,7 @@ out2 <- montest(
   Z = "Z",
   Y="Y",
   X = c("Xvar1", "Xvar2", "Xvar3"),
-  condition = c("simple","KR","MW"),
-  select=c("yval","equation"),
-  pool="sample")
+  condition = c("simple","KR","MW"))
 }
 
 }
