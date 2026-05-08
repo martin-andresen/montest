@@ -1501,15 +1501,16 @@ parse_iv_formula <- function(fml) {
 
   env <- environment(fml)
 
-  # Handles R's nested parse of:
-  #   Y ~ X | D ~ Z
-  # as:
-  #   (Y ~ X | D) ~ Z
-  #
-  # Also handles omitted Y:
-  #   ~ X | D ~ Z
-  # which can parse as:
-  #   (~ X | D) ~ Z
+  ## Handles R's nested parse of:
+  ##   Y ~ X | D ~ Z
+  ##   Y ~ X | fe | D ~ Z
+  ## and one-sided versions:
+  ##   ~ X | D ~ Z
+  ##   ~ X | fe | D ~ Z
+  ##
+  ## R parses these roughly as:
+  ##   (Y ~ X | D) ~ Z
+  ##   (Y ~ X | fe | D) ~ Z
   if (length(fml) == 3L &&
       is.call(fml[[2L]]) &&
       identical(fml[[2L]][[1L]], as.name("~"))) {
@@ -1517,23 +1518,23 @@ parse_iv_formula <- function(fml) {
     left_fml <- fml[[2L]]
 
     if (length(left_fml) == 3L) {
-      # left side is: Y ~ X | D
       has_lhs <- TRUE
       lhs <- left_fml[[2L]]
       left_rhs <- left_fml[[3L]]
     } else if (length(left_fml) == 2L) {
-      # left side is: ~ X | D
       has_lhs <- FALSE
       lhs <- NULL
       left_rhs <- left_fml[[2L]]
     } else {
-      stop("Malformed nested formula.")
+      stop("Malformed nested formula.", call. = FALSE)
     }
 
     z_expr <- fml[[3L]]
-
     left_parts <- split_top_pipe(left_rhs)
 
+    ## Last left part is endogenous variable D.
+    ## Everything before it is the reduced-form RHS,
+    ## including fixed effects if present.
     d_expr <- left_parts[[length(left_parts)]]
     rf_parts <- left_parts[-length(left_parts)]
 
@@ -1549,9 +1550,8 @@ parse_iv_formula <- function(fml) {
     ))
   }
 
-  # Normal formula parse:
-  #   Y ~ X | fe | D ~ Z
-  #   ~ X | fe | D ~ Z
+  ## Normal parse, e.g. with parenthesized IV part:
+  ##   Y ~ X | fe | (D ~ Z)
   has_lhs <- length(fml) == 3L
 
   lhs <- if (has_lhs) fml[[2L]] else NULL
@@ -1754,14 +1754,14 @@ one_hot_fe <- function(DT,
 }
 
 ##REDUCED FORM FITTED VALUES USING FEOLS
-parametric_hat <- function(                 fml,
-                                            data,
-                                            outcome_name,
-                                            margins = NULL,
-                                            weight_name = NULL,
-                                            pred_name = NULL,
-                                            i = NULL,
-                                            fixest_opts = list()) {
+parametric_hat <- function(fml,
+                           data,
+                           outcome_name,
+                           margins = NULL,
+                           weight_name = NULL,
+                           pred_name = NULL,
+                           i = NULL,
+                           fixest_opts = list()) {
   if (is.null(pred_name)) pred_name <- paste0(outcome_name, ".hat")
 
   if (is.null(i)) {
@@ -1789,10 +1789,12 @@ parametric_hat <- function(                 fml,
     data[i, (pred_name) := NA_real_]
   }
 
-  group_list <- if (is.null(margins) || length(margins) == 0L) {
+  by_cols <- unique(c("sample", margins))
+
+  group_list <- if (length(by_cols) == 0L) {
     list(i)
   } else {
-    gid <- data[i, interaction(.SD, drop = TRUE), .SDcols = margins]
+    gid <- data[i, data.table::frankv(.SD, ties.method = "dense"), .SDcols = by_cols]
     split(i, gid)
   }
 
@@ -1803,6 +1805,8 @@ parametric_hat <- function(                 fml,
   }
 
   for (idx in group_list) {
+    if (length(idx) == 0L) next
+
     fit <- do.call(
       fixest::feols,
       c(
@@ -1822,7 +1826,6 @@ parametric_hat <- function(                 fml,
 
   invisible(data)
 }
-
 ##SCORES computation
 make_scores_vec <- function(Y,
                             Z,

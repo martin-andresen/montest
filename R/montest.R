@@ -184,7 +184,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   if (!is.null(FE)) {
     if (one_hot) {
       fe_dummies <- one_hot_fe(
-        DT = DT,
+        DT = data,
         FE = FE,
         drop_first = TRUE
       )
@@ -1287,8 +1287,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   }
 
   if (any(binarized_rows)) {
-    stopifnot(!is.null(Dname), Dname %in% names(data))
-
+    stopifnot(!is.null(Dcol), Dcol %in% names(data))
     data[, dval_Q__ := NA_real_]
 
     if ("dval" %in% names(data)) {
@@ -1298,8 +1297,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       ]
     }
 
-    # If D is binary, missing dval means threshold 1 internally.
-    # This does NOT modify the margin variable dval.
     if (D_is_binary__) {
       data[
         binarized_rows & is.na(dval_Q__),
@@ -1307,8 +1304,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       ]
     }
 
-    # If D is multivalued, missing dval is a problem only for rows that
-    # actually need binarized Q.
     if (any(is.na(data[binarized_rows, dval_Q__]))) {
       bad <- data[
         binarized_rows & is.na(dval_Q__),
@@ -1331,7 +1326,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
     data[
       binarized_rows,
-      Q := as.numeric(get(Dname) >= dval_Q__)
+      Q := as.numeric(get(Dcol) >= dval_Q__)
     ]
 
     data[, dval_Q__ := NULL]
