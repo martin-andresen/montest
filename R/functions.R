@@ -1395,6 +1395,88 @@ crossfit_hat <- function(DT,
   invisible(DT)
 }
 
+leave_cluster_out_mean <- function(DT,
+                                   y_name,
+                                   cluster_name = NULL,
+                                   by = NULL,
+                                   out_name = NULL,
+                                   weight_name = NULL,
+                                   i = NULL) {
+  stopifnot(data.table::is.data.table(DT))
+  stopifnot(y_name %chin% names(DT))
+
+  if (!is.null(cluster_name)) stopifnot(cluster_name %chin% names(DT))
+  if (!is.null(weight_name))  stopifnot(weight_name %chin% names(DT))
+
+  if (is.null(by)) by <- character()
+  by <- unique(as.character(by))
+  stopifnot(all(by %chin% names(DT)))
+
+  if (is.null(out_name)) out_name <- paste0(y_name, ".lco")
+
+  idx <- if (is.null(i)) seq_len(nrow(DT)) else as.integer(i)
+
+  tmp_cluster <- FALSE
+  cl_name <- cluster_name
+
+  if (is.null(cl_name)) {
+    cl_name <- ".__lco_row_cluster__"
+    tmp_cluster <- TRUE
+    DT[idx, (cl_name) := seq_along(idx)]
+  }
+
+  by_cl <- unique(c(by, cl_name))
+
+  if (is.null(weight_name)) {
+    cl <- DT[idx, .(
+      yw_sum = sum(get(y_name), na.rm = TRUE),
+      w_sum  = sum(!is.na(get(y_name)))
+    ), by = by_cl]
+  } else {
+    cl <- DT[idx, {
+      y <- get(y_name)
+      w <- get(weight_name)
+      ok <- !is.na(y) & !is.na(w)
+
+      .(
+        yw_sum = sum(w[ok] * y[ok]),
+        w_sum  = sum(w[ok])
+      )
+    }, by = by_cl]
+  }
+
+  tot <- cl[, .(
+    yw_tot = sum(yw_sum, na.rm = TRUE),
+    w_tot  = sum(w_sum, na.rm = TRUE),
+    G      = .N
+  ), by = by]
+
+  cl <- tot[cl, on = by]
+
+  cl[, (out_name) := data.table::fifelse(
+    w_tot > w_sum,
+    (yw_tot - yw_sum) / (w_tot - w_sum),
+    NA_real_
+  )]
+
+  if (!(out_name %chin% names(DT))) {
+    DT[, (out_name) := NA_real_]
+  }
+
+  DT[idx, (out_name) := cl[
+    .SD,
+    on = by_cl,
+    x[[out_name]]
+  ]]
+
+  if (tmp_cluster) {
+    DT[, (cl_name) := NULL]
+  }
+
+  invisible(DT)
+}
+
+
 ##VALIDATE IV FORMULA
 split_top_pipe <- function(expr) {
   if (is.call(expr) && identical(expr[[1L]], as.name("|"))) {
@@ -1741,36 +1823,210 @@ parametric_hat <- function(                 fml,
   invisible(data)
 }
 
+##SCORES computation
+make_scores_vec <- function(Y,
+                            Z,
+                            Y.hat,
+                            Z.hat,
+                            tau = NULL,
+                            target = c("all", "overlap"),
+                            z_is_linear = FALSE,
+                            Z.var.hat = NULL,
+                            clip = 1e-3,
+                            var_floor = 1e-6) {
+  target <- match.arg(target)
+
+  n <- length(Y)
+
+  if (length(z_is_linear) == 1L) {
+    z_is_linear <- rep(z_is_linear, n)
+  }
+
+  score <- rep(NA_real_, n)
+
+  idx_binary <- which(!z_is_linear)
+  idx_linear <- which(z_is_linear)
+
+  tau_needed <- length(idx_binary) > 0L || (target == "all" && length(idx_linear) > 0L)
+
+  if (tau_needed && is.null(tau)) {
+    stop("`tau` is required for binary Z rows and for target = 'all' with linear Z rows.",
+         call. = FALSE)
+  }
+
+  if (!is.null(tau) && length(tau) != n) {
+    stop("`tau` must have length equal to `Y`.", call. = FALSE)
+  }
+
+  if (length(idx_binary)) {
+    ii <- idx_binary
+
+    y <- as.numeric(Y[ii])
+    z <- as.numeric(Z[ii])
+    m <- as.numeric(Y.hat[ii])
+    e <- as.numeric(Z.hat[ii])
+    t <- as.numeric(tau[ii])
+
+    w <- as.numeric(z > 0.5)
+
+    if (any(e < 0 | e > 1, na.rm = TRUE)) {
+      e <- plogis(e)
+    }
+
+    if (!is.null(clip)) {
+      e <- pmin(pmax(e, clip), 1 - clip)
+    }
+
+    m1 <- m + (1 - e) * t
+    m0 <- m - e * t
+
+    if (target == "all") {
+      score[ii] <-
+        t +
+        (w / e) * (y - m1) -
+        ((1 - w) / (1 - e)) * (y - m0)
+    } else {
+      h <- e * (1 - e)
+      hbar <- mean(h, na.rm = TRUE)
+
+      score[ii] <-
+        (
+          h * t +
+            (1 - e) * w * (y - m1) -
+            e * (1 - w) * (y - m0)
+        ) / hbar
+    }
+  }
+
+  if (length(idx_linear)) {
+    ii <- idx_linear
+
+    y <- as.numeric(Y[ii])
+    z <- as.numeric(Z[ii])
+    m <- as.numeric(Y.hat[ii])
+    e <- as.numeric(Z.hat[ii])
+
+    zres <- z - e
+    yres <- y - m
+
+    if (target == "all") {
+      if (is.null(Z.var.hat)) {
+        stop("`Z.var.hat` is required for target = 'all' with continuous/linear Z.",
+             call. = FALSE)
+      }
+
+      t <- as.numeric(tau[ii])
+      v <- as.numeric(Z.var.hat[ii])
+      v <- pmax(v, var_floor)
+
+      score[ii] <- t + (zres / v) * (yres - t * zres)
+
+    } else {
+      zres_c <- zres - mean(zres, na.rm = TRUE)
+      yres_c <- yres - mean(yres, na.rm = TRUE)
+
+      den <- mean(zres_c^2, na.rm = TRUE)
+
+      score[ii] <- zres_c * yres_c / den
+    }
+  }
+
+  score
+}
+make_scores <- function(DT,
+                        y_name,
+                        z_name,
+                        y_hat_name,
+                        z_hat_name,
+                        tau_name,
+                        target = c("all", "overlap"),
+                        zvar_name = NULL,
+                        score_name = "scores",
+                        i = NULL,
+                        z_is_linear_name = "z_is_linear",
+                        clip = 1e-3,
+                        var_floor = 1e-6) {
+  target <- match.arg(target)
+
+  if (is.null(i)) i <- seq_len(nrow(DT))
+  i <- as.integer(i)
+
+  z_is_linear <- if (!is.null(z_is_linear_name) &&
+                     z_is_linear_name %chin% names(DT)) {
+    as.logical(DT[[z_is_linear_name]][i])
+  } else {
+    rep(FALSE, length(i))
+  }
+
+  Z.var.hat <- if (!is.null(zvar_name)) {
+    DT[[zvar_name]][i]
+  } else {
+    NULL
+  }
+
+  score <- make_scores_vec(
+    Y = DT[[y_name]][i],
+    Z = DT[[z_name]][i],
+    Y.hat = DT[[y_hat_name]][i],
+    Z.hat = DT[[z_hat_name]][i],
+    tau = DT[[tau_name]][i],
+    target = target,
+    z_is_linear = z_is_linear,
+    Z.var.hat = Z.var.hat,
+    clip = clip,
+    var_floor = var_floor
+  )
+
+  if (!(score_name %chin% names(DT))) {
+    DT[, (score_name) := NA_real_]
+  }
+
+  DT[i, (score_name) := score]
+
+  invisible(DT)
+}
 
 # ========= Helper: Estimate causal/regression/instrumental forests =========
 fit_models <- function(DT,
                        i = NULL,
-                       forest_type = c("causal", "regression", "instrumental"),
+                       forest_type = c("causal", "regression"),
                        y_name,
                        x_names,
                        margins = NULL,
                        w_name = NULL,
-                       z_name = NULL,
-                       folds = NULL,              # NULL => within-sample OOB for pred
+                       zvar_name = NULL,
+                       folds = NULL,
                        weight_name = NULL,
                        cluster_name = NULL,
                        forest_opts = NULL,
                        aipw.clip = 1e-3,
                        shrink = FALSE,
                        verbose = FALSE,
-                       compute_scores=TRUE) {
+                       target = c("all", "overlap")) {
 
+  target <- match.arg(target)
   stopifnot(data.table::is.data.table(DT))
   forest_type <- match.arg(forest_type)
 
+  do_scores <- identical(forest_type, "causal")
+
   stopifnot("sample" %chin% names(DT))
   stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
-  stopifnot(is.logical(compute_scores), length(compute_scores) == 1L, !is.na(compute_scores))
 
-  if (!is.null(folds)) stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
-  if (!is.null(aipw.clip)) {
-    stopifnot(is.numeric(aipw.clip), length(aipw.clip) == 1L, is.finite(aipw.clip), aipw.clip >= 0, aipw.clip < 1)
+  if (!is.null(folds)) {
+    stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
   }
+
+  if (!is.null(aipw.clip)) {
+    stopifnot(
+      is.numeric(aipw.clip),
+      length(aipw.clip) == 1L,
+      is.finite(aipw.clip),
+      aipw.clip >= 0,
+      aipw.clip < 1
+    )
+  }
+
   stopifnot(is.logical(shrink), length(shrink) == 1L, !is.na(shrink))
 
   if (is.null(i)) i <- DT[, .I]
@@ -1785,7 +2041,11 @@ fit_models <- function(DT,
 
   if (!("pred"   %chin% names(DT))) DT[, pred   := NA_real_]
   if (!("pred_o" %chin% names(DT))) DT[, pred_o := NA_real_]
-  if (compute_scores && !("scores" %chin% names(DT))) DT[, scores := NA_real_]
+
+  if (do_scores && !("scores" %chin% names(DT))) {
+    DT[, scores := NA_real_]
+  }
+
   if (shrink) {
     if (!("pred_var"   %chin% names(DT))) DT[, pred_var   := NA_real_]
     if (!("pred_o_var" %chin% names(DT))) DT[, pred_o_var := NA_real_]
@@ -1793,15 +2053,10 @@ fit_models <- function(DT,
 
   y_hat <- paste0(y_name, ".hat")
   w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
-  z_hat <- if (!is.null(z_name)) paste0(z_name, ".hat") else NULL
 
-  if (forest_type %in% c("causal", "instrumental")) {
+  if (forest_type == "causal") {
     stopifnot(!is.null(w_name), w_name %chin% names(DT))
     stopifnot(y_hat %chin% names(DT), w_hat %chin% names(DT))
-  }
-  if (forest_type == "instrumental") {
-    stopifnot(!is.null(z_name), z_name %chin% names(DT))
-    stopifnot(z_hat %chin% names(DT))
   }
 
   X_all <- as.matrix(DT[i, ..x_names])
@@ -1815,16 +2070,33 @@ fit_models <- function(DT,
   wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
   cl_all     <- if (!is.null(cluster_name)) DT[[cluster_name]] else NULL
 
+  z_is_linear_all <- if ("z_is_linear" %chin% names(DT)) {
+    as.logical(DT[["z_is_linear"]])
+  } else {
+    rep(FALSE, nrow(DT))
+  }
+
+  zvar_all <- if (!is.null(zvar_name)) {
+    stopifnot(zvar_name %chin% names(DT))
+    as.numeric(DT[[zvar_name]])
+  } else {
+    NULL
+  }
+
+  if (do_scores &&
+      identical(target, "all") &&
+      any(z_is_linear_all[i], na.rm = TRUE) &&
+      is.null(zvar_all)) {
+    stop("`zvar_name` is required when target = 'all' for continuous/linear Z rows.",
+         call. = FALSE)
+  }
+
   y_all <- as.numeric(DT[[y_name]])
 
-  if (forest_type %in% c("causal", "instrumental")) {
+  if (forest_type == "causal") {
     w_all    <- as.numeric(DT[[w_name]])
     yhat_all <- as.numeric(DT[[y_hat]])
     what_all <- as.numeric(DT[[w_hat]])
-  }
-  if (forest_type == "instrumental") {
-    z_all    <- as.numeric(DT[[z_name]])
-    zhat_all <- as.numeric(DT[[z_hat]])
   }
 
   build_forest_idx <- function(type, idx, compute.oob.predictions = FALSE) {
@@ -1834,29 +2106,38 @@ fit_models <- function(DT,
     cl <- if (is.null(cl_all)) NULL else cl_all[idx]
 
     if (type == "regression") {
-      do.call(grf::regression_forest,
-              c(list(X = X, Y = Y, sample.weights = sw, clusters = cl,
-                     compute.oob.predictions = compute.oob.predictions), forest_opts))
-    } else if (type == "causal") {
-      W <- w_all[idx]
-      do.call(grf::causal_forest,
-              c(list(X = X, Y = Y, W = W,
-                     Y.hat = yhat_all[idx],
-                     W.hat = what_all[idx],
-                     sample.weights = sw,
-                     clusters = cl,
-                     compute.oob.predictions = compute.oob.predictions), forest_opts))
+      do.call(
+        grf::regression_forest,
+        c(
+          list(
+            X = X,
+            Y = Y,
+            sample.weights = sw,
+            clusters = cl,
+            compute.oob.predictions = compute.oob.predictions
+          ),
+          forest_opts
+        )
+      )
     } else {
       W <- w_all[idx]
-      Z <- z_all[idx]
-      do.call(grf::instrumental_forest,
-              c(list(X = X, Y = Y, W = W, Z = Z,
-                     Y.hat = yhat_all[idx],
-                     W.hat = what_all[idx],
-                     Z.hat = zhat_all[idx],
-                     sample.weights = sw,
-                     clusters = cl,
-                     compute.oob.predictions = compute.oob.predictions), forest_opts))
+
+      do.call(
+        grf::causal_forest,
+        c(
+          list(
+            X = X,
+            Y = Y,
+            W = W,
+            Y.hat = yhat_all[idx],
+            W.hat = what_all[idx],
+            sample.weights = sw,
+            clusters = cl,
+            compute.oob.predictions = compute.oob.predictions
+          ),
+          forest_opts
+        )
+      )
     }
   }
 
@@ -1867,6 +2148,7 @@ fit_models <- function(DT,
     }
 
     p <- predict(fit, X, estimate.variance = TRUE)
+
     v <- if (!is.null(p$variance.estimates)) {
       pmax(as.numeric(p$variance.estimates), 0)
     } else {
@@ -1883,6 +2165,7 @@ fit_models <- function(DT,
     }
 
     p <- predict(fit, estimate.variance = TRUE)
+
     v <- if (!is.null(p$variance.estimates)) {
       pmax(as.numeric(p$variance.estimates), 0)
     } else {
@@ -1894,6 +2177,7 @@ fit_models <- function(DT,
 
   within_pred_idx <- function(idx_s) {
     n <- length(idx_s)
+
     if (n == 0L) {
       return(list(pred = numeric(), var = if (shrink) numeric() else NULL))
     }
@@ -1901,6 +2185,7 @@ fit_models <- function(DT,
     Xs <- X_all[rid[idx_s], , drop = FALSE]
 
     f <- folds_all[idx_s]
+
     if (data.table::uniqueN(f) < 2L) {
       fit <- build_forest_idx(forest_type, idx_s, compute.oob.predictions = TRUE)
       return(predict_oob_with_optional_var(fit, n))
@@ -1922,17 +2207,26 @@ fit_models <- function(DT,
         idx_tr <- idx_s[tr_pos]
         y_tr <- y_all[idx_tr]
         w_tr <- if (is.null(wgt_all)) NULL else wgt_all[idx_tr]
+
         mu <- if (length(y_tr) == 0L) {
           NA_real_
         } else {
           if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
         }
+
         p[te_pos] <- mu
         if (shrink) vv[te_pos] <- NA_real_
+
       } else {
-        fit_k <- build_forest_idx(forest_type, idx_s[tr_pos], compute.oob.predictions = FALSE)
+        fit_k <- build_forest_idx(
+          forest_type,
+          idx_s[tr_pos],
+          compute.oob.predictions = FALSE
+        )
+
         out_k <- predict_with_optional_var(fit_k, Xs[te_pos, , drop = FALSE])
         p[te_pos] <- out_k$pred
+
         if (shrink) vv[te_pos] <- out_k$var
       }
     }
@@ -1940,33 +2234,8 @@ fit_models <- function(DT,
     list(pred = p, var = vv)
   }
 
-  compute_aipw_vec <- function(idx_s, tau_vec) {
-    n <- length(idx_s)
-    if (n == 0L) return(numeric())
-
-    if (forest_type == "regression") return(y_all[idx_s])
-    if (forest_type != "causal")     return(rep(NA_real_, n))
-
-    Y <- y_all[idx_s]
-    m <- yhat_all[idx_s]
-    e <- what_all[idx_s]
-    W <- w_all[idx_s]
-
-    W <- as.numeric(W > 0.5)
-
-    if (any(e < 0 | e > 1, na.rm = TRUE)) e <- plogis(e)
-    if (!is.null(aipw.clip)) e <- pmin(pmax(e, aipw.clip), 1 - aipw.clip)
-
-    tau <- as.numeric(tau_vec)
-    stopifnot(length(tau) == n)
-
-    m1 <- m + (1 - e) * tau
-    m0 <- m - e * tau
-
-    tau + (W / e) * (Y - m1) - ((1 - W) / (1 - e)) * (Y - m0)
-  }
-
   idx_all <- i
+
   if (length(grp_cols) == 0L) {
     group_list <- list(idx_all)
   } else {
@@ -1977,7 +2246,7 @@ fit_models <- function(DT,
 
   pred_buf   <- rep(NA_real_, n_i)
   pred_o_buf <- rep(NA_real_, n_i)
-  score_buf <- if (compute_scores) rep(NA_real_, n_i) else NULL
+  score_buf  <- if (do_scores) rep(NA_real_, n_i) else NULL
 
   if (shrink) {
     pred_var_buf   <- rep(NA_real_, n_i)
@@ -1991,15 +2260,25 @@ fit_models <- function(DT,
     idx1 <- idx_g[sample_all[idx_g] == 1L]
     idx2 <- idx_g[sample_all[idx_g] == 2L]
 
-    fit1 <- if (length(idx1)) build_forest_idx(
-      forest_type, idx1,
-      compute.oob.predictions = is.null(folds_all)
-    ) else NULL
+    fit1 <- if (length(idx1)) {
+      build_forest_idx(
+        forest_type,
+        idx1,
+        compute.oob.predictions = is.null(folds_all)
+      )
+    } else {
+      NULL
+    }
 
-    fit2 <- if (length(idx2)) build_forest_idx(
-      forest_type, idx2,
-      compute.oob.predictions = is.null(folds_all)
-    ) else NULL
+    fit2 <- if (length(idx2)) {
+      build_forest_idx(
+        forest_type,
+        idx2,
+        compute.oob.predictions = is.null(folds_all)
+      )
+    } else {
+      NULL
+    }
 
     if (is.null(folds_all)) {
       res1 <- if (!is.null(fit1) && length(idx1)) {
@@ -2013,23 +2292,32 @@ fit_models <- function(DT,
       } else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
+
     } else {
-      res1 <- if (length(idx1)) within_pred_idx(idx1) else {
+      res1 <- if (length(idx1)) {
+        within_pred_idx(idx1)
+      } else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
 
-      res2 <- if (length(idx2)) within_pred_idx(idx2) else {
+      res2 <- if (length(idx2)) {
+        within_pred_idx(idx2)
+      } else {
         list(pred = numeric(), var = if (shrink) numeric() else NULL)
       }
     }
 
     res1_o <- if (!is.null(fit2) && length(idx1)) {
       predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
-    } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
+    } else {
+      list(pred = numeric(), var = if (shrink) numeric() else NULL)
+    }
 
     res2_o <- if (!is.null(fit1) && length(idx2)) {
       predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
-    } else list(pred = numeric(), var = if (shrink) numeric() else NULL)
+    } else {
+      list(pred = numeric(), var = if (shrink) numeric() else NULL)
+    }
 
     p1   <- res1$pred
     p2   <- res2$pred
@@ -2043,24 +2331,58 @@ fit_models <- function(DT,
       v2_o <- res2_o$var
     }
 
-    sc1 <- if (compute_scores && length(idx1)) compute_aipw_vec(idx1, p1) else numeric()
-    sc2 <- if (compute_scores && length(idx2)) compute_aipw_vec(idx2, p2) else numeric()
+    if (do_scores && length(idx1)) {
+      sc1 <- make_scores_vec(
+        Y = y_all[idx1],
+        Z = w_all[idx1],
+        Y.hat = yhat_all[idx1],
+        Z.hat = what_all[idx1],
+        tau = p1,
+        target = target,
+        z_is_linear = z_is_linear_all[idx1],
+        Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx1] else NULL,
+        clip = aipw.clip
+      )
+    }
+
+    if (do_scores && length(idx2)) {
+      sc2 <- make_scores_vec(
+        Y = y_all[idx2],
+        Z = w_all[idx2],
+        Y.hat = yhat_all[idx2],
+        Z.hat = what_all[idx2],
+        tau = p2,
+        target = target,
+        z_is_linear = z_is_linear_all[idx2],
+        Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx2] else NULL,
+        clip = aipw.clip
+      )
+    }
 
     if (length(idx1)) {
       r1 <- rid[idx1]
       pred_buf[r1]   <- p1
       pred_o_buf[r1] <- p1_o
-      if (compute_scores) score_buf[r1] <- sc1
+
+      if (do_scores) {
+        score_buf[r1] <- sc1
+      }
+
       if (shrink) {
         pred_var_buf[r1]   <- v1
         pred_o_var_buf[r1] <- v1_o
       }
     }
+
     if (length(idx2)) {
       r2 <- rid[idx2]
       pred_buf[r2]   <- p2
       pred_o_buf[r2] <- p2_o
-      if (compute_scores)  score_buf[r2]  <- sc2
+
+      if (do_scores) {
+        score_buf[r2] <- sc2
+      }
+
       if (shrink) {
         pred_var_buf[r2]   <- v2
         pred_o_var_buf[r2] <- v2_o
@@ -2073,29 +2395,36 @@ fit_models <- function(DT,
   }
 
   if (shrink) {
-    if (compute_scores) {
-      DT[i, `:=`(pred = pred_buf,
-                 pred_var = pred_var_buf,
-                 pred_o = pred_o_buf,
-                 pred_o_var = pred_o_var_buf,
-                 scores = score_buf)]
+    if (do_scores) {
+      DT[i, `:=`(
+        pred = pred_buf,
+        pred_var = pred_var_buf,
+        pred_o = pred_o_buf,
+        pred_o_var = pred_o_var_buf,
+        scores = score_buf
+      )]
     } else {
-      DT[i, `:=`(pred = pred_buf,
-                 pred_var = pred_var_buf,
-                 pred_o = pred_o_buf,
-                 pred_o_var = pred_o_var_buf)]
+      DT[i, `:=`(
+        pred = pred_buf,
+        pred_var = pred_var_buf,
+        pred_o = pred_o_buf,
+        pred_o_var = pred_o_var_buf
+      )]
     }
   } else {
-    if (compute_scores) {
-      DT[i, `:=`(pred = pred_buf,
-                 pred_o = pred_o_buf,
-                 scores = score_buf)]
+    if (do_scores) {
+      DT[i, `:=`(
+        pred = pred_buf,
+        pred_o = pred_o_buf,
+        scores = score_buf
+      )]
     } else {
-      DT[i, `:=`(pred = pred_buf,
-                 pred_o = pred_o_buf)]
+      DT[i, `:=`(
+        pred = pred_buf,
+        pred_o = pred_o_buf
+      )]
     }
   }
-
 
   DT[, (rid_col) := NULL]
 
