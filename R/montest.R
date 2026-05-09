@@ -33,7 +33,6 @@
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing canot be combined with cluster.
-#' @param num.trees Integer, default 2000 giving the number of trees for the main forest fits.
 #' @param seed Integer random seed, default 10101, set to NULL to disable setting seed
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
@@ -41,9 +40,8 @@
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
-#' @param sim Logical; for development and testing
 #' @param Ysubsets,Dsubsets,Zsubsets Integers giving the number of bins used when
-#'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Dsubsets and Zsubsets may be set to 0L for linear models.
+#'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Integer >1 required.
 #' @param Y.res Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
 #'   outcome on the right hand side \code{MW,AHS}.
 #' @param testtype Character string selecting the subset-search routine. Must be
@@ -160,11 +158,11 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=NULL,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",one.hot=TRUE,
-                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE, one.hot=TRUE,
+                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
 ){
 
-  time=proc.time()
+  time=rbind(start=proc.time())
   if (!is.null(seed)) set.seed(seed)
 
 
@@ -269,11 +267,15 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
   else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample","linear")
   else if (sum(pool=="none")==1) pool=c()
-  else if (is.null(pool)==FALSE) pool=match.arg(pool,c("zmargin","dval","yval","condition","sample","linear"),several.ok=TRUE)
+  else if (is.null(pool)==FALSE) pool <- match.arg(
+    pool,
+    c("zmargin", "dval", "yval", "condition", "equation", "sample", "linear"),
+    several.ok = TRUE
+  )
   else pool=c("zmargin","dval","yval","sample","linear")
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
-  else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample")
+  else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample","linear")
   else if (sum(select=="none")==1) select=c()
   else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample","linear"),several.ok=TRUE)
   else select="condition"
@@ -326,7 +328,9 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     }
   }
 
-  if (!any(condition %in% c("AHS","MW","KR"))&is.null(Y)==FALSE) Y=NULL
+  if (!any(condition %in% c("AHS", "MW", "KR")) && !is.null(Y)) {
+    Y <- NULL
+  }
 
   ##Downgrade linear options if D or Z is binary:
   ## Number of support points in original D and Z
@@ -506,8 +510,9 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   ###################### 2 Prepare data #########################3
 
 
-  allvars=c(X,Y,D,Z,weight,cluster)
-  data=data[,..allvars]
+  allvars <- unique(c(X, Y, D, Z, weight, cluster))
+  allvars <- allvars[!is.na(allvars)]
+  data <- data[, ..allvars]
   dropped=sum(!complete.cases(data))
   if (dropped>0) message(paste("Note: dropped ",dropped," observations with missing data on one or more input variables."))
   data=data[complete.cases(data)]
@@ -715,7 +720,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   ## Conditional variance of Z is only needed for continuous/linear-Z rows
   ## when the global target is "all".
-  data[, need_z_var := FALSE]
+  if (identical(target, "all")) {
+    data[
+      z_is_linear == TRUE & condition %in% c("simple", "AHS"),
+      need_z_var := TRUE
+    ]
+  }
 
   if (identical(target, "all")) {
     data[z_is_linear == TRUE, need_z_var := TRUE]
@@ -757,11 +767,16 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       out_name = zhat,
     )
   }
-  if (isTRUE(normalize.Z)) { ##consider clipping Z.hat here first??
+  if (isTRUE(normalize.Z)) {
     zhat_col <- paste0(Z, ".hat")
+
+    data[z_is_linear != TRUE, (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)]
+
     data[z_is_linear != TRUE,
          (zhat_col) := get(zhat_col) * .N / sum(get(Z) / get(zhat_col)),
          by = c("sample", margins)]
+
+    data[z_is_linear != TRUE, (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)]
   }
 
   ##Optional: Estimate conditional variance of Z, if required for target="all" & linear Z
@@ -868,7 +883,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   # Initialize helper
   if (!("min_cell_Z" %in% names(data))) data[, min_cell_Z := NA_integer_]
-
+  data[, bad_Z := FALSE]
   if (need_linear_Z) {
     # Continuous Z: require group size, variation in Z, and variation in residualized Z
     data[z_is_linear == TRUE, bad_Z := (
@@ -881,7 +896,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     # Discrete Z: require at least 2 support points, enough observations in each Z cell,
     # and variation in residualized Z
     data[z_is_linear == FALSE, min_cell_Z := {
-      ztab <- table(get(Zname), useNA = "no")
+      ztab <- table(get(Z), useNA = "no")
       if (length(ztab) == 0L) NA_integer_ else min(ztab)
     }, by = byvars]
 
@@ -972,6 +987,11 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
     ## ordinary margins: binarized Z and binarized D
     if ("none" %in% linear) {
+      if (!exists("os_res")) {
+        stop("Internal error: ordinary margin rows require `os_res`, but it was not computed.",
+             call. = FALSE)
+      }
+
       tmp <- os_res$threshold[one_sided == FALSE]
 
       keep <- intersect(c("zmargin", "dmargin"), names(tmp))
@@ -1346,8 +1366,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     data[, dval_Q__ := NULL]
   }
 
-  rm(Dvals__, D_is_binary__, linear_requested__)
-
   # ---------------- MW ----------------
 
   if (any(is_MW)) {
@@ -1415,66 +1433,84 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   ##Estimate Q.hat in stacked data
   if (!is.null(X)) {
-  if (any(condition %in% c("simple","KR"))) {
-    if (length(condition)>1) i=which(data$condition %in%  c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR")) else i=NULL
-    if (parametric==FALSE) {
-    crossfit_hat(
-      data,
-      i=i,
-      y_name = "Q",
-      x_names = X,
-      folds=foldname,
-      margins = margins,
-      weight_name = weight,
-      mode=ifelse(("Q" %in% crossfit & is.null(foldname)==TRUE),"across","within"),
-      forest_opts = Qparameters
-    )
-    } else {
-      parametric_hat(
-          fml_rf,
-          data=data,
-          outcome_name="Q",
-          i=i,
+    if (any(condition %in% c("simple", "KR"))) {
+      i <- if (length(condition) > 1L) {
+        which(data$condition %in% c("simple", "KR"))
+      } else {
+        NULL
+      }
+
+      if (!parametric) {
+        crossfit_hat(
+          data,
+          i = i,
+          y_name = "Q",
+          x_names = X,
+          folds = foldname,
           margins = margins,
           weight_name = weight,
-          fixest_opts = Qparameters)
+          mode = if ("Q" %in% crossfit && is.null(foldname)) "across" else "within",
+          forest_opts = Qparameters
+        )
+      } else {
+        parametric_hat(
+          fml_rf,
+          data = data,
+          outcome_name = "Q",
+          i = i,
+          margins = margins,
+          weight_name = weight,
+          fixest_opts = Qparameters
+        )
+      }
     }
-  }
   } else {
-    leave_cluster_out_mean(
-      DT = data,
-      y_name = "Q",
-      cluster_name = cluster,
-      by = c("sample", margins),
-      out_name = "Q.hat",
-      weight_name = weight
-    )
+    i <- which(data$condition != "AHS")
+
+    if (length(i)) {
+      leave_cluster_out_mean(
+        DT = data,
+        i = i,
+        y_name = "Q",
+        cluster_name = cluster,
+        by = c("sample", margins),
+        out_name = "Q.hat",
+        weight_name = weight
+      )
+    }
   }
 
   if ("AHS" %in% condition) {
-    if (length(condition)>1) i=which(data$condition=="AHS") else i=NULL
-    y_name_rhs= if (Y.res==TRUE) paste0(Y,".res") else Y
+    i <- if (length(condition) > 1L) {
+      which(data$condition == "AHS")
+    } else {
+      NULL
+    }
+
+    y_name_rhs <- if (isTRUE(Y.res)) paste0(Y, ".res") else Y
+
     if (!parametric) {
       crossfit_hat(
         data,
-        i=i,
+        i = i,
         y_name = "Q",
-        folds=foldname,
-        x_names = c(X,yname_lhs),
+        folds = foldname,
+        x_names = null_if_empty(c(X, y_name_rhs)),
         margins = margins,
         weight_name = weight,
-        mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
+        mode = if ("Q" %in% crossfit && is.null(foldname)) "across" else "within",
         forest_opts = Qparameters
       )
     } else {
       parametric_hat(
         append_to_main_rhs(fml_rf, y_name_rhs),
-        data=data,
-        outcome_name="Q",
-        i=i,
+        data = data,
+        outcome_name = "Q",
+        i = i,
         margins = margins,
         weight_name = weight,
-        fixest_opts = Qparameters)
+        fixest_opts = Qparameters
+      )
     }
   }
 
@@ -1488,8 +1524,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   # family/type flags
   data[, Q_continuous :=
-         condition %in% c("MW", "simple_linearD", "simple_linearDZ")]
-
+         condition == "MW" |
+         (
+           condition %in% c("simple", "AHS") &
+             "linear" %in% names(data) &
+             linear %in% c("D", "DZ")
+         )]
   data[, Q_needs_resid :=
          condition != "MW"]
 
@@ -1618,7 +1658,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   ## ------------------------------------------------------------
   if (any(data$condition == "MW")) {
     i_mw <- which(data$condition == "MW")
-
+    y_name_rhs <- if (!is.null(Y) && isTRUE(Y.res)) paste0(Y, ".res") else Y
     data[i_mw, scores := Q]
 
     if (testtype == "forest") {
@@ -1717,7 +1757,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
         i = i_ahs,
         forest_type = "causal",
         y_name = "Q",
-        x_names = c(X, y_rhs),
+        x_names = c(X, y_name_rhs),
         w_name = Z,
         zvar_name = Zvarhat,
         folds = foldname,
