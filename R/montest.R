@@ -28,6 +28,7 @@
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
+#' @param aipw.clip Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
@@ -89,7 +90,6 @@
 #' \code{montest} supports weights and clustering, and allow for multivalued treatments and instruments
 #' by binarizing instruments and treatments into quantile or equisized bins. The command also tests for
 #' one-sided monotonicity (within margins of the treatment and instrument) and if found, warns the user
-#' and skips testing any trivially satisified conditions.
 #' and skips testing any trivially satisfied conditions.
 #'
 #' Consider a multivalued instrument with K values, a multivalued treatment with J values, a multivalued outcome with L values. \code{montest} can test the following families of conditions:
