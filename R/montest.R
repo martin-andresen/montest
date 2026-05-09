@@ -28,7 +28,6 @@
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
-#' @param aipw.clip Positive scalar in \code{(0,1)}, defeault 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
@@ -91,6 +90,7 @@
 #' by binarizing instruments and treatments into quantile or equisized bins. The command also tests for
 #' one-sided monotonicity (within margins of the treatment and instrument) and if found, warns the user
 #' and skips testing any trivially satisified conditions.
+#' and skips testing any trivially satisfied conditions.
 #'
 #' Consider a multivalued instrument with K values, a multivalued treatment with J values, a multivalued outcome with L values. \code{montest} can test the following families of conditions:
 #' \enumerate{
@@ -735,19 +735,11 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   ## Conditional variance of Z is only needed for continuous/linear-Z rows
   ## when the global target is "all".
-  data[, need_z_var := FALSE]
-
-  if (identical(target, "all")) {
-    data[
-      z_is_linear == TRUE & condition %in% c("simple", "AHS"),
-      need_z_var := TRUE
-    ]
-  }
-
-  need_z_var_global <- data[, any(need_z_var, na.rm = TRUE)]
-  need_z_var_rows   <- which(data$need_z_var)
+  need_z_var_global <- identical(target, "all") && any(data$z_is_linear == TRUE, na.rm = TRUE)
+  need_z_var_rows <- if (need_z_var_global) which(data$z_is_linear == TRUE) else integer()
 
   ##estimate Z.hat for each margin in stacked data
+  zhat <- paste0(Z, ".hat")
   if (!is.null(X)) {
     if (parametric==FALSE) {
       crossfit_hat(
@@ -770,13 +762,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
              fixest_opts = Zparameters)
     }
   } else { ##leave-cluster out mean
-    zhat <- paste0(Z, ".hat")
     leave_cluster_out_mean(
       DT = data,
       y_name = Z,
       cluster_name = cluster,
       by = c("sample", margins),
-      out_name = zhat,
+      out_name = zhat
     )
   }
   if (isTRUE(normalize.Z)) {
@@ -797,7 +788,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   if (need_z_var_global) {
     i_zvar <- need_z_var_rows
 
-    data[i_zvar, Zvar := (get(Z) - get(Zhat))^2]
+    data[i_zvar, Zvar := (get(Z) - get(zhat))^2]
     Zvarhat <- "Zvar.hat"
 
     if (!is.null(X)) {
@@ -840,7 +831,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
   if (any(condition %in% c("MW","AHS"))&Y.res==TRUE)  {
-    if (is.null(X)) {
+    if (!is.null(X)) {
     crossfit_hat(
       data,
       y_name = Y,
@@ -897,13 +888,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   }
   ##Check for residual variation in Z
   byvars <- c("sample", margins)
-  Zhat <- paste0(Z, ".hat")
 
   # Common summaries
   data[, n_group := .N, by = byvars]
   data[, nZ := uniqueN(get(Z), na.rm = TRUE), by = byvars]
   data[, sdZ := stats::sd(get(Z), na.rm = TRUE), by = byvars]
-  data[, sd_res := stats::sd(get(Z) - get(Zhat), na.rm = TRUE), by = byvars]
+  data[, sd_res := stats::sd(get(Z) - get(zhat), na.rm = TRUE), by = byvars]
 
   # Initialize helper
   if (!("min_cell_Z" %in% names(data))) data[, min_cell_Z := NA_integer_]
@@ -1289,7 +1279,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   Dcol <- Dbincol
   Ycol <- if (!is.null(Y)) paste0(Y, ".bin") else NULL
   Zcol <- Z
-  Zhat <- paste0(Zcol, ".hat")
 
   data[, Q := NA_real_]
 
@@ -1395,18 +1384,18 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   if (any(is_MW)) {
     stopifnot(!is.null(Dcol), Dcol %in% names(data))
     stopifnot(!is.null(Zcol), Zcol %in% names(data))
-    stopifnot(Zhat %in% names(data))
+    stopifnot(zhat %in% names(data))
     stopifnot("equation" %in% names(data))
 
     data[
       condition == "MW",
       Q := equation * (
-        (1 - get(Zhat)) * get(Dcol) * get(Zcol) -
-          get(Zhat) * get(Dcol) * (1 - get(Zcol))
+        (1 - get(zhat)) * get(Dcol) * get(Zcol) -
+          get(zhat) * get(Dcol) * (1 - get(Zcol))
       ) +
         (1 - equation) * (
-          get(Zhat) * (1 - get(Dcol)) * (1 - get(Zcol)) -
-            (1 - get(Zhat)) * (1 - get(Dcol)) * get(Zcol)
+          get(zhat) * (1 - get(Dcol)) * (1 - get(Zcol)) -
+            (1 - get(zhat)) * (1 - get(Dcol)) * get(Zcol)
         )
     ]
   }
@@ -1712,7 +1701,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       y_name = "Q",
       z_name = Z,
       y_hat_name = "Q.hat",
-      z_hat_name = Zhat,
+      z_hat_name = zhat,
       tau_name = NULL,
       target = "overlap",
       zvar_name = NULL,
