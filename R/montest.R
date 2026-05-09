@@ -24,15 +24,15 @@
 #'  @param target a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). For linear Z versions, overlap targets the residualized slope, while all targets the average partial effect.
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
-#'   \code{NULL} to disable the inner split. Defaults to NULL - nuissances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
+#'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 #'   normalized after estimation.
-#' @param aipw.clip Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
-#'   scores when augmented inverse-probability weighted scores are constructed.
+#' @param aipw.clip Positive scalar in \code{(0,1)}, defeault 1e-3, used to trim estimated propensity
+#'   scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
-#'   inference is used in forest-based testing. CART testing canot be combined with cluster.
+#'   inference is used in forest-based testing. CART testing cannot be combined with cluster.
 #' @param seed Integer random seed, default 10101, set to NULL to disable setting seed
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
@@ -61,9 +61,9 @@
 #' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
-#' @param Zparameters,Yparameters,Qparameters,Dparameters,Cparameters Named lists of
-#'   additional arguments passed to the underlying GRF estimation routines for different
-#'   nuisance or target models.See regression_forest and causal_forest for details.
+#' @param Zparameters,Yparameters,Qparameters,Cparameters,Rparameters Named lists of
+#'   additional arguments passed to the underlying estimation routines for different
+#'   nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
 #'   @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
 #'
 #' @details
@@ -79,7 +79,7 @@
 #'   \item Separate causal forests of the outcome \code{Q}, on
 #'   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
 #'   treatment effects are predicted in and out of sample and scores constructed
-#'   \item Each sample part (optionally within margins, depending on the options in code{pool}) is sorted
+#'   \item Each sample part (optionally within margins, depending on the options in \code{pool}) is sorted
 #'   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
 #'   in predicted treatment effects. Select the cutoff with the smallest t-statistic on the mean of scores
 #'   Alternatively, subset selection can be done using a CART algorithm.
@@ -103,7 +103,7 @@
 #'   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
 #'   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
 #'   There are a total of (J-1)(K-1) such conditions.
-#'   \item \code{condition=="MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
+#'   \item \code{condition = "MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
 #'   and exclusion conditional on instrument validity. This is only allowed for a binary treatment. There are a total of 2K such conditions.
 #' }
 #'
@@ -154,11 +154,11 @@
 #' @export
 
 montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
-                 gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=NULL,joint=TRUE,
+                 normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
+                 gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",one.hot=TRUE,
-                 cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
+                 cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
 ){
 
@@ -193,6 +193,17 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     } else {
       X <- null_if_empty(unique(c(X, FE)))
     }
+  }
+
+  if (!is.null(inner.folds)) {
+    if (!is.numeric(inner.folds) ||
+        length(inner.folds) != 1L ||
+        !is.finite(inner.folds) ||
+        inner.folds != as.integer(inner.folds) ||
+        inner.folds < 2L) {
+      stop("inner.folds must be NULL or a single integer >= 2.", call. = FALSE)
+    }
+    inner.folds <- as.integer(inner.folds)
   }
 
   linear=match.arg(linear,c("none","Z","D","DZ","all"),several.ok=TRUE)
@@ -529,14 +540,18 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
 
   ##OUTER SPLIT
-  if (is.null(stratify)==TRUE) {
-    if (is.null(cluster)==TRUE&Zsubsets>0) strat=Z else strat=NULL
-  } else strat=NULL
+  stopifnot(is.logical(stratify), length(stratify) == 1L, !is.na(stratify))
+
+  strat <- NULL
+
+  if (isTRUE(stratify) && is.null(cluster)) {
+    strat <- Z
+  }
   make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=strat)
 
   ##OPTIONAL INNER SPLIT
   if (is.null(inner.folds)==FALSE) {
-    make_group_folds(data,K = inner.folds,cluster_name = cluster,fold_col = "cf_fold",verbose = FALSE,by_col="sample",diag_prefix=NULL,strat_col=stratify)
+    make_group_folds(data,K = inner.folds,cluster_name = cluster,fold_col = "cf_fold",verbose = FALSE,by_col="sample",diag_prefix=NULL,strat_col=strat)
     foldname="cf_fold"
   } else {
     foldname=NULL
@@ -720,6 +735,8 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   ## Conditional variance of Z is only needed for continuous/linear-Z rows
   ## when the global target is "all".
+  data[, need_z_var := FALSE]
+
   if (identical(target, "all")) {
     data[
       z_is_linear == TRUE & condition %in% c("simple", "AHS"),
@@ -727,13 +744,8 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     ]
   }
 
-  if (identical(target, "all")) {
-    data[z_is_linear == TRUE, need_z_var := TRUE]
-  }
-
   need_z_var_global <- data[, any(need_z_var, na.rm = TRUE)]
   need_z_var_rows   <- which(data$need_z_var)
-
 
   ##estimate Z.hat for each margin in stacked data
   if (!is.null(X)) {
@@ -828,6 +840,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
   if (any(condition %in% c("MW","AHS"))&Y.res==TRUE)  {
+    if (is.null(X)) {
     crossfit_hat(
       data,
       y_name = Y,
@@ -838,9 +851,20 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       mode=ifelse(("Y" %in% crossfit & is.null(foldname)==TRUE),"across","within"),
       forest_opts = Yparameters
     )
+    } else {
+        leave_cluster_out_mean(
+          DT = data,
+          y_name = Y,
+          cluster_name = cluster,
+          by = c("sample", margins),
+          out_name = paste0(Y,".hat"),
+          weight_name = weight
+        )
+    }
     data[,paste0(Y,".res"):=get(..Y)-get(paste0(..Y,".hat"))]
     data[, c(Y, paste0(Y, ".hat")) := NULL]
-  }
+    y_name_rhs <- paste0(Y, ".res")
+  } else y_name_rhs <- Y
 
   ##Check for onesided noncompliance
   if (has_margin_conditions) {
@@ -1487,8 +1511,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       NULL
     }
 
-    y_name_rhs <- if (isTRUE(Y.res)) paste0(Y, ".res") else Y
-
     if (!parametric) {
       crossfit_hat(
         data,
@@ -1652,13 +1674,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   time=rbind(time,"Estimate nuisance for outcomes Q"=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
-  if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuissances - use OOB for forest.
+  if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuisances - use OOB for forest.
   ## ------------------------------------------------------------
   ## MW: no target; conditional mean E[Q | X]
   ## ------------------------------------------------------------
   if (any(data$condition == "MW")) {
     i_mw <- which(data$condition == "MW")
-    y_name_rhs <- if (!is.null(Y) && isTRUE(Y.res)) paste0(Y, ".res") else Y
     data[i_mw, scores := Q]
 
     if (testtype == "forest") {
@@ -1667,7 +1688,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
         i = i_mw,
         forest_type = "regression",
         y_name = "Q",
-        x_names = c(X, y_name_rhs),
+        x_names = null_if_empty(c(X, y_name_rhs)),
         folds = foldname,
         margins = margins,
         weight_name = weight,
@@ -1757,7 +1778,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
         i = i_ahs,
         forest_type = "causal",
         y_name = "Q",
-        x_names = c(X, y_name_rhs),
+        x_names = null_if_empty(c(X, y_name_rhs)),
         w_name = Z,
         zvar_name = Zvarhat,
         folds = foldname,
@@ -1795,7 +1816,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   selectmargins=select[select %in% c(margins,"sample")]
 
   if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha)
-  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=rpart_options)
+  if ("CART" == testtype) res=CART_test(data, x_names=X,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())
