@@ -21,7 +21,7 @@
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
 #'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted, only \code{"simple"} is allowed.
-#'  @param target a scalar equal to either "all", "overlap" or "fwl" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). "fwl" uses residual scores rather than AIPW scores and target the regression parameter of residualized Q on residualized Z. "fwl" is always used for models when "Z" or "DZ" is in linear.
+#'  @param target a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). For linear Z versions, overlap targets the residualized slope, while all targets the average partial effect.
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuissances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
@@ -60,8 +60,8 @@
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
 #'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select, but "sample" can, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
-#' @param \code{screen} Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
-#' @param cp,maxrankcp,alpha,prune, Tuning parameters for the CART-based search
+#' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
+#' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
 #' @param Zparameters,Yparameters,Qparameters,Dparameters,Cparameters Named lists of
 #'   additional arguments passed to the underlying GRF estimation routines for different
@@ -157,19 +157,20 @@
 
 montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  normalize.Z=TRUE,aipw.clip=0,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
-                 gridtypeY=NULL,gridtypeD=NULL,gridtypeZ=NULL,stratify=NULL,joint=TRUE,
+                 gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=NULL,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",one_hot=TRUE,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",one.hot=TRUE,
                  cp=0,maxrankcp=10L,rpart_options=NULL,alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE, one.hot=TRUE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
 ){
 
   time=proc.time()
-  if (is.null(seed)==FALSE) set.seed(seed)
+  if (!is.null(seed)) set.seed(seed)
 
 
   ################### 1 CHECK INPUT #####################
-  target=match.arg(target,c("all","overlap","fwl"))
+  data <- data.table::as.data.table(data.table::copy(data))
+  target=match.arg(target,c("all","overlap"))
   ##Check formula and validate
   v=validate_iv(fml,data)
   X=v$X
@@ -182,7 +183,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   ##One-hot encode FE or add to X
   if (!is.null(FE)) {
-    if (one_hot) {
+    if (one.hot) {
       fe_dummies <- one_hot_fe(
         DT = data,
         FE = FE,
@@ -204,7 +205,11 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
   gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
-  if (is.null(crossfit)==FALSE) match.arg(crossfit,c("Z","Q","C","Y"),several.ok=TRUE)
+  if (is.null(crossfit)) {
+    crossfit <- character()
+  } else {
+    crossfit <- match.arg(crossfit, c("Z", "Q", "C", "Y"), several.ok = TRUE)
+  }
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
@@ -220,8 +225,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     )
   }
 
-  if (is.integer(minsize)==FALSE|minsize<=0) stop("Minsize must be an integer >0.")
+  if (!is.numeric(minsize) || length(minsize) != 1L ||
+      !is.finite(minsize) || minsize <= 0 || minsize != as.integer(minsize)) {
+    stop("minsize must be a positive integer.")
+  }
 
+  minsize <- as.integer(minsize)
   if (is.null(condition)==TRUE) {
     if (is.null(Y)==TRUE) {
       condition="simple"
@@ -240,10 +249,21 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   }
 
 
-  if (Ysubsets<=1|is.integer(Ysubsets)==FALSE) stop("Ysubsets must be an integers larger than 1. Use #L for integer.")
-  if (Dsubsets<2|is.integer(Dsubsets)==FALSE) stop("Dsubsets must be an integer larger than 1. Use #L for integer.")
-  if (Zsubsets<2|is.integer(Zsubsets)==FALSE) stop("Zsubsets must be an integer larger than 1. Use #L for integer.")
+  check_integer_gt1 <- function(x, name) {
+    if (!is.numeric(x) ||
+        length(x) != 1L ||
+        !is.finite(x) ||
+        x != as.integer(x) ||
+        x <= 1L) {
+      stop(name, " must be a single integer larger than 1. Use e.g. 4L.", call. = FALSE)
+    }
 
+    as.integer(x)
+  }
+
+  Ysubsets <- check_integer_gt1(Ysubsets, "Ysubsets")
+  Dsubsets <- check_integer_gt1(Dsubsets, "Dsubsets")
+  Zsubsets <- check_integer_gt1(Zsubsets, "Zsubsets")
 
   ##VALIDATE POOL/SELECT
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
@@ -262,14 +282,17 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     stop("Sample cannot appear in both pool and select. Adaptive selection or pooling across sample halves might invalidate sample splitting.")
   }
 
-  if (sum(sum(grepl("Z.hat",colnames(data))))) stop("Variable name beginning with Z.hat discovered, reserved for internal use. Please rename.")
-  if (sum(sum(grepl("D.hat",colnames(data))))) stop("Variable name beginning with D.hat discovered, reserved for internal use. Please rename.")
-  if (sum(sum(grepl("Q.hat",colnames(data))))) stop("Variable name beginning with Q.hat discovered, reserved for internal use. Please rename.")
-  if ("Q" %in% colnames(data)) stop("Data contains variable named Q, which is reserved for internal use. Please rename.")
+  hat_vars <- grep("\\.hat$", names(data), value = TRUE)
 
-  gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
-  gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
-  gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
+  if (length(hat_vars)) {
+    stop(
+      "Variable names ending in '.hat' are reserved for internal use. ",
+      "Please rename: ",
+      paste(hat_vars, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  if ("Q" %in% colnames(data)) stop("Data contains variable named Q, which is reserved for internal use. Please rename.")
 
   if ((length(D)!=1)|(!(D %in% colnames(data)))) {
     stop("Argument D must be the name of a single column in data")
@@ -303,14 +326,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     }
   }
 
-  if (sum(condition %in% c("AHS","MW","KR"))==0&is.null(Y)==FALSE) Y=NULL
+  if (!any(condition %in% c("AHS","MW","KR"))&is.null(Y)==FALSE) Y=NULL
 
   ##Downgrade linear options if D or Z is binary:
   ## Number of support points in original D and Z
-  XW=X
   Zname=Z
   Dname=D
-  Yname=Y
 
   J <- length(unique(data[,get(Dname)]))
   K <- length(unique(data[,get(Zname)]))
@@ -398,8 +419,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     )
   }
 
-  linear_conditions <- c("simple", "AHS")
-
   ## Conditions that always need margin/binary versions
   nonlinear_conditions <- setdiff(condition, linear_conditions)
 
@@ -482,14 +501,11 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   }
 
-  time=rbind("Check input"=proc.time())
+  time <- rbind(time, "Check input" = proc.time())
 
   ###################### 2 Prepare data #########################3
 
 
-  if (sum(c("MW","AHS") %in% condition)>0) {XWY=c(X,Y)} else {XWY=XW}
-
-  data=data.table(data)
   allvars=c(X,Y,D,Z,weight,cluster)
   data=data[,..allvars]
   dropped=sum(!complete.cases(data))
@@ -497,14 +513,14 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   data=data[complete.cases(data)]
   n=nrow(data)
   if (is.null(cluster)==FALSE) {
-    G=length(unique(data[,get(..cluster)]))
+    G <- uniqueN(data[[cluster]])
     if (G<=2*minsize) stop("Number of clusters is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
   } else {
     if (n<=2*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
     G=NA
     }
   obs=c(N=n,G=G)
-  data[,id_:=(1:n)]
+  data[, id_ := .I]
 
 
   ##OUTER SPLIT
@@ -710,7 +726,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
 
   ##estimate Z.hat for each margin in stacked data
-  if (is.null(X)==FALSE) {
+  if (!is.null(X)) {
     if (parametric==FALSE) {
       crossfit_hat(
       data,
@@ -741,55 +757,62 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       out_name = zhat,
     )
   }
-  if (normalize.Z==TRUE&Zsubsets>0) { #Normalize propensity scores
-    data[, (paste0(Z, ".hat")) :=
-           get(paste0(..Z, ".hat")) * .N / sum(get(..Z) / get(paste0(..Z, ".hat"))),
+  if (isTRUE(normalize.Z)) { ##consider clipping Z.hat here first??
+    zhat_col <- paste0(Z, ".hat")
+    data[z_is_linear != TRUE,
+         (zhat_col) := get(zhat_col) * .N / sum(get(Z) / get(zhat_col)),
          by = c("sample", margins)]
   }
 
   ##Optional: Estimate conditional variance of Z, if required for target="all" & linear Z
-  if (identical(target, "all") && need_linear_Z) {
-    i=which(data$z_is_linear)
-    data[i,Zvar:=(get(Zname)-get(Zhat))^2]
-    Zvarhat="Zvar.hat"
-    if (is.null(X)) {
-      if (parametric==FALSE) { ##semiparametric
+  Zvarhat <- NULL
+
+  if (need_z_var_global) {
+    i_zvar <- need_z_var_rows
+
+    data[i_zvar, Zvar := (get(Z) - get(Zhat))^2]
+    Zvarhat <- "Zvar.hat"
+
+    if (!is.null(X)) {
+      if (!parametric) {
         crossfit_hat(
           data,
-          i=i,
+          i = i_zvar,
           y_name = "Zvar",
           x_names = X,
           margins = margins,
           weight_name = weight,
           forest_opts = Zparameters,
-          folds=foldname,
-          mode=ifelse(("Z" %in% crossfit & is.null(foldname)==TRUE),"across","within")
+          folds = foldname,
+          mode = if ("Z" %in% crossfit && is.null(foldname)) "across" else "within"
         )
-
-      } else { ##parametric
+      } else {
         parametric_hat(
           fml_rf,
-          i=i,
-          data=data,
-          outcome_name="Zvar",
+          i = i_zvar,
+          data = data,
+          outcome_name = "Zvar",
           margins = margins,
           weight_name = weight,
-          fixest_opts = Zparameters)
+          fixest_opts = Zparameters
+        )
       }
-    } else { ##LEAVE CLUSTER OUT MEAN OF RESIDUAL VARIANCE
+    } else {
       leave_cluster_out_mean(
         DT = data,
         y_name = "Zvar",
         cluster_name = cluster,
         by = c("sample", margins),
-        out_name = "Zvar.hat",
+        out_name = Zvarhat
       )
     }
-  } else Zvar.hat=NULL
+
+    data[i_zvar, (Zvarhat) := pmax(get(Zvarhat), 1e-6)]
+  }
 
 
   ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
-  if ((sum(condition %in% c("MW","AHS"))>0)&Y.res==TRUE)  {
+  if (any(condition %in% c("MW","AHS"))&Y.res==TRUE)  {
     crossfit_hat(
       data,
       y_name = Y,
@@ -805,17 +828,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   }
 
   ##Check for onesided noncompliance
-  nonmissing_margin_i <- function(DT, margin_var = "zmargin") {
-    if (margin_var %in% names(DT)) {
-      !is.na(DT[[margin_var]])
-    } else {
-      rep(TRUE, nrow(DT))
-    }
-  }
-
-  need_linear_Z <- any(condition %in% linear_conditions) && any(linear %in% c("Z", "DZ"))
-
-
   if (has_margin_conditions) {
     if (is.null(Dbincol) || !(Dbincol %in% names(data))) {
       stop(
@@ -826,7 +838,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     }
 
     os_res <- test_one_sided_noncompliance(
-      data =  if ("zmargin" %in% names(data) && any(!is.na(data$zmargin))) data[nonmissing_margin_i(data, "zmargin")] else data,
+      data = data[z_is_linear == FALSE],
       D = Dbincol,
       Z = Z,
       zmargin_var = margins
@@ -834,11 +846,9 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
     osmargins <- margins
 
-    if (nrow(os_res$threshold[one_sided == TRUE]) > 0) os_res
-
     if (
       nrow(os_res$threshold[one_sided == FALSE]) == 0 &&
-      sum(condition %in% c("KR", "MW")) == 0
+      !any(condition %in% c("KR", "MW"))
     ) {
       stop(
         "One-sided noncompliance for all margins of Z and D - ",
@@ -852,30 +862,30 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   # Common summaries
   data[, n_group := .N, by = byvars]
-  data[, nZ      := uniqueN(get(Zname), na.rm = TRUE), by = byvars]
-  data[, sdZ     := stats::sd(get(Zname), na.rm = TRUE), by = byvars]
-  data[, sd_res  := stats::sd(get(Zname) - get(Zhat), na.rm = TRUE), by = byvars]
+  data[, nZ := uniqueN(get(Z), na.rm = TRUE), by = byvars]
+  data[, sdZ := stats::sd(get(Z), na.rm = TRUE), by = byvars]
+  data[, sd_res := stats::sd(get(Z) - get(Zhat), na.rm = TRUE), by = byvars]
 
   # Initialize helper
   if (!("min_cell_Z" %in% names(data))) data[, min_cell_Z := NA_integer_]
 
   if (need_linear_Z) {
     # Continuous Z: require group size, variation in Z, and variation in residualized Z
-    data[!nonmissing_margin_i(data, "zmargin"), bad_Z := (
+    data[z_is_linear == TRUE, bad_Z := (
       n_group < min_n |
         is.na(sdZ) | sdZ == 0 |
         is.na(sd_res) | sd_res == 0
-    ), by = "sample"]
+    ), by = byvars]
   }
   if (has_margin_conditions) {
     # Discrete Z: require at least 2 support points, enough observations in each Z cell,
     # and variation in residualized Z
-    data[nonmissing_margin_i(data, "zmargin"), min_cell_Z := {
+    data[z_is_linear == FALSE, min_cell_Z := {
       ztab <- table(get(Zname), useNA = "no")
       if (length(ztab) == 0L) NA_integer_ else min(ztab)
     }, by = byvars]
 
-    data[nonmissing_margin_i(data, "zmargin"), bad_Z := (
+    data[z_is_linear == FALSE, bad_Z := (
       n_group < min_n |
         nZ < 2 |
         is.na(min_cell_Z) | min_cell_Z < min_n |
@@ -1233,7 +1243,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   # --------------------------------------------------
 
   Dcol <- Dbincol
-  Ycol <- paste0(Y, ".bin")
+  Ycol <- if (!is.null(Y)) paste0(Y, ".bin") else NULL
   Zcol <- Z
   Zhat <- paste0(Zcol, ".hat")
 
@@ -1252,8 +1262,12 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     linear_requested__ <- "none"
   }
 
-  Dvals__ <- sort(unique(stats::na.omit(data[[Dname]])))
-  D_is_binary__ <- length(Dvals__) <= 2L && all(Dvals__ %in% c(0, 1))
+  if (!is.null(Dcol) && Dcol %in% names(data)) {
+    Dvals__ <- sort(unique(stats::na.omit(data[[Dcol]])))
+    D_is_binary__ <- length(Dvals__) <= 2L && all(Dvals__ %in% c(0, 1))
+  } else {
+    D_is_binary__ <- FALSE
+  }
 
 
   # ---------------- simple / AHS: linear-D Q ----------------
@@ -1400,8 +1414,8 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   time=rbind(time,"Stack data across margins"=proc.time())
 
   ##Estimate Q.hat in stacked data
-  if (is.null(X)==FALSE) {
-  if (any(condition %in% c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR"))) {
+  if (!is.null(X)) {
+  if (any(condition %in% c("simple","KR"))) {
     if (length(condition)>1) i=which(data$condition %in%  c("simple","simple_linearD","simple_linearDZ","simple_linearZ","KR")) else i=NULL
     if (parametric==FALSE) {
     crossfit_hat(
@@ -1426,36 +1440,44 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
           fixest_opts = Qparameters)
     }
   }
-
-  if (("AHS" %in% condition)>0) {
-    if (length(condition)>1) i=which(data$condition=="AHS") else i=NULL
-    yname_lhs= if (Y.res==TRUE) paste0(Y,".res") else Y
-    if (!parametric) {
-    crossfit_hat(
-      data,
-      i=i,
+  } else {
+    leave_cluster_out_mean(
+      DT = data,
       y_name = "Q",
-      folds=foldname,
-      x_names = c(X,yname_lhs),
-      margins = margins,
-      weight_name = weight,
-      mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
-      forest_opts = Qparameters
+      cluster_name = cluster,
+      by = c("sample", margins),
+      out_name = "Q.hat",
+      weight_name = weight
     )
+  }
+
+  if ("AHS" %in% condition) {
+    if (length(condition)>1) i=which(data$condition=="AHS") else i=NULL
+    y_name_rhs= if (Y.res==TRUE) paste0(Y,".res") else Y
+    if (!parametric) {
+      crossfit_hat(
+        data,
+        i=i,
+        y_name = "Q",
+        folds=foldname,
+        x_names = c(X,yname_lhs),
+        margins = margins,
+        weight_name = weight,
+        mode=if ("Q" %in% crossfit & is.null(foldname)==TRUE) "across" else "within",
+        forest_opts = Qparameters
+      )
     } else {
       parametric_hat(
-           append_to_main_rhs(fml_rf, y_name_lhs),
-           data=data,
-           outcome_name="Q",
-           i=i,
-           margins = margins,
-           weight_name = weight,
-           fixest_opts = Qparameters)
+        append_to_main_rhs(fml_rf, y_name_rhs),
+        data=data,
+        outcome_name="Q",
+        i=i,
+        margins = margins,
+        weight_name = weight,
+        fixest_opts = Qparameters)
     }
   }
-  } else {
-    ##LEAVE CLUSTER OUT MEAN Q
-  }
+
   ## Check for usable (residual) variation in Q
   byvars <- c("sample", margins)
 
@@ -1621,7 +1643,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   ## FWL / residual scores for all linear-Z rows
   ## Q.hat and Z.hat already exist.
   ## ------------------------------------------------------------
-  if (any(data$z_is_linear == TRUE)) {
+  if (identical(target, "overlap") && any(data$z_is_linear == TRUE)) {
     i_fwl <- which(data$z_is_linear == TRUE)
 
     make_scores(
@@ -1643,31 +1665,36 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
 
   ## ------------------------------------------------------------
-  ## AIPW scores for non-linear / binary-Z rows
+  ## AIPW scores for non-linear / binary-Z rows + linear Z rows when target="all"
   ## ------------------------------------------------------------
-  if (any(data$z_is_linear != TRUE & data$condition %in% c("simple", "KR"))) {
+  if (any(data$condition %in% c("simple", "KR"))) {
     i_simple_kr <- which(
-      data$z_is_linear != TRUE &
-        data$condition %in% c("simple", "KR")
+      data$condition %in% c("simple", "KR") &
+        (
+          data$z_is_linear != TRUE |
+            identical(target, "all")
+        )
     )
 
-    fit_models(
-      DT = data,
-      i = i_simple_kr,
-      forest_type = "causal",
-      y_name = "Q",
-      x_names = X,
-      w_name = Z,
-      zvar_name = Zvar.hat,
-      folds = foldname,
-      margins = margins,
-      weight_name = weight,
-      cluster_name = cluster,
-      forest_opts = Cparameters,
-      aipw.clip = aipw.clip,
-      shrink = (shrink > 0),
-      target = target
-    )
+    if (length(i_simple_kr)) {
+      fit_models(
+        DT = data,
+        i = i_simple_kr,
+        forest_type = "causal",
+        y_name = "Q",
+        x_names = X,
+        w_name = Z,
+        zvar_name = Zvarhat,
+        folds = foldname,
+        margins = margins,
+        weight_name = weight,
+        cluster_name = cluster,
+        forest_opts = Cparameters,
+        aipw.clip = aipw.clip,
+        shrink = (shrink > 0),
+        target = target
+      )
+    }
   }
 
 
@@ -1675,29 +1702,34 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   ## AHS: AIPW scores for non-linear / binary-Z rows,
   ## with RHS outcome controls included in X
   ## ------------------------------------------------------------
-  if (any(data$z_is_linear != TRUE & data$condition == "AHS")) {
+  if (any(data$condition == "AHS")) {
     i_ahs <- which(
-      data$z_is_linear != TRUE &
-        data$condition == "AHS"
+      data$condition == "AHS" &
+        (
+          data$z_is_linear != TRUE |
+            identical(target, "all")
+        )
     )
 
-    fit_models(
-      DT = data,
-      i = i_ahs,
-      forest_type = "causal",
-      y_name = "Q",
-      x_names = c(X, y_name_rhs),
-      w_name = Z,
-      zvar_name = Zvar.hat,
-      folds = foldname,
-      margins = margins,
-      weight_name = weight,
-      cluster_name = cluster,
-      forest_opts = Cparameters,
-      aipw.clip = aipw.clip,
-      shrink = (shrink > 0),
-      target = target
-    )
+    if (length(i_ahs)) {
+      fit_models(
+        DT = data,
+        i = i_ahs,
+        forest_type = "causal",
+        y_name = "Q",
+        x_names = c(X, y_rhs),
+        w_name = Z,
+        zvar_name = Zvarhat,
+        folds = foldname,
+        margins = margins,
+        weight_name = weight,
+        cluster_name = cluster,
+        forest_opts = Cparameters,
+        aipw.clip = aipw.clip,
+        shrink = (shrink > 0),
+        target = target
+      )
+    }
   }
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
@@ -1756,6 +1788,10 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
   time=time[,1:3]
   time=rbind(time,"Total"=colSums(time))
-  return=c(res,list(time=time,obs=obs,margins=margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE]))
-  return(return)
+  out <- c(res, list(
+    time = time,
+    obs = obs,
+    margins = margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE]
+  ))
+  return(out)
 }

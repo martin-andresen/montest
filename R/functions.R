@@ -1936,6 +1936,7 @@ make_scores_vec <- function(Y,
 
   score
 }
+
 make_scores <- function(DT,
                         y_name,
                         z_name,
@@ -1972,7 +1973,7 @@ make_scores <- function(DT,
     Z = DT[[z_name]][i],
     Y.hat = DT[[y_hat_name]][i],
     Z.hat = DT[[z_hat_name]][i],
-    tau = DT[[tau_name]][i],
+    tau <- if (!is.null(tau_name)) DT[[tau_name]][i] else NULL,
     target = target,
     z_is_linear = z_is_linear,
     Z.var.hat = Z.var.hat,
