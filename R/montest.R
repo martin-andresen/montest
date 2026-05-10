@@ -175,9 +175,11 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   Y=v$Y
   D=v$D
   Z=v$Z
+  z_col=Z
+  d_col=D
+  y_col=Y
   FE=v$FE
   fml_rf=v$reduced_form_rhs
-
 
   ##One-hot encode FE or add to X
   if (!is.null(FE)) {
@@ -348,8 +350,8 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   Zname=Z
   Dname=D
 
-  J <- length(unique(data[,get(Dname)]))
-  K <- length(unique(data[,get(Zname)]))
+  J <- length(unique(data[,get(d_col)]))
+  K <- length(unique(data[,get(z_col)]))
 
   normalize_linear <- function(linear, J, K) {
     linear <- unique(linear)
@@ -776,7 +778,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     data[z_is_linear != TRUE, (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)]
 
     data[z_is_linear != TRUE,
-         (zhat_col) := get(zhat_col) * .N / sum(get(Z) / get(zhat_col)),
+         (zhat_col) := get(zhat_col) * .N / sum(get(z_col) / get(zhat_col)),
          by = c("sample", margins)]
 
     data[z_is_linear != TRUE, (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)]
@@ -788,7 +790,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   if (need_z_var_global) {
     i_zvar <- need_z_var_rows
 
-    data[i_zvar, Zvar := (get(Z) - get(zhat))^2]
+    data[i_zvar, Zvar := (get(z_col) - get(zhat))^2]
     Zvarhat <- "Zvar.hat"
 
     if (!is.null(X)) {
@@ -852,8 +854,8 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
           weight_name = weight
         )
     }
-    data[,paste0(Y,".res"):=get(..Y)-get(paste0(..Y,".hat"))]
-    data[, c(Y, paste0(Y, ".hat")) := NULL]
+    data[, paste0(y_col, ".res") := get(y_col) - get(paste0(y_col, ".hat"))]
+    data[, c(y_col, paste0(y_col, ".hat")) := NULL]
     y_name_rhs <- paste0(Y, ".res")
   } else y_name_rhs <- Y
 
@@ -891,9 +893,9 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   # Common summaries
   data[, n_group := .N, by = byvars]
-  data[, nZ := uniqueN(get(Z), na.rm = TRUE), by = byvars]
-  data[, sdZ := stats::sd(get(Z), na.rm = TRUE), by = byvars]
-  data[, sd_res := stats::sd(get(Z) - get(zhat), na.rm = TRUE), by = byvars]
+  data[, nZ := uniqueN(get(z_col), na.rm = TRUE), by = byvars]
+  data[, sdZ := stats::sd(get(z_col), na.rm = TRUE), by = byvars]
+  data[, sd_res := stats::sd(get(z_col) - get(zhat), na.rm = TRUE), by = byvars]
 
   # Initialize helper
   if (!("min_cell_Z" %in% names(data))) data[, min_cell_Z := NA_integer_]
@@ -910,7 +912,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     # Discrete Z: require at least 2 support points, enough observations in each Z cell,
     # and variation in residualized Z
     data[z_is_linear == FALSE, min_cell_Z := {
-      ztab <- table(get(Z), useNA = "no")
+      ztab <- table(get(z_col), useNA = "no")
       if (length(ztab) == 0L) NA_integer_ else min(ztab)
     }, by = byvars]
 
@@ -1642,10 +1644,13 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
     }
   }
 
-  if (nrow(data)==0) {
-    stop("No remaining residual variation for any margins. Likely identification issue - does X perfecly explain Z or D?.")
+  if (nrow(data) == 0L) {
+    stop(
+      "No remaining residual variation for any margins. ",
+      "Likely identification issue - does X perfectly explain Z or D?",
+      call. = FALSE
+    )
   }
-
   ## ------------------------------------------------------------
   ## Cleanup helper columns
   ## ------------------------------------------------------------
@@ -1711,6 +1716,26 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
       clip = aipw.clip,
       var_floor = 1e-6
     )
+    if (testtype=="forest") {
+      fit_models(
+        DT = data,
+        i = i_fwl,
+        forest_type = "regression",
+        y_name = "scores",
+        x_names = X,
+        w_name = NULL,
+        zvar_name = NULL,
+        folds = foldname,
+        margins = margins,
+        weight_name = weight,
+        cluster_name = cluster,
+        forest_opts = Cparameters,
+        aipw.clip = aipw.clip,
+        shrink = (shrink > 0),
+        target = "overlap"
+      )
+
+    }
   }
 
 
