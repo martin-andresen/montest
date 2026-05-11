@@ -179,21 +179,23 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   d_col=D
   y_col=Y
   FE=v$FE
+  FE_expr=v$FE_expr
   fml_rf=v$reduced_form_rhs
 
   ##One-hot encode FE or add to X
-  if (!is.null(FE)) {
+  if (!is.null(FE_expr)) {
     if (one.hot) {
-      fe_dummies <- one_hot_fe(
+      fe_out <- fixest_fe_to_mm(
         DT = data,
-        FE = FE,
+        fe_expr = FE_expr,
+        prefix = "fe",
         drop_first = TRUE
       )
 
-      X <- null_if_empty(unique(c(X, fe_dummies)))
+      X <- null_if_empty(unique(c(X, fe_out$new_cols)))
 
     } else {
-      X <- null_if_empty(unique(c(X, FE)))
+      X <- null_if_empty(unique(c(X, all.vars(FE_expr))))
     }
   }
 
@@ -523,7 +525,7 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   ###################### 2 Prepare data #########################3
 
 
-  allvars <- unique(c(X, Y, D, Z, weight, cluster))
+  allvars <- unique(c(X, Y, D, Z, weight, cluster,FE))
   allvars <- allvars[!is.na(allvars)]
   data <- data[, ..allvars]
   dropped=sum(!complete.cases(data))

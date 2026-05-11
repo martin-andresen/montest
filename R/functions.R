@@ -1689,6 +1689,7 @@ validate_iv <- function(fml, data) {
     D = null_if_empty(D),
     Z = null_if_empty(Z),
     FE = null_if_empty(FE),
+    FE_expr = fe_expr,
     has_lhs = has_lhs,
     iv = iv
   )
@@ -1706,51 +1707,158 @@ make_safe_name <- function(x) {
   x
 }
 
-one_hot_fe <- function(DT,
-                       FE,
-                       drop_first = TRUE,
-                       na_level = TRUE,
-                       prefix_sep = "__") {
-  new_names_all <- character()
+fixest_fe_to_mm <- function(DT,
+                            fe_expr,
+                            prefix = "fe",
+                            drop_first = TRUE,
+                            na_action = stats::na.pass) {
+  stopifnot(data.table::is.data.table(DT))
 
-  if (is.null(FE) || length(FE) == 0L) {
-    return(NULL)
+  if (is.null(fe_expr)) {
+    return(list(data = DT, new_cols = NULL, matrix = NULL))
   }
 
-  for (fe_name in FE) {
-    v <- DT[[fe_name]]
+  expr_txt <- function(x) {
+    paste(deparse(x, width.cutoff = 500L), collapse = "")
+  }
 
-    if (na_level) {
-      v_chr <- as.character(v)
-      v_chr[is.na(v_chr)] <- "__NA__"
+  is_call <- function(x, what) {
+    is.call(x) && identical(as.character(x[[1L]]), what)
+  }
+
+  split_plus <- function(x) {
+    if (is_call(x, "+")) {
+      c(split_plus(x[[2L]]), split_plus(x[[3L]]))
     } else {
-      v_chr <- as.character(v)
+      list(x)
     }
-
-    levs <- sort(unique(v_chr))
-    levs <- levs[!is.na(levs)]
-
-    if (drop_first && length(levs) > 0L) {
-      levs <- levs[-1L]
-    }
-
-    new_names <- paste0(fe_name, prefix_sep, make_safe_name(levs))
-
-    for (jj in seq_along(levs)) {
-      lv <- levs[jj]
-      nm <- new_names[jj]
-
-      if (lv == "__NA__" && na_level) {
-        DT[, (nm) := as.integer(is.na(get(fe_name)))]
-      } else {
-        DT[, (nm) := as.integer(as.character(get(fe_name)) == lv)]
-      }
-    }
-
-    new_names_all <- c(new_names_all, new_names)
   }
 
-  null_if_empty(new_names_all)
+  group_expr <- function(x) {
+    # bare FE: fe
+    if (is.symbol(x)) {
+      return(expr_txt(x))
+    }
+
+    # interacted FE: fe1^fe2^fe3
+    if (is_call(x, "^")) {
+      parts <- split_power(x)
+      return(
+        paste0(
+          "interaction(",
+          paste(vapply(parts, expr_txt, character(1L)), collapse = ", "),
+          ", drop = TRUE)"
+        )
+      )
+    }
+
+    # fallback: allow expressions, but treat as a factor-like object
+    expr_txt(x)
+  }
+
+  split_power <- function(x) {
+    if (is_call(x, "^")) {
+      c(split_power(x[[2L]]), split_power(x[[3L]]))
+    } else {
+      list(x)
+    }
+  }
+
+  factor_term <- function(x) {
+    paste0("factor(", group_expr(x), ")")
+  }
+
+  slope_vars_from_bracket <- function(x) {
+    as.list(x)[-(1L:2L)]
+  }
+
+  fe_term_to_formula_terms <- function(term) {
+    # fe[x1, x2]: FE + varying slopes
+    if (is_call(term, "[")) {
+      fe_part <- term[[2L]]
+      slopes <- slope_vars_from_bracket(term)
+
+      base <- factor_term(fe_part)
+      slope_terms <- paste0(
+        base,
+        ":",
+        vapply(slopes, expr_txt, character(1L))
+      )
+
+      return(c(base, slope_terms))
+    }
+
+    # fe[[x1, x2]]: varying slopes only
+    if (is_call(term, "[[")) {
+      fe_part <- term[[2L]]
+      slopes <- slope_vars_from_bracket(term)
+
+      base <- factor_term(fe_part)
+      slope_terms <- paste0(
+        base,
+        ":",
+        vapply(slopes, expr_txt, character(1L))
+      )
+
+      return(slope_terms)
+    }
+
+    # fe or fe1^fe2
+    factor_term(term)
+  }
+
+  fe_terms <- split_plus(fe_expr)
+  mm_terms <- unlist(lapply(fe_terms, fe_term_to_formula_terms), use.names = FALSE)
+  mm_terms <- unique(mm_terms)
+
+  if (!length(mm_terms)) {
+    return(list(data = DT, new_cols = NULL, matrix = NULL))
+  }
+
+  new_cols_all <- character()
+  mm_all <- list()
+
+  for (k in seq_along(mm_terms)) {
+    spec <- stats::as.formula(
+      paste0("~ 0 + ", mm_terms[k]),
+      env = parent.frame()
+    )
+
+    mm <- stats::model.matrix(
+      spec,
+      data = DT,
+      na.action = na_action
+    )
+
+    if (drop_first && ncol(mm) > 1L) {
+      mm <- mm[, -1L, drop = FALSE]
+    }
+
+    if (ncol(mm) == 0L) next
+
+    nm <- colnames(mm)
+    nm <- gsub("factor\\(([^)]+)\\)", "\\1", nm)
+    nm <- gsub("interaction\\((.*), drop = TRUE\\)", "\\1", nm)
+    nm <- gsub(":", "_X_", nm)
+    nm <- gsub("[^A-Za-z0-9_]+", "_", nm)
+    nm <- gsub("_+", "_", nm)
+    nm <- gsub("^_|_$", "", nm)
+    nm <- paste0(prefix, "_", k, "_", nm)
+    nm <- make.unique(make.names(nm))
+
+    colnames(mm) <- nm
+
+    DT[, (nm) := as.data.table(mm)]
+
+    new_cols_all <- c(new_cols_all, nm)
+    mm_all[[k]] <- mm
+  }
+
+  list(
+    data = DT,
+    new_cols = null_if_empty(new_cols_all),
+    matrix = if (length(mm_all)) do.call(cbind, mm_all) else NULL
+  )
 }
 
 ##REDUCED FORM FITTED VALUES USING FEOLS
