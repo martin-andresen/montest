@@ -154,7 +154,7 @@
 #' @export
 
 montest=function(fml,data,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 normalize.Z=FALSE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
+                 normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",one.hot=TRUE,
