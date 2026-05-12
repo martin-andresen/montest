@@ -1,7 +1,6 @@
 
 
 ##################################################### HELPER FUNCTIONS ######################################
-
 append_to_main_rhs <- function(fml, y_name) {
   fml <- if (inherits(fml, "formula")) fml else stats::as.formula(fml)
 
