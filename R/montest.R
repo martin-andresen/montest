@@ -776,13 +776,29 @@ montest=function(fml,data,condition=NULL,inner.folds=NULL,crossfit=NULL,
   if (isTRUE(normalize.Z)) {
     zhat_col <- paste0(Z, ".hat")
 
-    data[z_is_linear != TRUE, (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)]
+    ## Linear Z:
+    ## center fitted value so residual Z - Z.hat has mean zero
+    data[
+      z_is_linear == TRUE,
+      (zhat_col) := get(zhat_col) + mean(get(z_col) - get(zhat_col), na.rm = TRUE),
+      by = c("sample", margins)
+    ]
 
-    data[z_is_linear != TRUE,
-         (zhat_col) := get(zhat_col) * .N / sum(get(z_col) / get(zhat_col)),
-         by = c("sample", margins)]
+    ## Binary Z:
+    ## rescale fitted propensity so mean(Z / Z.hat) = 1
+    ## i.e. sum(Z / Z.hat) = N within sample ?? margin cell.
+    data[
+      z_is_linear != TRUE,
+      (zhat_col) := get(zhat_col) *
+        (sum(get(z_col) / get(zhat_col), na.rm = TRUE) / .N),
+      by = c("sample", margins)
+    ]
 
-    data[z_is_linear != TRUE, (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)]
+    ## Keep binary propensity away from 0 and 1.
+    data[
+      z_is_linear != TRUE,
+      (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
+    ]
   }
 
   ##Optional: Estimate conditional variance of Z, if required for target="all" & linear Z
