@@ -328,12 +328,11 @@ CART_test <- function(
 
       L <- nrow(dtf)
       thr <- stats::qnorm(1 - alpha / L)
+
       keep <- dtf[t < thr, leaf]
 
-      if (length(keep) == 0L) {
-        keep <- dtf[which.min(t), leaf]
-      }
-
+      ## No local fallback. Fallback is handled later at the final
+      ## non-selected margin/sample grouping level.
       return(as.integer(keep))
     }
 
@@ -439,17 +438,29 @@ CART_test <- function(
       ))
     }
 
-    # Farb- / FGK-style screen:
-    # unlike the other CART screens, this is a one-tier local screen.
-    # It keeps all locally non-significantly-positive leaves from each fitted tree,
-    # rather than choosing the single most promising tree/sample direction.
     if (screen == "fgk_relevant") {
-      return(dtf[, .(
-        sel_leaves = list(as.integer(leaf))
-      ), by = .(
-        best_fit_id = fit_id,
-        best_train_s = train_s
-      )])
+      if ("fgk_keep" %chin% names(dtf)) {
+        keep <- dtf[fgk_keep == TRUE]
+
+        if (nrow(keep) > 0L) {
+          return(keep[, .(
+            sel_leaves = list(as.integer(leaf))
+          ), by = .(
+            best_fit_id = fit_id,
+            best_train_s = train_s
+          )])
+        }
+      }
+
+      ## Fallback only within the final choice group.
+      ## Therefore if sample/yval/dval are in select, this can become one
+      ## global fallback instead of one fallback per local tree.
+      j <- which.min(dtf$t)
+      data.table::data.table(
+        best_fit_id = as.integer(dtf$fit_id[j]),
+        best_train_s = as.integer(dtf$train_s[j]),
+        sel_leaves = list(as.integer(dtf$leaf[j]))
+      )
     }
 
     j <- which.min(dtf$t)
@@ -666,12 +677,27 @@ CART_test <- function(
 
   # ---------------- collect locally screened candidate leaves ----------------
   leaf_rows <- list()
+  all_leaf_rows <- list()
   lr <- 0L
+  alr <- 0L
 
   for (g in seq_len(n_fit)) {
     for (train_s in c(1L, 2L)) {
       obj <- fit_objs[[g]][[train_s]]
       if (is.null(obj)) next
+
+      tl_all <- data.table::copy(obj$train_leaf[is.finite(t)])
+      if (nrow(tl_all) == 0L) next
+
+      tl_all[, `:=`(
+        fit_id = g,
+        train_s = train_s,
+        est_s = obj$est_s,
+        fgk_keep = leaf %in% obj$prom
+      )]
+
+      all_leaf_rows[[alr <- alr + 1L]] <- tl_all
+
       if (length(obj$prom) == 0L) next
 
       tl <- data.table::copy(
@@ -682,30 +708,45 @@ CART_test <- function(
       tl[, `:=`(
         fit_id = g,
         train_s = train_s,
-        est_s = obj$est_s
+        est_s = obj$est_s,
+        fgk_keep = TRUE
       )]
 
       leaf_rows[[lr <- lr + 1L]] <- tl
     }
   }
 
-  if (length(leaf_rows) == 0L) {
-    stop("Testing subset is empty (after local screening).")
+  if (length(all_leaf_rows) == 0L) {
+    stop("Testing subset is empty: no finite training leaf statistics.")
   }
 
-  leaf_tbl_use <- data.table::rbindlist(leaf_rows, use.names = TRUE, fill = TRUE)
+  leaf_tbl_all <- data.table::rbindlist(
+    all_leaf_rows,
+    use.names = TRUE,
+    fill = TRUE
+  )
+
+  leaf_tbl_use <- if (screen == "fgk_relevant") {
+    leaf_tbl_all
+  } else {
+    if (length(leaf_rows) == 0L) {
+      stop("Testing subset is empty (after local screening).")
+    }
+    data.table::rbindlist(leaf_rows, use.names = TRUE, fill = TRUE)
+  }
 
   if (nrow(leaf_tbl_use) == 0L) {
     stop("Testing subset is empty (after local screening).")
   }
-
   # ---------------- choose among selected margins ----------------
   choice_group_cols <- c(final_keep_margins)
   if (!select_sample) choice_group_cols <- c(choice_group_cols, "train_s")
   choice_group_cols <- unique(choice_group_cols)
 
   if (length(choice_group_cols) == 0L) {
-    z <- choose_group_selection(leaf_tbl_use[, .(fit_id, train_s, leaf, t)])
+    z <- choose_group_selection(
+      leaf_tbl_use[, .(fit_id, train_s, leaf, t, fgk_keep)]
+    )
     sel_tbl <- data.table::data.table(
       best_fit_id = z$best_fit_id,
       best_train_s = z$best_train_s,
@@ -713,7 +754,7 @@ CART_test <- function(
     )
   } else {
     sel_tbl <- leaf_tbl_use[, {
-      z <- choose_group_selection(.SD[, .(fit_id, train_s, leaf, t)])
+      z <- choose_group_selection(.SD[, .(fit_id, train_s, leaf, t, fgk_keep)])
       data.table::data.table(
         best_fit_id = z$best_fit_id,
         best_train_s = z$best_train_s,
@@ -2996,6 +3037,12 @@ forest_test_core <- function(
     if (screen == "fgk_relevant") {
       thr <- stats::qnorm(1 - alpha / nrow(d))
       keep <- d[get(t_col) < thr]
+
+      ## Fallback at the level at which select_groups_screen()
+      ## is called. Therefore if select includes yval/dval/sample,
+      ## this fallback is global over those dimensions.
+      if (nrow(keep) == 0L) keep <- d[1L]
+
       return(keep)
     }
 
@@ -3089,9 +3136,41 @@ forest_test_core <- function(
     dt[, G := cumsum(!duplicated(cl)), by = sample]
 
     dt[, sumS2 := (TA2 - 2 * m * TAB + (m^2) * TB2) / (SW^2)]
-    dt[, se := sqrt((G / pmax.int(G - 1L, 1L)) * sumS2)]
-    dt[G < 2L, se := NA_real_]
-    dt[, t_stat := m / se]
+
+    ## Numerical safety:
+    ## The expression for sumS2 is theoretically nonnegative, but can be
+    ## slightly negative from cancellation in cumulative sums.
+    tol_var <- 1e-12
+
+    if (any(dt$sumS2 < -tol_var & dt$G >= minsize, na.rm = TRUE)) {
+      warning(
+        "Negative cluster variance encountered in an eligible-size prefix. ",
+        "This may indicate numerical instability or problematic weights."
+      )
+    }
+
+    dt[
+      is.finite(sumS2) & sumS2 < 0 & sumS2 >= -tol_var,
+      sumS2 := 0
+    ]
+
+    dt[, se := NA_real_]
+
+    dt[
+      G >= 2L & SW > 0 & is.finite(sumS2) & sumS2 >= 0,
+      se := sqrt((G / (G - 1L)) * sumS2)
+    ]
+
+    dt[
+      !is.finite(se) | se <= 0,
+      se := NA_real_
+    ]
+
+    dt[, t_stat := NA_real_]
+    dt[
+      is.finite(se),
+      t_stat := m / se
+    ]
 
     tau_tr <- dt[G >= minsize, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
 
@@ -3129,7 +3208,10 @@ forest_test_core <- function(
       }, by = sample]
     }
 
-    elig <- (dt$pred >= dt$tau_constraint) & (dt$G >= minsize) & dt$cand_search
+    elig <- (dt$pred >= dt$tau_constraint) &
+      (dt$G >= minsize) &
+      dt$cand_search &
+      is.finite(dt$t_stat)
 
     res <- dt[elig, .SD[which.min(t_stat)], by = sample,
               .SDcols = c("G", "N", "m", "se", "t_stat", "pred")]

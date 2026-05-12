@@ -251,7 +251,6 @@ montest=function(data,fml,condition=NULL,inner.folds=NULL,crossfit=NULL,
   }
 
   condition=match.arg(condition,c("simple","KR","MW","AHS","all"),several.ok=TRUE)
-  if (length(Y)>1) stop("More than one outcome currently not supported.")
   if ("all" %in% condition) {
     condition=c("simple","KR","MW","AHS")
   }

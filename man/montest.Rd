@@ -11,15 +11,15 @@ montest(
   inner.folds = NULL,
   crossfit = NULL,
   normalize.Z = TRUE,
-  aipw.clip = 0,
+  aipw.clip = 0.001,
   weight = NULL,
   cluster = NULL,
   seed = 10101,
   minsize = 50L,
-  gridtypeY = NULL,
-  gridtypeD = NULL,
-  gridtypeZ = NULL,
-  stratify = NULL,
+  gridtypeY = "equidistant",
+  gridtypeD = "equisized",
+  gridtypeZ = "equisized",
+  stratify = TRUE,
   joint = TRUE,
   Ysubsets = 4L,
   Dsubsets = 4L,
@@ -32,15 +32,15 @@ montest(
   select = NULL,
   shrink = 0,
   linear = "none",
-  target = "ATE",
+  target = "all",
+  one.hot = TRUE,
   cp = 0,
   maxrankcp = 10L,
-  rpart_options = NULL,
+  Rparameters = list(),
   alpha = 0.05,
   prune = TRUE,
   screen = "stepdown",
   parametric = FALSE,
-  one.hot = TRUE,
   Zparameters = list(),
   Yparameters = list(),
   Qparameters = list(),
@@ -58,24 +58,24 @@ The formula may be one-sided and omit Y if testing only the simple first stage c
 \item{condition}{Character vector selecting which tests to run. Allowed values are any combination of
  \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
  If \code{Y} is omitted, only \code{"simple"} is allowed.
-@param target a scalar equal to either "ATE" or "overlap" to determine whether the function should target the average treatment effect ("ATE") in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap").}
+@param target a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). For linear Z versions, overlap targets the residualized slope, while all targets the average partial effect.}
 
 \item{inner.folds}{Optional integer giving the number of within-sample folds used for
 cross-fitting nuisance functions and, optionally, forest predictions. Set to
-\code{NULL} to disable the inner split. Defaults to NULL - nuissances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.}
+\code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.}
 
 \item{crossfit}{Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.}
 
 \item{normalize.Z}{Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
 normalized after estimation.}
 
-\item{aipw.clip}{Positive scalar in \code{(0,1)}, dfeault 1e-3, used to trim estimated propensity
-scores when augmented inverse-probability weighted scores are constructed.}
+\item{aipw.clip}{Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
+scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.}
 
 \item{weight}{Optional character scalar naming a nonnegative weight variable.}
 
 \item{cluster}{Optional character scalar naming a cluster identifier. Cluster-robust
-inference is used in forest-based testing. CART testing canot be combined with cluster.}
+inference is used in forest-based testing. CART testing cannot be combined with cluster.}
 
 \item{seed}{Integer random seed, default 10101, set to NULL to disable setting seed}
 
@@ -87,7 +87,7 @@ variables are discretized before stacking. Must be one of \code{"equisized"} or
 \code{"equidistant"}.}
 
 \item{Ysubsets, Dsubsets, Zsubsets}{Integers giving the number of bins used when
-discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Dsubsets and Zsubsets may be set to 0L for linear models.}
+discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Integer >1 required.}
 
 \item{Y.res}{Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
 outcome on the right hand side \code{MW,AHS}.}
@@ -113,24 +113,20 @@ testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
-\item{cp, maxrankcp, alpha, prune, }{Tuning parameters for the CART-based search
+\item{one.hot}{boolean indicating whether fixed effects should be one-hot encoded or added as a continuous variable. Default is TRUE.}
+
+\item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}
+
+\item{screen}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.}
 
 \item{parametric}{A boolean indicating whether nuisances should be estimated using the parametric functional form specified or (the default) using semiparametric methods. In the latter case,
 all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.}
 
-\item{one.hot}{boolean indicating whether fixed effects should be one-hot encoded or added as a continuous variable. Default is TRUE.}
-
-\item{Zparameters, Yparameters, Qparameters, Dparameters, Cparameters}{Named lists of
-additional arguments passed to the underlying GRF estimation routines for different
-nuisance or target models.See regression_forest and causal_forest for details.
+\item{Zparameters, Yparameters, Qparameters, Cparameters, Rparameters}{Named lists of
+additional arguments passed to the underlying estimation routines for different
+nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
 @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.}
-
-\item{num.trees}{Integer, default 2000 giving the number of trees for the main forest fits.}
-
-\item{sim}{Logical; for development and testing}
-
-\item{\code{screen}}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.}
 }
 \value{
 A named list:
@@ -177,7 +173,7 @@ The rough steps of the montest algorithm is as follows
   \item Separate causal forests of the outcome \code{Q}, on
   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
   treatment effects are predicted in and out of sample and scores constructed
-  \item Each sample part (optionally within margins, depending on the options in code{pool}) is sorted
+  \item Each sample part (optionally within margins, depending on the options in \code{pool}) is sorted
   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
   in predicted treatment effects. Select the cutoff with the smallest t-statistic on the mean of scores
   Alternatively, subset selection can be done using a CART algorithm.
@@ -188,7 +184,7 @@ The rough steps of the montest algorithm is as follows
 \code{montest} supports weights and clustering, and allow for multivalued treatments and instruments
 by binarizing instruments and treatments into quantile or equisized bins. The command also tests for
 one-sided monotonicity (within margins of the treatment and instrument) and if found, warns the user
-and skips testing any trivially satisified conditions.
+and skips testing any trivially satisfied conditions.
 
 Consider a multivalued instrument with K values, a multivalued treatment with J values, a multivalued outcome with L values. \code{montest} can test the following families of conditions:
 \enumerate{
@@ -201,7 +197,7 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
   There are a total of (J-1)(K-1) such conditions.
-  \item \code{condition=="MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
+  \item \code{condition = "MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
   and exclusion conditional on instrument validity. This is only allowed for a binary treatment. There are a total of 2K such conditions.
 }
 }
@@ -213,19 +209,14 @@ data=fct_datasim(setup="A",dgp=2,n=3000)
 
 # Simple monotonicity-style test
 out <- montest(
+  ~Xvar1+Xvar2+Xvar3|D~Z,
   data = data,
-  D = "D",
-  Z = "Z",
-  X = c("Xvar1", "Xvar2", "Xvar3"),
-  condition = "simple",
-  testtype = "forest")
+  condition = "simple")
 
 # Test multiple conditions, pooling evidence
 out2 <- montest(
+  Y~Xvar1+Xvar2+Xvar3|D~Z,
   data = data,
-  D = "D",
-  Z = "Z",
-  Y="Y",
   X = c("Xvar1", "Xvar2", "Xvar3"),
   condition = c("simple","KR","MW"))
 }
