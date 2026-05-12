@@ -744,27 +744,33 @@ CART_test <- function(
   choice_group_cols <- unique(choice_group_cols)
 
   if (length(choice_group_cols) == 0L) {
-    z <- choose_group_selection(
+
+    sel_tbl <- choose_group_selection(
       leaf_tbl_use[, .(fit_id, train_s, leaf, t, fgk_keep)]
-    )
-    sel_tbl <- data.table::data.table(
-      best_fit_id = z$best_fit_id,
-      best_train_s = z$best_train_s,
-      sel_leaves = list(z$sel_leaves)
-    )
+    )[, .(
+      best_fit_id,
+      best_train_s,
+      sel_leaves
+    )]
+
   } else {
-    sel_tbl <- leaf_tbl_use[, {
-      z <- choose_group_selection(.SD[, .(fit_id, train_s, leaf, t, fgk_keep)])
-      data.table::data.table(
-        best_fit_id = z$best_fit_id,
-        best_train_s = z$best_train_s,
-        sel_leaves = list(z$sel_leaves)
-      )
-    }, by = choice_group_cols]
+
+    sel_tbl <- leaf_tbl_use[
+      ,
+      choose_group_selection(.SD[, .(fit_id, train_s, leaf, t, fgk_keep)]),
+      by = choice_group_cols
+    ]
+
+    key_row <- unique(leaf_tbl_use[, ..choice_group_cols])
+
+    sel_tbl <- merge.data.table(
+      key_row,
+      sel_tbl,
+      by = choice_group_cols,
+      all.x = TRUE
+    )
   }
 
-  # ---------------- mark relevant train rows and build testing jobs ----------------
-  # ---------------- mark relevant train rows and build testing jobs ----------------
   # ---------------- mark relevant train rows and build testing jobs ----------------
   train_rows <- list()
   tr_k <- 0L
@@ -784,10 +790,15 @@ CART_test <- function(
       }
       if (!select_sample) key_row[, train_s := train_s]
 
-      if (nrow(sel_tbl) == 1L && length(choice_group_cols) == 0L) {
+      if (length(choice_group_cols) == 0L) {
         sel_here <- sel_tbl
       } else {
-        sel_here <- merge(key_row, sel_tbl, by = choice_group_cols, all.x = TRUE)
+        sel_here <- merge(
+          key_row,
+          sel_tbl,
+          by = choice_group_cols,
+          all.x = TRUE
+        )
       }
 
       sel_leaves <- integer()
