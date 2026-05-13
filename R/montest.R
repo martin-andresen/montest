@@ -1281,6 +1281,75 @@ montest=function(fml,data,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
   margins <- nonredundant_margin_cols(margin_index, data)
 
+  ## ------------------------------------------------------------
+  ## Drop margin cells with too few observations/clusters
+  ## in either sample half
+  ## ------------------------------------------------------------
+
+  byvars <- c("sample", margins)
+
+  cell_size <- data[, .(
+    n_obs = .N,
+    n_clusters = uniqueN(get(cluster))
+  ), by = byvars]
+
+  cell_size[, bad_size := n_obs < minsize | n_clusters < minsize]
+
+  if (length(margins) == 0L) {
+    if (cell_size[, any(bad_size)]) {
+      warning(
+        "Dropping all rows because at least one sample half has ",
+        "fewer than minsize observations or clusters. ",
+        "minsize = ", minsize,
+        call. = FALSE
+      )
+
+      data <- data[0]
+
+      if (exists("margin_index")) {
+        margin_index <- margin_index[0]
+      }
+    }
+
+  } else {
+    bad_margins <- unique(cell_size[bad_size == TRUE, ..margins])
+
+    if (nrow(bad_margins) > 0L) {
+      bad_labels <- apply(bad_margins, 1L, function(r) {
+        paste(paste(names(r), r, sep = "="), collapse = ", ")
+      })
+
+      browser()
+      warning(
+        "Dropping ", nrow(bad_margins),
+        " margin cell(s) because at least one sample half has ",
+        "fewer than minsize observations or clusters. ",
+        "minsize = ", minsize, ".\n",
+        paste("  -", bad_labels, collapse = "\n"),
+        call. = FALSE
+      )
+
+      bad_margins[, drop_bad_size__ := TRUE]
+
+      data <- bad_margins[data, on = margins]
+      data <- data[is.na(drop_bad_size__)][, drop_bad_size__ := NULL]
+
+      if (exists("margin_index")) {
+        margin_index <- bad_margins[margin_index, on = margins]
+        margin_index <- margin_index[is.na(drop_bad_size__)][, drop_bad_size__ := NULL]
+      }
+    }
+  }
+
+  if (nrow(data) == 0L) {
+    stop(
+      "No remaining margin cells after minsize screening. ",
+      "At least one sample half had fewer than minsize observations or clusters.",
+      call. = FALSE
+    )
+  }
+
+
   # --------------------------------------------------
   # Create Q by condition
   # --------------------------------------------------
