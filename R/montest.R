@@ -756,13 +756,31 @@ montest=function(fml,data,condition=NULL,inner.folds=NULL,crossfit=NULL,
       mode=ifelse(("Z" %in% crossfit & is.null(foldname)==TRUE),"across","within")
     )
     } else {
-      parametric_hat(
-              fml_rf,
-              data=data,
-             outcome_name=Z,
-             margins = margins,
-             weight_name = weight,
-             fixest_opts = Zparameters)
+      if (need_linear_Z) {
+        i=which(data$z_is_linear==TRUE)
+        parametric_hat(
+                fml_rf,
+                data=data,
+               outcome_name=Z,
+               margins = margins,
+               i=i,
+               model="linear",
+               weight_name = weight,
+               fixest_opts = Zparameters)
+      }
+      if (need_binarized_Z) {
+        i=which(data$z_is_linear==FALSE)
+        parametric_hat(
+          fml_rf,
+          data=data,
+          outcome_name=Z,
+          margins = margins,
+          i=i,
+          model="logit",
+          weight_name = weight,
+          fixest_opts = Zparameters)
+      }
+
     }
   } else { ##leave-cluster out mean
     leave_cluster_out_mean(
@@ -1160,22 +1178,76 @@ montest=function(fml,data,condition=NULL,inner.folds=NULL,crossfit=NULL,
 
     A_specs <- list()
 
+    # for (dv in Dsup) {
+    #   ## admissible A sets at each exact treatment value:
+    #   ## bottom d: only singleton sets
+    #   ## interior d: all nonempty subsets
+    #   ## top d: all nonempty proper subsets
+    #   if (joint == FALSE) {
+    #     A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
+    #   } else if (dv == min(Dsup)) {
+    #     A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
+    #   } else if (dv == max(Dsup)) {
+    #     A_list <- if (L >= 2L) {
+    #       all_subsets(Ysup, min_size = 1L, max_size = L - 1L)
+    #     } else {
+    #       list()
+    #     }
+    #   } else {
+    #     A_list <- all_subsets(Ysup, min_size = 1L, max_size = L)
+    #   }
+    #
+    #   if (length(A_list)) {
+    #     A_specs[[as.character(dv)]] <- data.table::rbindlist(
+    #       lapply(A_list, function(a) {
+    #         lbl <- paste0("{", paste(a, collapse = ","), "}")
+    #         data.table::data.table(
+    #           dval = dv,
+    #           yval = lbl,
+    #           Avals = list(a)
+    #         )
+    #       }),
+    #       use.names = TRUE,
+    #       fill = TRUE
+    #     )
+    #   }
+    # }
+
     for (dv in Dsup) {
-      ## admissible A sets at each exact treatment value:
-      ## bottom d: only singleton sets
-      ## interior d: all nonempty subsets
-      ## top d: all nonempty proper subsets
       if (joint == FALSE) {
-        A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
+
+        if (dv == min(Dsup)) {
+          ## Match LATEtest Q0 singleton conditions:
+          ## Q = -1(Y in {y}, D = dmin)
+          A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
+
+        } else if (dv == max(Dsup)) {
+          ## Match LATEtest Q1 singleton conditions under current Q construction:
+          ## Q = D - 1(Y in A, D = dmax)
+          ##   = 1(D = dmax, Y notin A)
+          ## so use complements of singletons.
+          A_list <- lapply(Ysup, function(y) setdiff(Ysup, y))
+
+        } else {
+          ## For interior treatment values there is no binary-LATEtest analogue.
+          ## If joint=FALSE is meant to be "singleton-style", use singleton sets.
+          A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
+        }
+
       } else if (dv == min(Dsup)) {
+
         A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
+
       } else if (dv == max(Dsup)) {
+
         A_list <- if (L >= 2L) {
           all_subsets(Ysup, min_size = 1L, max_size = L - 1L)
         } else {
           list()
         }
+
       } else {
+
         A_list <- all_subsets(Ysup, min_size = 1L, max_size = L)
       }
 

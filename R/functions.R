@@ -1920,7 +1920,10 @@ parametric_hat <- function(fml,
                            weight_name = NULL,
                            pred_name = NULL,
                            i = NULL,
+                           model = c("linear", "logit"),
                            fixest_opts = list()) {
+  model <- match.arg(model)
+
   if (is.null(pred_name)) pred_name <- paste0(outcome_name, ".hat")
 
   if (is.null(i)) {
@@ -1966,25 +1969,35 @@ parametric_hat <- function(fml,
   for (idx in group_list) {
     if (length(idx) == 0L) next
 
-    fit <- do.call(
-      fixest::feols,
-      c(
-        list(
-          fml = fml_full,
-          data = data[idx],
-          weights = w_fml,
-          notes = FALSE,
-          warn = FALSE
-        ),
-        fixest_opts
-      )
+    fit_args <- c(
+      list(
+        fml = fml_full,
+        data = data[idx],
+        weights = w_fml,
+        notes = FALSE,
+        warn = FALSE
+      ),
+      fixest_opts
     )
+
+    fit <- if (model == "linear") {
+      do.call(fixest::feols, fit_args)
+    } else {
+      do.call(
+        fixest::feglm,
+        c(
+          fit_args,
+          list(family = "binomial")
+        )
+      )
+    }
 
     data[idx, (pred_name) := as.numeric(stats::predict(fit, newdata = data[idx]))]
   }
 
   invisible(data)
 }
+
 ##SCORES computation
 make_scores_vec <- function(Y,
                             Z,
