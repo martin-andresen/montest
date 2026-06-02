@@ -14,12 +14,11 @@
 #' @param data A \code{data.frame} or \code{data.table} containing the analysis sample.
 #'   Observations with missing values in any variables used by the call are dropped.
 #' @param fml A fixest-style formula on the form Y~X|fe|D~Z that specifies the IV call to be tested. Importantly, the instrument Z should be coded so that higher values of Z imply weakly higher values of D for everyone - positive monotonicity. By default, the X part of the formula is used for both nuisance estimation and heterogeneous effects. X may contain the same variables as FE, indicating that some FE variables should also be used for heterogeneity.
-#' @param fml.Z A one-sided formula for the nuisance of the instrument. Defaults to the same as the the general formula in fml
-#' @param fml.Q A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
+#' @param fml.Z Optional: A one-sided formula for the nuisance of the instrument. Defaults to the same as the the general formula in fml
+#' @param fml.Q Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 #' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
 #' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or (the default) using semiparametric methods. In the latter case,
 #' all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
-#' @param one.hot boolean indicating whether fixed effects should be one-hot encoded or added as a continuous variable. Default is TRUE.
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
 #'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted, only \code{"simple"} is allowed.

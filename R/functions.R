@@ -258,21 +258,21 @@ CART_test <- function(
 
   sample_col <- as.character(sample)
   scores_col <- as.character(scores)
-  stopifnot(length(sample_col) == 1L, sample_col %chin% names(data))
-  stopifnot(length(scores_col) == 1L, scores_col %chin% names(data))
+  stopifnot(length(sample_col) == 1L, sample_col %in% names(data))
+  stopifnot(length(scores_col) == 1L, scores_col %in% names(data))
 
   x_names <- as.character(x_names)
-  stopifnot(length(x_names) >= 1L, all(x_names %chin% names(data)))
+  stopifnot(length(x_names) >= 1L, all(x_names %in% names(data)))
 
   if (is.null(margins)) margins <- character()
   margins <- unique(as.character(margins))
-  if (length(margins) > 0L) stopifnot(all(margins %chin% names(data)))
+  if (length(margins) > 0L) stopifnot(all(margins %in% names(data)))
 
   weight_col <- if (is.null(weight)) NULL else as.character(weight)
-  if (!is.null(weight_col)) stopifnot(length(weight_col) == 1L, weight_col %chin% names(data))
+  if (!is.null(weight_col)) stopifnot(length(weight_col) == 1L, weight_col %in% names(data))
 
   cluster_col <- if (is.null(cluster)) NULL else as.character(cluster)
-  if (!is.null(cluster_col)) stopifnot(length(cluster_col) == 1L, cluster_col %chin% names(data))
+  if (!is.null(cluster_col)) stopifnot(length(cluster_col) == 1L, cluster_col %in% names(data))
 
   stopifnot(is.numeric(minsize), length(minsize) == 1L, is.finite(minsize), minsize >= 1)
   minsize <- as.integer(minsize)
@@ -300,7 +300,7 @@ CART_test <- function(
     )
   }
 
-  select_sample <- sample_col %chin% select
+  select_sample <- sample_col %in% select
   select_margins <- intersect(select, margins)
 
   # CART_test does not pool across sample halves.
@@ -479,7 +479,7 @@ CART_test <- function(
     }
 
     if (screen == "fgk_relevant") {
-      if ("fgk_keep" %chin% names(dtf)) {
+      if ("fgk_keep" %in% names(dtf)) {
         keep <- dtf[fgk_keep == TRUE]
 
         if (nrow(keep) > 0L) {
@@ -882,7 +882,7 @@ CART_test <- function(
       key_row <- data.table::data.table()
       if (length(final_keep_margins) > 0L && !is.null(obj$key_dt) && ncol(obj$key_dt) > 0L) {
         for (cc in final_keep_margins) {
-          if (cc %chin% names(obj$key_dt)) key_row[, (cc) := obj$key_dt[[cc]][1]]
+          if (cc %in% names(obj$key_dt)) key_row[, (cc) := obj$key_dt[[cc]][1]]
         }
       }
       if (!select_sample) key_row[, train_s := train_s]
@@ -932,14 +932,14 @@ CART_test <- function(
           # margins kept in reported output
           for (cc in margins) {
             val <- NA
-            if (!is.null(obj$key_dt) && cc %chin% names(obj$key_dt)) val <- obj$key_dt[[cc]][1]
+            if (!is.null(obj$key_dt) && cc %in% names(obj$key_dt)) val <- obj$key_dt[[cc]][1]
             job_dt[, (cc) := val]
           }
 
           # pooling key for final testing
           for (cc in final_keep_margins) {
             val <- NA
-            if (!is.null(obj$key_dt) && cc %chin% names(obj$key_dt)) {
+            if (!is.null(obj$key_dt) && cc %in% names(obj$key_dt)) {
               val <- obj$key_dt[[cc]][1]
             }
             job_dt[, (paste0(".pool_", cc)) := val]
@@ -1061,16 +1061,16 @@ CART_test <- function(
     test_rows[[tt_k <- tt_k + 1L]] <- rr
   }
 
-  if (".dummy" %chin% names(jobs_dt)) jobs_dt[, .dummy := NULL]
+  if (".dummy" %in% names(jobs_dt)) jobs_dt[, .dummy := NULL]
 
   if (length(test_rows) == 0L) stop("Testing subset is empty (after selection).")
   test_out <- data.table::rbindlist(test_rows, use.names = TRUE, fill = TRUE)
 
   results_out <- data.table::rbindlist(list(train_out, test_out), use.names = TRUE, fill = TRUE)
-  if (!("relevant" %chin% names(results_out))) results_out[, relevant := NA_integer_]
+  if (!("relevant" %in% names(results_out))) results_out[, relevant := NA_integer_]
   results_out[train == FALSE, relevant := NA_integer_]
   data.table::setorder(results_out, train)
-  if ("selected_local" %chin% names(results_out)) {
+  if ("selected_local" %in% names(results_out)) {
     results_out[, selected_local := NULL]
   }
 
@@ -1195,13 +1195,13 @@ make_group_folds <- function(DT,
   stopifnot(is.character(fold_col), length(fold_col) == 1L)
 
   if (!is.null(by_col)) {
-    stopifnot(is.character(by_col), length(by_col) == 1L, by_col %chin% names(DT))
+    stopifnot(is.character(by_col), length(by_col) == 1L, by_col %in% names(DT))
   }
   if (!is.null(strat_col)) {
-    stopifnot(is.character(strat_col), length(strat_col) == 1L, strat_col %chin% names(DT))
+    stopifnot(is.character(strat_col), length(strat_col) == 1L, strat_col %in% names(DT))
   }
   if (!is.null(cluster_name)) {
-    stopifnot(is.character(cluster_name), length(cluster_name) == 1L, cluster_name %chin% names(DT))
+    stopifnot(is.character(cluster_name), length(cluster_name) == 1L, cluster_name %in% names(DT))
   }
 
   if (!is.null(cluster_name) && !is.null(strat_col)) {
@@ -1343,13 +1343,13 @@ crossfit_hat <- function(DT,
   stopifnot(is.character(y_name), length(y_name) == 1L)
   stopifnot(is.character(x_names), length(x_names) >= 1L)
   stopifnot(is.character(sample_name), length(sample_name) == 1L)
-  stopifnot(sample_name %chin% names(DT))
+  stopifnot(sample_name %in% names(DT))
   stopifnot(all(DT[[sample_name]] %in% c(1L, 2L)))
 
   mode <- match.arg(mode)
 
   if (!is.null(folds)) {
-    stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
+    stopifnot(is.character(folds), length(folds) == 1L, folds %in% names(DT))
   }
 
   if (is.null(i)) i <- DT[, .I]
@@ -1372,7 +1372,7 @@ crossfit_hat <- function(DT,
   }
 
   hat_col <- paste0(y_name, hat_suffix)
-  if (!(hat_col %chin% names(DT))) DT[, (hat_col) := NA_real_]
+  if (!(hat_col %in% names(DT))) DT[, (hat_col) := NA_real_]
 
   X_all <- as.matrix(DT[i, ..x_names])
 
@@ -1572,14 +1572,14 @@ leave_cluster_out_mean <- function(DT,
                                    weight_name = NULL,
                                    i = NULL) {
   stopifnot(data.table::is.data.table(DT))
-  stopifnot(y_name %chin% names(DT))
+  stopifnot(y_name %in% names(DT))
 
-  if (!is.null(cluster_name)) stopifnot(cluster_name %chin% names(DT))
-  if (!is.null(weight_name))  stopifnot(weight_name %chin% names(DT))
+  if (!is.null(cluster_name)) stopifnot(cluster_name %in% names(DT))
+  if (!is.null(weight_name))  stopifnot(weight_name %in% names(DT))
 
   if (is.null(by)) by <- character()
   by <- unique(as.character(by))
-  stopifnot(all(by %chin% names(DT)))
+  stopifnot(all(by %in% names(DT)))
 
   if (is.null(out_name)) out_name <- paste0(y_name, ".lco")
 
@@ -1628,7 +1628,7 @@ leave_cluster_out_mean <- function(DT,
     NA_real_
   )]
 
-  if (!(out_name %chin% names(DT))) {
+  if (!(out_name %in% names(DT))) {
     DT[, (out_name) := NA_real_]
   }
 
@@ -1905,10 +1905,10 @@ semiparametric_hat_stage <- function(DT,
                                      crossfit_mode = "within",
                                      forest_opts = list()) {
   stopifnot(data.table::is.data.table(DT))
-  stopifnot(y_tilde %chin% names(DT))
+  stopifnot(y_tilde %in% names(DT))
 
   by_nuis <- unique(as.character(by_nuis %||% character()))
-  by_nuis <- by_nuis[by_nuis %chin% names(DT)]
+  by_nuis <- by_nuis[by_nuis %in% names(DT)]
 
   has_x <- !is.null(x_names) && length(x_names) > 0L
 
@@ -1962,12 +1962,12 @@ feols_partial_out <- function(DT,
                               keep = c("resid", "fitted", "both"),
                               fixest_opts = list()) {
   stopifnot(data.table::is.data.table(DT))
-  stopifnot(all(y %chin% names(DT)))
+  stopifnot(all(y %in% names(DT)))
 
   keep <- match.arg(keep)
 
   by <- unique(as.character(by %||% character()))
-  by <- by[by %chin% names(DT)]
+  by <- by[by %in% names(DT)]
 
   rhs_txt <- if (is.null(rhs_expr) || identical(rhs_expr, quote(1))) {
     "1"
@@ -2238,21 +2238,21 @@ estimate_conditional_mean <- function(DT,
                                       partial_out_y_fe = TRUE,
                                       i = NULL) {
   stopifnot(data.table::is.data.table(DT))
-  stopifnot(y_name %chin% names(DT))
+  stopifnot(y_name %in% names(DT))
 
   by <- unique(as.character(by %||% character()))
-  by <- by[by %chin% names(DT)]
+  by <- by[by %in% names(DT)]
 
   if (!is.null(sample_var)) {
     stopifnot(is.character(sample_var), length(sample_var) == 1L)
-    if (!(sample_var %chin% names(DT))) {
+    if (!(sample_var %in% names(DT))) {
       stop("`sample_var` not found in `DT`: ", sample_var, call. = FALSE)
     }
   }
 
   by_fe <- by
   by_sp <- unique(c(sample_var, by))
-  by_sp <- by_sp[by_sp %chin% names(DT)]
+  by_sp <- by_sp[by_sp %in% names(DT)]
 
   has_FE <- !is.null(fe_expr)
   has_X_expr <- !is.null(x_expr) && !identical(x_expr, quote(1))
@@ -2403,7 +2403,7 @@ estimate_conditional_mean <- function(DT,
   }
 
   if (!isTRUE(keep_x) && !is.null(X_info$x_names)) {
-    drop_x <- X_info$x_names[X_info$x_names %chin% names(DT)]
+    drop_x <- X_info$x_names[X_info$x_names %in% names(DT)]
     if (length(drop_x)) DT[, (drop_x) := NULL]
   }
 
@@ -2709,7 +2709,7 @@ make_scores <- function(DT,
   i <- as.integer(i)
 
   z_is_linear <- if (!is.null(z_is_linear_name) &&
-                     z_is_linear_name %chin% names(DT)) {
+                     z_is_linear_name %in% names(DT)) {
     as.logical(DT[[z_is_linear_name]][i])
   } else {
     rep(FALSE, length(i))
@@ -2734,7 +2734,7 @@ make_scores <- function(DT,
     var_floor = var_floor
   )
 
-  if (!(score_name %chin% names(DT))) {
+  if (!(score_name %in% names(DT))) {
     DT[, (score_name) := NA_real_]
   }
 
@@ -2767,11 +2767,11 @@ fit_models <- function(DT,
 
   do_scores <- identical(forest_type, "causal")
 
-  stopifnot("sample" %chin% names(DT))
+  stopifnot("sample" %in% names(DT))
   stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
 
   if (!is.null(folds)) {
-    stopifnot(is.character(folds), length(folds) == 1L, folds %chin% names(DT))
+    stopifnot(is.character(folds), length(folds) == 1L, folds %in% names(DT))
   }
 
   if (!is.null(aipw.clip)) {
@@ -2796,24 +2796,24 @@ fit_models <- function(DT,
 
   if (is.null(forest_opts)) forest_opts <- list()
 
-  if (!("pred"   %chin% names(DT))) DT[, pred   := NA_real_]
-  if (!("pred_o" %chin% names(DT))) DT[, pred_o := NA_real_]
+  if (!("pred"   %in% names(DT))) DT[, pred   := NA_real_]
+  if (!("pred_o" %in% names(DT))) DT[, pred_o := NA_real_]
 
-  if (do_scores && !("scores" %chin% names(DT))) {
+  if (do_scores && !("scores" %in% names(DT))) {
     DT[, scores := NA_real_]
   }
 
   if (shrink) {
-    if (!("pred_var"   %chin% names(DT))) DT[, pred_var   := NA_real_]
-    if (!("pred_o_var" %chin% names(DT))) DT[, pred_o_var := NA_real_]
+    if (!("pred_var"   %in% names(DT))) DT[, pred_var   := NA_real_]
+    if (!("pred_o_var" %in% names(DT))) DT[, pred_o_var := NA_real_]
   }
 
   y_hat <- paste0(y_name, ".hat")
   w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
 
   if (forest_type == "causal") {
-    stopifnot(!is.null(w_name), w_name %chin% names(DT))
-    stopifnot(y_hat %chin% names(DT), w_hat %chin% names(DT))
+    stopifnot(!is.null(w_name), w_name %in% names(DT))
+    stopifnot(y_hat %in% names(DT), w_hat %in% names(DT))
   }
 
   if (is.null(x_names) || length(x_names) == 0L) {
@@ -2842,16 +2842,16 @@ fit_models <- function(DT,
   wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
   cl_all     <- if (!is.null(cluster_name)) DT[[cluster_name]] else NULL
 
-  z_is_linear_all <- if ("z_use_linear_score" %chin% names(DT)) {
+  z_is_linear_all <- if ("z_use_linear_score" %in% names(DT)) {
     as.logical(DT[["z_use_linear_score"]])
-  } else if ("z_is_linear" %chin% names(DT)) {
+  } else if ("z_is_linear" %in% names(DT)) {
     as.logical(DT[["z_is_linear"]])
   } else {
     rep(FALSE, nrow(DT))
   }
 
   zvar_all <- if (!is.null(zvar_name)) {
-    stopifnot(zvar_name %chin% names(DT))
+    stopifnot(zvar_name %in% names(DT))
     as.numeric(DT[[zvar_name]])
   } else {
     NULL
@@ -3250,10 +3250,10 @@ add_running_fe_rank <- function(DT,
   }
 
   by <- unique(as.character(by %||% character()))
-  by <- by[by %chin% names(DT)]
+  by <- by[by %in% names(DT)]
 
   fe_vars <- unique(all.vars(fe_expr))
-  fe_vars <- fe_vars[fe_vars %chin% names(DT)]
+  fe_vars <- fe_vars[fe_vars %in% names(DT)]
 
   if (!length(fe_vars)) {
     DT[, (out) := 0L]
@@ -4691,7 +4691,7 @@ global_means_crv1 <- function(
 
   if (!is.null(weight_col)) {
     stopifnot(is.character(weight_col), length(weight_col) == 1L)
-    stopifnot(weight_col %chin% names(data))
+    stopifnot(weight_col %in% names(data))
   }
 
   dt_all <- data.table::data.table(
@@ -4768,7 +4768,7 @@ global_means_crv1 <- function(
       )
     }, by = by_cols]
 
-    if (!(sample_col %chin% names(global_dt))) {
+    if (!(sample_col %in% names(global_dt))) {
       global_dt[, (sample_col) := NA_integer_]
     }
   }
