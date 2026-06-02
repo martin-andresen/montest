@@ -38,6 +38,17 @@ append_to_main_rhs <- function(fml, y_name) {
   }
 }
 
+append_to_x_expr <- function(x_expr, y_name, env = parent.frame()) {
+  fml <- if (is.null(x_expr) || identical(x_expr, quote(1))) {
+    stats::as.formula(~ 1, env = env)
+  } else {
+    stats::as.formula(call("~", x_expr), env = env)
+  }
+
+  fml2 <- append_to_main_rhs(fml, y_name)
+  fml2[[2L]]
+}
+
 shrink_te_crossfit <- function(data,
                                pred,
                                pred_var,
@@ -155,6 +166,68 @@ shrink_te_crossfit <- function(data,
   invisible(DT)
 }
 
+fixest_fe_rank <- function(data,
+                           idx,
+                           fe_expr = NULL,
+                           weight_col = NULL,
+                           ssc = fixest::ssc(K.fixef = "full")) {
+  if (is.null(fe_expr) || length(idx) == 0L) {
+    return(0L)
+  }
+
+  dsub <- data[idx]
+
+  if (!nrow(dsub)) {
+    return(0L)
+  }
+
+  y_tmp <- "..rank_y__"
+  while (y_tmp %in% names(dsub)) {
+    y_tmp <- paste0(y_tmp, "_")
+  }
+
+  dsub[, (y_tmp) := 0]
+
+  fml <- stats::as.formula(
+    paste0(y_tmp, " ~ 1 | ", deparse1(fe_expr))
+  )
+
+  args <- list(
+    fml = fml,
+    data = dsub,
+    notes = FALSE,
+    warn = FALSE,
+    ssc = ssc
+  )
+
+  if (!is.null(weight_col)) {
+    args$weights <- stats::as.formula(paste0("~", weight_col))
+  }
+
+  fit <- tryCatch(
+    do.call(fixest::feols, args),
+    error = function(e) NULL
+  )
+
+  if (is.null(fit)) {
+    return(0L)
+  }
+
+  k_total <- tryCatch(
+    fixest::degrees_freedom(fit, type = "k", ssc = ssc),
+    error = function(e) NA_real_
+  )
+
+  if (!is.finite(k_total)) {
+    return(0L)
+  }
+
+  ## Model is y ~ 1 | FE, so subtract the intercept/non-FE regressor.
+  ## The remainder is the FE df counted by fixest under the chosen ssc.
+  rank_fe <- max(0L, as.integer(round(k_total - 1L)))
+
+  rank_fe
+}
 
 CART_test <- function(
     data,
@@ -174,7 +247,9 @@ CART_test <- function(
     store_trees = FALSE,
     verbose = FALSE,
     xval = 10,
-    rpart_options = NULL
+    rpart_options = NULL,
+    fe_expr = NULL,
+    fe_rank_adj = TRUE
 ) {
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
@@ -239,40 +314,6 @@ CART_test <- function(
   final_keep_margins <- setdiff(margins, select_margins)
 
   # ---------------- helpers ----------------
-
-  mean_test_crv1 <- function(y, w = NULL, cl = NULL) {
-    y <- as.numeric(y)
-    n <- length(y)
-    if (n == 0L) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L, G=0L))
-
-    if (is.null(w)) w <- rep(1.0, n) else w <- as.numeric(w)
-    ok <- is.finite(y) & is.finite(w) & (w >= 0)
-    if (!any(ok)) return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=0L, G=0L))
-    y <- y[ok]
-    w <- w[ok]
-
-    if (is.null(cl)) {
-      cl <- seq_len(length(y))
-    } else {
-      cl <- cl[ok]
-      cl <- as.integer(factor(cl, exclude = NULL))
-    }
-
-    dt0 <- data.table::data.table(y = y, w = w, cl = cl)
-    gb <- dt0[, .(U = sum(w * y), W = sum(w)), by = cl]
-    G <- nrow(gb)
-    U <- sum(gb$U)
-    W <- sum(gb$W)
-    if (!is.finite(W) || W == 0) {
-      return(list(coef=NA_real_, se=NA_real_, t=NA_real_, N=length(y), G=G))
-    }
-
-    theta <- U / W
-    ug <- gb$U - theta * gb$W
-    se <- sqrt((G / pmax.int(G - 1L, 1L)) * sum(ug^2)) / abs(W)
-    if (G < 2L || !is.finite(se)) se <- NA_real_
-    list(coef = theta, se = se, t = theta / se, N = length(y), G = G)
-  }
 
   select_leaves_local <- function(dt_train_leaf) {
     L <- nrow(dt_train_leaf)
@@ -542,6 +583,7 @@ CART_test <- function(
 
   global_means_one_cell <- function(df_cell, key_dt) {
     dtg <- data.table::data.table(
+      rowid  = idx_cell,
       sample = as.integer(df_cell[[sample_col]]),
       score  = as.numeric(df_cell[[scores_col]]),
       w      = if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
@@ -554,10 +596,29 @@ CART_test <- function(
     }
 
     out <- dtg[, {
-      o <- mean_test_crv1(score, w, cl)
+      rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+        fixest_fe_rank(
+          data = data,
+          idx = rowid,
+          fe_expr = fe_expr,
+          weight_col = weight_col,
+          ssc = fixest::ssc(K.fixef = "full")
+        )
+      } else {
+        0L
+      }
+
+      o <- crv1_mean(score, w, cl, rank_adj = rank_adj)
+
       data.table::data.table(
         train = FALSE,
-        G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+        G = o$G,
+        N = o$N,
+        fe_rank = rank_adj,
+        df = o$df,
+        coef = o$coef,
+        stderr = o$se,
+        t = o$t,
         p.raw = stats::pnorm(o$t)
       )
     }, by = "sample"]
@@ -584,7 +645,7 @@ CART_test <- function(
     idx <- idx_full_list[[g]]
     key_dt <- if (length(margins) > 0L) data[idx[1L], ..margins] else NULL
     df_cell <- data[idx]
-    global_list[[g]] <- global_means_one_cell(df_cell, key_dt)
+    global_list[[g]] <- global_means_one_cell(df_cell, key_dt, idx)
   }
   global_out <- data.table::rbindlist(global_list, use.names = TRUE, fill = TRUE)
 
@@ -626,6 +687,7 @@ CART_test <- function(
       cl_group <- if (!is.null(cluster_col)) df_group[[cluster_col]] else NULL
 
       dt0 <- data.table::data.table(
+        rowid  = idx,
         leaf   = leaf_all,
         sample = s_group,
         score  = score_group,
@@ -638,14 +700,50 @@ CART_test <- function(
       }
 
       dt_train <- dt0[sample == train_s & !is.na(leaf)]
+
       train_leaf <- dt_train[, {
         G_here <- data.table::uniqueN(cl)
         N_here <- .N
+
         if (G_here < minsize) {
-          list(G = G_here, N = N_here, coef = NA_real_, stderr = NA_real_, t = NA_real_)
+          list(
+            G = G_here,
+            N = N_here,
+            fe_rank = NA_integer_,
+            df = NA_real_,
+            coef = NA_real_,
+            stderr = NA_real_,
+            t = NA_real_
+          )
         } else {
-          o <- mean_test_crv1(score, w, cl)
-          list(G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t)
+          rank_adj <- 0L
+
+          if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+            rank_adj <- fixest_fe_rank(
+              data = data,
+              idx = rowid,
+              fe_expr = fe_expr,
+              weight_col = weight_col,
+              ssc = fixest::ssc(K.fixef = "full")
+            )
+          }
+
+          o <- crv1_mean(
+            score = score,
+            w = w,
+            cl = cl,
+            rank_adj = rank_adj
+          )
+
+          list(
+            G = o$G,
+            N = o$N,
+            fe_rank = rank_adj,
+            df = o$df,
+            coef = o$coef,
+            stderr = o$se,
+            t = o$t
+          )
         }
       }, by = leaf]
 
@@ -921,30 +1019,31 @@ CART_test <- function(
     w[!is.finite(w)] <- 0
     cl <- if (!is.null(cluster_col)) data[[cluster_col]][idx_keep_all] else NULL
 
-    o <- mean_test_crv1(y, w, cl)
+    rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+      fixest_fe_rank(
+        data = data,
+        idx = idx_keep_all,
+        fe_expr = fe_expr,
+        weight_col = weight_col,
+        ssc = fixest::ssc(K.fixef = "full")
+      )
+    } else {
+      0L
+    }
+
+    o <- crv1_mean(y, w, cl, rank_adj = rank_adj)
 
     sample_here <- unique(jobs_here$est_s)
     leaf_here   <- unique(jobs_here$leaf)
 
     rr <- data.table::data.table(
       train = FALSE,
-
-      # CART_test keeps estimation sample directions separate.
-      sample = if (length(sample_here) == 1L) {
-        as.integer(sample_here)
-      } else {
-        NA_integer_
-      },
-
-      # Leaf is now part of the pooling key, so this should usually be length 1.
-      leaf = if (length(leaf_here) == 1L) {
-        as.integer(leaf_here)
-      } else {
-        NA_integer_
-      },
-
+      sample = if (length(sample_here) == 1L) as.integer(sample_here) else NA_integer_,
+      leaf = if (length(leaf_here) == 1L) as.integer(leaf_here) else NA_integer_,
       G = o$G,
       N = o$N,
+      fe_rank = rank_adj,
+      df = o$df,
       coef = o$coef,
       stderr = o$se,
       t = o$t,
@@ -1234,6 +1333,7 @@ crossfit_hat <- function(DT,
                          margins = NULL,
                          weight_name = NULL,
                          folds = NULL,              # NULL => OOB if mode = "within"
+                         sample_name = "sample",
                          forest_opts = list(),
                          hat_suffix = ".hat",
                          mode = c("within", "across"),
@@ -1242,8 +1342,9 @@ crossfit_hat <- function(DT,
   stopifnot(data.table::is.data.table(DT))
   stopifnot(is.character(y_name), length(y_name) == 1L)
   stopifnot(is.character(x_names), length(x_names) >= 1L)
-  stopifnot("sample" %chin% names(DT))
-  stopifnot(all(DT[["sample"]] %in% c(1L, 2L)))
+  stopifnot(is.character(sample_name), length(sample_name) == 1L)
+  stopifnot(sample_name %chin% names(DT))
+  stopifnot(all(DT[[sample_name]] %in% c(1L, 2L)))
 
   mode <- match.arg(mode)
 
@@ -1261,12 +1362,14 @@ crossfit_hat <- function(DT,
   grp_cols <- as.character(margins)
 
   missing_cols <- setdiff(
-    c("sample", y_name, x_names, grp_cols,
+    c(sample_name, y_name, x_names, grp_cols,
       if (!is.null(weight_name)) weight_name,
       if (!is.null(folds)) folds),
     names(DT)
   )
-  if (length(missing_cols)) stop("Missing columns: ", paste(missing_cols, collapse = ", "))
+  if (length(missing_cols)) {
+    stop("Missing columns: ", paste(missing_cols, collapse = ", "), call. = FALSE)
+  }
 
   hat_col <- paste0(y_name, hat_suffix)
   if (!(hat_col %chin% names(DT))) DT[, (hat_col) := NA_real_]
@@ -1277,7 +1380,7 @@ crossfit_hat <- function(DT,
   DT[i, (rid_col) := seq_len(n_i)]
   rid <- DT[[rid_col]]
 
-  sample_all <- DT[["sample"]]
+  sample_all <- DT[[sample_name]]
   y_all <- as.numeric(DT[[y_name]])
   w_all <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
   f_all <- if (!is.null(folds)) DT[[folds]] else NULL
@@ -1309,56 +1412,23 @@ crossfit_hat <- function(DT,
     }
 
     X_tr <- X_all[rid[idx_tr], , drop = FALSE]
+
     rf <- do.call(
       grf::regression_forest,
-      c(list(
-        X = X_tr,
-        Y = y_tr,
-        sample.weights = w_tr,
-        compute.oob.predictions = FALSE
-      ), forest_opts)
+      c(
+        list(
+          X = X_tr,
+          Y = y_tr,
+          sample.weights = w_tr,
+          compute.oob.predictions = FALSE
+        ),
+        forest_opts
+      )
     )
 
     X_te <- X_all[rid[idx_te], , drop = FALSE]
     preds[] <- as.numeric(predict(rf, X_te)$predictions)
     preds
-  }
-
-  within_pred_idx <- function(idx_s) {
-    n <- length(idx_s)
-    if (n == 0L) return(numeric())
-
-    f <- f_all[idx_s]
-    if (data.table::uniqueN(f) < 2L) {
-      return(within_oob_idx(idx_s))
-    }
-
-    pos_by_fold <- split(seq_len(n), f)
-
-    p <- rep(NA_real_, n)
-    tr_mask <- rep.int(TRUE, n)
-
-    for (k in names(pos_by_fold)) {
-      te_pos <- pos_by_fold[[k]]
-      tr_mask[te_pos] <- FALSE
-      tr_pos <- which(tr_mask)
-      tr_mask[te_pos] <- TRUE
-
-      idx_tr <- idx_s[tr_pos]
-      idx_te <- idx_s[te_pos]
-
-      if (length(idx_tr) < 2L) {
-        y_tr <- y_all[idx_tr]
-        w_tr <- if (is.null(w_all)) NULL else w_all[idx_tr]
-        mu <- if (length(y_tr) == 0L) NA_real_ else {
-          if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
-        }
-        p[te_pos] <- mu
-      } else {
-        p[te_pos] <- fit_predict_idx(idx_tr, idx_te)
-      }
-    }
-    p
   }
 
   within_oob_idx <- function(idx_s) {
@@ -1384,19 +1454,67 @@ crossfit_hat <- function(DT,
 
     fit <- do.call(
       grf::regression_forest,
-      c(list(
-        X = X_all[rid[idx_s], , drop = FALSE],
-        Y = y_s,
-        sample.weights = w_s,
-        compute.oob.predictions = TRUE
-      ), forest_opts)
+      c(
+        list(
+          X = X_all[rid[idx_s], , drop = FALSE],
+          Y = y_s,
+          sample.weights = w_s,
+          compute.oob.predictions = TRUE
+        ),
+        forest_opts
+      )
     )
 
     p[] <- as.numeric(predict(fit)$predictions)
     p
   }
 
+  within_pred_idx <- function(idx_s) {
+    n <- length(idx_s)
+    if (n == 0L) return(numeric())
+
+    f <- f_all[idx_s]
+
+    if (data.table::uniqueN(f) < 2L) {
+      return(within_oob_idx(idx_s))
+    }
+
+    pos_by_fold <- split(seq_len(n), f)
+
+    p <- rep(NA_real_, n)
+    tr_mask <- rep.int(TRUE, n)
+
+    for (k in names(pos_by_fold)) {
+      te_pos <- pos_by_fold[[k]]
+
+      tr_mask[te_pos] <- FALSE
+      tr_pos <- which(tr_mask)
+      tr_mask[te_pos] <- TRUE
+
+      idx_tr <- idx_s[tr_pos]
+      idx_te <- idx_s[te_pos]
+
+      if (length(idx_tr) < 2L) {
+        y_tr <- y_all[idx_tr]
+        w_tr <- if (is.null(w_all)) NULL else w_all[idx_tr]
+
+        mu <- if (length(y_tr) == 0L) {
+          NA_real_
+        } else {
+          if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
+        }
+
+        p[te_pos] <- mu
+      } else {
+        p[te_pos] <- fit_predict_idx(idx_tr, idx_te)
+      }
+    }
+
+    p
+  }
+
   idx_all <- i
+
   if (length(grp_cols) == 0L) {
     group_list <- list(idx_all)
   } else {
@@ -1724,6 +1842,27 @@ validate_iv <- function(fml, data) {
     NULL
   }
 
+  # New: formula containing only the main X part before the first pipe.
+  # This is useful as the default for fml.Z/fml.Q and for forest features.
+  X_formula <- if (!is.null(covars_expr)) {
+    stats::as.formula(
+      call("~", covars_expr),
+      env = env
+    )
+  } else {
+    NULL
+  }
+
+  # New: formula containing only the FE part, if present.
+  FE_formula <- if (!is.null(fe_expr)) {
+    stats::as.formula(
+      call("~", fe_expr),
+      env = env
+    )
+  } else {
+    NULL
+  }
+
   null_if_empty <- function(x) {
     if (is.null(x) || length(x) == 0L) NULL else x
   }
@@ -1732,18 +1871,335 @@ validate_iv <- function(fml, data) {
     ok = TRUE,
     errors = NULL,
     formula = parsed$formula,
+
     reduced_form_rhs = reduced_form_rhs,
     reduced_form_formula = reduced_form_formula,
+
+    # New / important for the refactor
+    X_expr = covars_expr,
+    X_formula = X_formula,
+    FE_expr = fe_expr,
+    FE_formula = FE_formula,
+
     variables = null_if_empty(variables),
     X = null_if_empty(X),
     Y = null_if_empty(Y),
     D = null_if_empty(D),
     Z = null_if_empty(Z),
     FE = null_if_empty(FE),
-    FE_expr = fe_expr,
+
     has_lhs = has_lhs,
     iv = iv
   )
+}
+
+semiparametric_hat_stage <- function(DT,
+                                     y_tilde,
+                                     x_names,
+                                     out_sp_hat,
+                                     has_fe = FALSE,
+                                     by_nuis = NULL,
+                                     weight = NULL,
+                                     cluster = NULL,
+                                     folds = NULL,
+                                     crossfit_mode = "within",
+                                     forest_opts = list()) {
+  stopifnot(data.table::is.data.table(DT))
+  stopifnot(y_tilde %chin% names(DT))
+
+  by_nuis <- unique(as.character(by_nuis %||% character()))
+  by_nuis <- by_nuis[by_nuis %chin% names(DT)]
+
+  has_x <- !is.null(x_names) && length(x_names) > 0L
+
+  if (has_x) {
+    crossfit_hat(
+      DT,
+      i = i,
+      y_name = y_for_rf,
+      x_names = x_names,
+      folds = foldname,
+      sample_name = sample_var,
+      margins = by_nuis,
+      weight_name = weight,
+      mode = ifelse(
+        (!is.null(crossfit_label) &&
+           crossfit_label %in% crossfit &&
+           is.null(foldname)),
+        "across",
+        "within"
+      ),
+      forest_opts = forest_opts,
+      hat_suffix = ".sp_hat"
+    )
+
+    DT[, (out_sp_hat) := get(paste0(y_tilde, ".sp_hat"))]
+  } else if (has_fe) {
+    DT[, (out_sp_hat) := 0]
+  } else {
+    oos_mean_hat_by(
+      DT = DT,
+      y_name = y_tilde,
+      out_name = out_sp_hat,
+      by = by_nuis,
+      weight = weight,
+      cluster = cluster,
+      folds = folds
+    )
+  }
+
+  invisible(DT)
+}
+
+
+feols_partial_out <- function(DT,
+                              y,
+                              rhs_expr = quote(1),
+                              fe_expr = NULL,
+                              by = NULL,
+                              weight = NULL,
+                              prefix = NULL,
+                              keep = c("resid", "fitted", "both"),
+                              fixest_opts = list()) {
+  stopifnot(data.table::is.data.table(DT))
+  stopifnot(all(y %chin% names(DT)))
+
+  keep <- match.arg(keep)
+
+  by <- unique(as.character(by %||% character()))
+  by <- by[by %chin% names(DT)]
+
+  rhs_txt <- if (is.null(rhs_expr) || identical(rhs_expr, quote(1))) {
+    "1"
+  } else {
+    deparse1(rhs_expr)
+  }
+
+  has_fe <- !is.null(fe_expr)
+
+  out <- data.table::data.table(
+    y = y,
+    resid = paste0(prefix %||% y, "_resid"),
+    fitted = paste0(prefix %||% y, "_fitted")
+  )
+
+  if (keep %in% c("resid", "both")) {
+    for (v in out$resid) DT[, (v) := NA_real_]
+  }
+  if (keep %in% c("fitted", "both")) {
+    for (v in out$fitted) DT[, (v) := NA_real_]
+  }
+
+  # No FE and no RHS means residual = original, fitted = 0.
+  # This is useful for the FWL path where there is nothing to partial out.
+  if (!has_fe && rhs_txt == "1") {
+    if (keep %in% c("resid", "both")) {
+      for (j in seq_along(y)) {
+        DT[, (out$resid[j]) := get(y[j])]
+      }
+    }
+    if (keep %in% c("fitted", "both")) {
+      for (j in seq_along(y)) {
+        DT[, (out$fitted[j]) := 0]
+      }
+    }
+
+    return(list(
+      resid = if (keep %in% c("resid", "both")) out$resid else NULL,
+      fitted = if (keep %in% c("fitted", "both")) out$fitted else NULL,
+      map = out
+    ))
+  }
+
+  fml_for <- function(lhs) {
+    if (has_fe) {
+      stats::as.formula(
+        paste0(lhs, " ~ ", rhs_txt, " | ", deparse1(fe_expr))
+      )
+    } else {
+      stats::as.formula(
+        paste0(lhs, " ~ ", rhs_txt)
+      )
+    }
+  }
+
+  idx_list <- if (!length(by)) {
+    list(seq_len(nrow(DT)))
+  } else {
+    DT[, .(idx = list(.I)), by = by]$idx
+  }
+
+  for (ii in idx_list) {
+    dsub <- DT[ii]
+
+    for (j in seq_along(y)) {
+      lhs <- y[j]
+      fml <- fml_for(lhs)
+
+      args <- c(
+        list(
+          fml = fml,
+          data = dsub,
+          notes = FALSE,
+          warn = FALSE
+        ),
+        fixest_opts
+      )
+
+      if (!is.null(weight)) {
+        args$weights <- stats::as.formula(paste0("~", weight))
+      }
+
+      fit <- do.call(fixest::feols, args)
+
+      if (keep %in% c("resid", "both")) {
+        DT[ii, (out$resid[j]) := as.numeric(stats::residuals(fit))]
+      }
+
+      if (keep %in% c("fitted", "both")) {
+        DT[ii, (out$fitted[j]) := as.numeric(stats::fitted(fit))]
+      }
+    }
+  }
+
+  list(
+    resid = if (keep %in% c("resid", "both")) out$resid else NULL,
+    fitted = if (keep %in% c("fitted", "both")) out$fitted else NULL,
+    map = out
+  )
+}
+
+make_X_residualized_from_FE <- function(DT,
+                                        x_expr,
+                                        fe_expr = NULL,
+                                        prefix = "__x",
+                                        by = NULL,
+                                        weight = NULL,
+                                        fixest_opts = list(),
+                                        drop_zero_var = TRUE) {
+  stopifnot(data.table::is.data.table(DT))
+
+  if (is.null(x_expr) || identical(x_expr, quote(1))) {
+    return(list(
+      x_names = NULL,
+      residualized = NULL,
+      moderators = NULL,
+      dropped = NULL,
+      col_terms = NULL
+    ))
+  }
+
+  fe_vars <- if (is.null(fe_expr)) character() else all.vars(fe_expr)
+
+  x_fml <- stats::as.formula(call("~", x_expr))
+  trm <- stats::terms(x_fml, data = DT)
+  mm <- stats::model.matrix(trm, data = DT)
+
+  if ("(Intercept)" %in% colnames(mm)) {
+    mm <- mm[, setdiff(colnames(mm), "(Intercept)"), drop = FALSE]
+  }
+
+  if (!ncol(mm)) {
+    return(list(
+      x_names = NULL,
+      residualized = NULL,
+      moderators = NULL,
+      dropped = NULL,
+      col_terms = NULL
+    ))
+  }
+
+  term_labels <- attr(trm, "term.labels")
+  assign_id <- attr(mm, "assign")
+  col_terms <- ifelse(assign_id == 0L, "(Intercept)", term_labels[assign_id])
+
+  term_uses_fe <- vapply(col_terms, function(tt) {
+    if (tt == "(Intercept)") return(FALSE)
+
+    vars <- tryCatch(
+      all.vars(stats::str2lang(tt)),
+      error = function(e) character()
+    )
+
+    any(vars %in% fe_vars)
+  }, logical(1))
+
+  raw_cols <- character(ncol(mm))
+
+  for (j in seq_len(ncol(mm))) {
+    nm <- paste0(prefix, "_", j)
+    DT[, (nm) := as.numeric(mm[, j])]
+    raw_cols[j] <- nm
+  }
+
+  ordinary_cols <- raw_cols[!term_uses_fe]
+  moderator_cols <- raw_cols[term_uses_fe]
+
+  if (length(ordinary_cols)) {
+    po <- feols_partial_out(
+      DT = DT,
+      y = ordinary_cols,
+      rhs_expr = quote(1),
+      fe_expr = fe_expr,
+      by = by,
+      weight = weight,
+      prefix = paste0(ordinary_cols, "_fe"),
+      keep = "resid",
+      fixest_opts = fixest_opts
+    )
+
+    resid_cols <- po$resid
+
+    # Drop raw ordinary columns; keep residualized versions.
+    DT[, (ordinary_cols) := NULL]
+  } else {
+    resid_cols <- character()
+  }
+
+  x_names <- c(resid_cols, moderator_cols)
+
+  dropped <- character()
+
+  if (drop_zero_var && length(x_names)) {
+    keep <- x_names[vapply(x_names, function(v) {
+      x <- DT[[v]]
+      x <- x[is.finite(x)]
+      data.table::uniqueN(x) > 1L
+    }, logical(1))]
+
+    dropped <- setdiff(x_names, keep)
+
+    if (length(dropped)) {
+      DT[, (dropped) := NULL]
+    }
+
+    x_names <- keep
+    resid_cols <- intersect(resid_cols, keep)
+    moderator_cols <- intersect(moderator_cols, keep)
+  }
+
+  list(
+    x_names = null_if_empty(x_names),
+    residualized = null_if_empty(resid_cols),
+    moderators = null_if_empty(moderator_cols),
+    dropped = null_if_empty(dropped),
+    col_terms = col_terms
+  )
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
+}
+
+
+parse_one_sided_rhs <- function(fml, name) {
+  if (is.null(fml)) return(NULL)
+
+  if (!inherits(fml, "formula") || length(fml) != 2L) {
+    stop(name, " must be a one-sided formula, e.g. ~ X1 + X2.", call. = FALSE)
+  }
+
+  fml[[2L]]
 }
 
 null_if_empty <- function(x) {
@@ -1912,90 +2368,368 @@ fixest_fe_to_mm <- function(DT,
   )
 }
 
-##REDUCED FORM FITTED VALUES USING FEOLS
-parametric_hat <- function(fml,
-                           data,
-                           outcome_name,
-                           margins = NULL,
-                           weight_name = NULL,
-                           pred_name = NULL,
-                           i = NULL,
-                           model = c("linear", "logit"),
-                           fixest_opts = list()) {
-  model <- match.arg(model)
+estimate_conditional_mean <- function(DT,
+                                      y_name,
+                                      x_expr,
+                                      fe_expr = NULL,
+                                      out_hat = paste0(y_name, ".hat"),
+                                      out_resid = NULL,
+                                      by = NULL,
+                                      sample_var = "sample",
+                                      weight = NULL,
+                                      cluster = NULL,
+                                      parametric = FALSE,
+                                      foldname = NULL,
+                                      crossfit = NULL,
+                                      crossfit_label = NULL,
+                                      forest_opts = list(),
+                                      fixest_opts = list(),
+                                      x_names = NULL,
+                                      x_prefix = "__x",
+                                      keep_x = FALSE,
+                                      return_residual = FALSE,
+                                      partial_out_y_fe = TRUE,
+                                      i = NULL) {
+  stopifnot(data.table::is.data.table(DT))
+  stopifnot(y_name %chin% names(DT))
 
-  if (is.null(pred_name)) pred_name <- paste0(outcome_name, ".hat")
+  by <- unique(as.character(by %||% character()))
+  by <- by[by %chin% names(DT)]
+
+  if (!is.null(sample_var)) {
+    stopifnot(is.character(sample_var), length(sample_var) == 1L)
+    if (!(sample_var %chin% names(DT))) {
+      stop("`sample_var` not found in `DT`: ", sample_var, call. = FALSE)
+    }
+  }
+
+  by_fe <- by
+  by_sp <- unique(c(sample_var, by))
+  by_sp <- by_sp[by_sp %chin% names(DT)]
+
+  has_FE <- !is.null(fe_expr)
+  has_X_expr <- !is.null(x_expr) && !identical(x_expr, quote(1))
 
   if (is.null(i)) {
-    i <- seq_len(nrow(data))
-  } else {
-    i <- as.integer(i)
+    i <- seq_len(nrow(DT))
   }
 
-  fml <- if (inherits(fml, "formula")) fml else stats::as.formula(fml)
+  X_info <- NULL
 
-  rhs <- if (length(fml) == 2L) {
-    fml[[2L]]
-  } else {
-    fml[[3L]]
-  }
-
-  fml_full <- stats::as.formula(
-    call("~", as.name(outcome_name), rhs),
-    env = environment(fml)
-  )
-
-  if (!(pred_name %chin% names(data))) {
-    data[, (pred_name) := NA_real_]
-  } else {
-    data[i, (pred_name) := NA_real_]
-  }
-
-  by_cols <- unique(c("sample", margins))
-
-  group_list <- if (length(by_cols) == 0L) {
-    list(i)
-  } else {
-    gid <- data[i, data.table::frankv(.SD, ties.method = "dense"), .SDcols = by_cols]
-    split(i, gid)
-  }
-
-  w_fml <- if (!is.null(weight_name)) {
-    stats::as.formula(paste0("~", weight_name))
-  } else {
-    NULL
-  }
-
-  for (idx in group_list) {
-    if (length(idx) == 0L) next
-
-    fit_args <- c(
-      list(
-        fml = fml_full,
-        data = data[idx],
-        weights = w_fml,
-        notes = FALSE,
-        warn = FALSE
-      ),
-      fixest_opts
+  ## X residualization is full-sample within by_fe, not by sample half.
+  if (!isTRUE(parametric) && has_X_expr && is.null(x_names)) {
+    X_info <- make_X_residualized_from_FE(
+      DT = DT,
+      x_expr = x_expr,
+      fe_expr = fe_expr,
+      prefix = x_prefix,
+      by = by_fe,
+      weight = weight,
+      fixest_opts = fixest_opts
     )
 
-    fit <- if (model == "linear") {
-      do.call(fixest::feols, fit_args)
+    x_names <- X_info$x_names
+  }
+
+  has_X <- !is.null(x_names) && length(x_names) > 0L
+
+  if (isTRUE(parametric)) {
+
+    if (has_X_expr || has_FE) {
+      po <- feols_partial_out(
+        DT = DT,
+        y = y_name,
+        rhs_expr = if (has_X_expr) x_expr else quote(1),
+        fe_expr = fe_expr,
+        by = by_fe,
+        weight = weight,
+        prefix = y_name,
+        keep = "fitted",
+        fixest_opts = fixest_opts
+      )
+
+      DT[i, (out_hat) := .SD[[po$fitted]], .SDcols = po$fitted]
+
     } else {
-      do.call(
-        fixest::feglm,
-        c(
-          fit_args,
-          list(family = "binomial")
-        )
+      leave_cluster_out_mean(
+        DT = DT,
+        y_name = y_name,
+        cluster_name = cluster,
+        by = by_sp,
+        out_name = out_hat,
+        weight_name = weight
       )
     }
 
-    data[idx, (pred_name) := as.numeric(stats::predict(fit, newdata = data[idx]))]
+  } else {
+
+    if (isTRUE(partial_out_y_fe)) {
+      po <- feols_partial_out(
+        DT = DT,
+        y = y_name,
+        rhs_expr = quote(1),
+        fe_expr = fe_expr,
+        by = by_fe,
+        weight = weight,
+        prefix = y_name,
+        keep = "both",
+        fixest_opts = fixest_opts
+      )
+
+      y_for_rf <- po$resid
+      y_fehat <- po$fitted
+
+    } else {
+      y_for_rf <- y_name
+      y_fehat <- NULL
+    }
+
+    y_sp_hat <- paste0(y_name, ".sp_hat")
+
+    if (has_X) {
+      crossfit_hat(
+        DT,
+        i = i,
+        y_name = y_for_rf,
+        x_names = x_names,
+        folds = foldname,
+        margins = by_sp,
+        weight_name = weight,
+        mode = ifelse(
+          (!is.null(crossfit_label) &&
+             crossfit_label %in% crossfit &&
+             is.null(foldname)),
+          "across",
+          "within"
+        ),
+        forest_opts = forest_opts,
+        hat_suffix = ".sp_hat"
+      )
+
+      DT[i, (y_sp_hat) := .SD[[paste0(y_for_rf, ".sp_hat")]],
+         .SDcols = paste0(y_for_rf, ".sp_hat")]
+
+    } else if (has_FE && isTRUE(partial_out_y_fe)) {
+      DT[i, (y_sp_hat) := 0]
+
+    } else if (has_FE && !isTRUE(partial_out_y_fe)) {
+      po_fe <- feols_partial_out(
+        DT = DT,
+        y = y_name,
+        rhs_expr = quote(1),
+        fe_expr = fe_expr,
+        by = by_fe,
+        weight = weight,
+        prefix = paste0(y_name, "_feonly"),
+        keep = "fitted",
+        fixest_opts = fixest_opts
+      )
+
+      DT[i, (y_sp_hat) := .SD[[po_fe$fitted]], .SDcols = po_fe$fitted]
+
+    } else {
+      leave_cluster_out_mean(
+        DT = DT,
+        y_name = y_for_rf,
+        cluster_name = cluster,
+        by = by_sp,
+        out_name = y_sp_hat,
+        weight_name = weight
+      )
+    }
+
+    if (isTRUE(partial_out_y_fe)) {
+      DT[i, (out_hat) := .SD[[y_fehat]] + .SD[[y_sp_hat]],
+         .SDcols = c(y_fehat, y_sp_hat)]
+    } else {
+      DT[i, (out_hat) := .SD[[y_sp_hat]], .SDcols = y_sp_hat]
+    }
   }
 
-  invisible(data)
+  if (isTRUE(return_residual)) {
+    if (is.null(out_resid)) {
+      out_resid <- paste0(y_name, ".res")
+    }
+
+    DT[i, (out_resid) := .SD[[y_name]] - .SD[[out_hat]],
+       .SDcols = c(y_name, out_hat)]
+  }
+
+  if (!isTRUE(keep_x) && !is.null(X_info$x_names)) {
+    drop_x <- X_info$x_names[X_info$x_names %chin% names(DT)]
+    if (length(drop_x)) DT[, (drop_x) := NULL]
+  }
+
+  list(
+    hat = out_hat,
+    resid = if (isTRUE(return_residual)) out_resid else NULL,
+    x_names = x_names,
+    x_info = X_info
+  )
+}
+
+make_X_residualized_from_FE <- function(DT,
+                                        x_expr,
+                                        fe_expr = NULL,
+                                        prefix = "__x",
+                                        by = NULL,
+                                        weight = NULL,
+                                        fixest_opts = list(),
+                                        drop_zero_var = TRUE) {
+  stopifnot(data.table::is.data.table(DT))
+
+  if (is.null(x_expr) || identical(x_expr, quote(1))) {
+    return(list(
+      x_names = NULL,
+      residualized = NULL,
+      moderators = NULL,
+      dropped = NULL,
+      col_terms = NULL
+    ))
+  }
+
+  fe_vars <- if (is.null(fe_expr)) character() else all.vars(fe_expr)
+
+  x_fml <- stats::as.formula(call("~", x_expr))
+  trm <- stats::terms(x_fml, data = DT)
+  mm <- stats::model.matrix(trm, data = DT)
+
+  if ("(Intercept)" %in% colnames(mm)) {
+    mm <- mm[, setdiff(colnames(mm), "(Intercept)"), drop = FALSE]
+  }
+
+  if (!ncol(mm)) {
+    return(list(
+      x_names = NULL,
+      residualized = NULL,
+      moderators = NULL,
+      dropped = NULL,
+      col_terms = NULL
+    ))
+  }
+
+  term_labels <- attr(trm, "term.labels")
+  assign_id <- attr(mm, "assign")
+  col_terms <- ifelse(assign_id == 0L, "(Intercept)", term_labels[assign_id])
+
+  term_uses_fe <- vapply(col_terms, function(tt) {
+    if (tt == "(Intercept)") return(FALSE)
+
+    vars <- tryCatch(
+      all.vars(stats::str2lang(tt)),
+      error = function(e) character()
+    )
+
+    any(vars %in% fe_vars)
+  }, logical(1))
+
+  raw_cols <- character(ncol(mm))
+
+  for (j in seq_len(ncol(mm))) {
+    nm <- paste0(prefix, "_", j)
+    DT[, (nm) := as.numeric(mm[, j])]
+    raw_cols[j] <- nm
+  }
+
+  ordinary_cols <- raw_cols[!term_uses_fe]
+  moderator_cols <- raw_cols[term_uses_fe]
+
+  if (length(ordinary_cols)) {
+    po <- feols_partial_out(
+      DT = DT,
+      y = ordinary_cols,
+      rhs_expr = quote(1),
+      fe_expr = fe_expr,
+      by = by,
+      weight = weight,
+      prefix = paste0(ordinary_cols, "_fe"),
+      keep = "resid",
+      fixest_opts = fixest_opts
+    )
+
+    resid_cols <- po$resid
+
+    # Drop raw ordinary columns; keep residualized versions.
+    DT[, (ordinary_cols) := NULL]
+  } else {
+    resid_cols <- character()
+  }
+
+  x_names <- c(resid_cols, moderator_cols)
+
+  dropped <- character()
+
+  if (drop_zero_var && length(x_names)) {
+    keep <- x_names[vapply(x_names, function(v) {
+      x <- DT[[v]]
+      x <- x[is.finite(x)]
+      data.table::uniqueN(x) > 1L
+    }, logical(1))]
+
+    dropped <- setdiff(x_names, keep)
+
+    if (length(dropped)) {
+      DT[, (dropped) := NULL]
+    }
+
+    x_names <- keep
+    resid_cols <- intersect(resid_cols, keep)
+    moderator_cols <- intersect(moderator_cols, keep)
+  }
+
+  list(
+    x_names = null_if_empty(x_names),
+    residualized = null_if_empty(resid_cols),
+    moderators = null_if_empty(moderator_cols),
+    dropped = null_if_empty(dropped),
+    col_terms = col_terms
+  )
+}
+
+##Downgrade linear specs
+normalize_linear <- function(linear, J, K) {
+  linear <- unique(linear)
+
+  out <- character()
+
+  for (ll in linear) {
+    if (ll == "none") {
+      out <- c(out, "none")
+
+    } else if (ll == "Z") {
+      if (K > 2L) {
+        out <- c(out, "Z")
+      } else {
+        out <- c(out, "none")
+      }
+
+    } else if (ll == "D") {
+      if (J > 2L) {
+        out <- c(out, "D")
+      } else {
+        out <- c(out, "none")
+      }
+
+    } else if (ll == "DZ") {
+      z_lin <- K > 2L
+      d_lin <- J > 2L
+
+      if (z_lin && d_lin) {
+        out <- c(out, "DZ")
+      } else if (z_lin && !d_lin) {
+        out <- c(out, "Z")
+      } else if (!z_lin && d_lin) {
+        out <- c(out, "D")
+      } else {
+        out <- c(out, "none")
+      }
+
+    } else {
+      stop("Unknown linear option: ", ll)
+    }
+  }
+
+  unique(out)
 }
 
 ##SCORES computation
@@ -2235,6 +2969,21 @@ fit_models <- function(DT,
     stopifnot(y_hat %chin% names(DT), w_hat %chin% names(DT))
   }
 
+  if (is.null(x_names) || length(x_names) == 0L) {
+    stop(
+      "`fit_models()` requires non-empty `x_names`. ",
+      "The main X part of the formula produced no forest features.",
+      call. = FALSE
+    )
+  }
+
+  missing_x <- setdiff(x_names, names(DT))
+  if (length(missing_x)) {
+    stop("Missing `x_names` columns in `DT`: ",
+         paste(missing_x, collapse = ", "),
+         call. = FALSE)
+  }
+
   X_all <- as.matrix(DT[i, ..x_names])
 
   rid_col <- ".__rid__"
@@ -2246,7 +2995,9 @@ fit_models <- function(DT,
   wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
   cl_all     <- if (!is.null(cluster_name)) DT[[cluster_name]] else NULL
 
-  z_is_linear_all <- if ("z_is_linear" %chin% names(DT)) {
+  z_is_linear_all <- if ("z_use_linear_score" %chin% names(DT)) {
+    as.logical(DT[["z_use_linear_score"]])
+  } else if ("z_is_linear" %chin% names(DT)) {
     as.logical(DT[["z_is_linear"]])
   } else {
     rep(FALSE, nrow(DT))
@@ -2261,10 +3012,40 @@ fit_models <- function(DT,
 
   if (do_scores &&
       identical(target, "all") &&
-      any(z_is_linear_all[i], na.rm = TRUE) &&
-      is.null(zvar_all)) {
-    stop("`zvar_name` is required when target = 'all' for continuous/linear Z rows.",
-         call. = FALSE)
+      any(z_is_linear_all[i], na.rm = TRUE)) {
+
+    if (is.null(zvar_all)) {
+      stop(
+        "`zvar_name` is required when target = 'all' for continuous/linear-score Z rows.",
+        call. = FALSE
+      )
+    }
+
+    bad_zvar <- z_is_linear_all[i] & !is.finite(zvar_all[i])
+    if (any(bad_zvar, na.rm = TRUE)) {
+      stop(
+        "Non-finite values found in `", zvar_name,
+        "` for rows that use the linear-score Z path.",
+        call. = FALSE
+      )
+    }
+  }
+
+  y_all <- as.numeric(DT[[y_name]])
+
+  if (forest_type == "causal") {
+    w_all    <- as.numeric(DT[[w_name]])
+    yhat_all <- as.numeric(DT[[y_hat]])
+    what_all <- as.numeric(DT[[w_hat]])
+
+    bad_nuis <- !is.finite(yhat_all[i]) | !is.finite(what_all[i])
+    if (any(bad_nuis, na.rm = TRUE)) {
+      stop(
+        "Non-finite nuisance predictions in `", y_hat,
+        "` or `", w_hat, "` for rows passed to `fit_models()`.",
+        call. = FALSE
+      )
+    }
   }
 
   y_all <- as.numeric(DT[[y_name]])
@@ -2607,6 +3388,83 @@ fit_models <- function(DT,
   invisible(DT)
 }
 
+############
+add_running_fe_rank <- function(DT,
+                                fe_expr,
+                                by = NULL,
+                                out = ".fe_rank_running",
+                                conservative = TRUE) {
+  stopifnot(data.table::is.data.table(DT))
+  stopifnot(is.character(out), length(out) == 1L)
+
+  if (is.null(fe_expr)) {
+    DT[, (out) := 0L]
+    return(invisible(DT))
+  }
+
+  by <- unique(as.character(by %||% character()))
+  by <- by[by %chin% names(DT)]
+
+  fe_vars <- unique(all.vars(fe_expr))
+  fe_vars <- fe_vars[fe_vars %chin% names(DT)]
+
+  if (!length(fe_vars)) {
+    DT[, (out) := 0L]
+    return(invisible(DT))
+  }
+
+  ## Running count of unique observed FE values within each by-cell.
+  ## Assumes DT is already sorted in the desired cutoff order.
+  rank_cols <- character(length(fe_vars))
+
+  for (ff in fe_vars) {
+    cc <- paste0(".__rank_seen__", make.names(ff), "__")
+
+    ## New FE level indicator, within `by`.
+    ## duplicated() respects the current row order.
+    if (length(by)) {
+      DT[
+        ,
+        (cc) := as.integer(!duplicated(.SD[[ff]])),
+        by = by,
+        .SDcols = ff
+      ]
+    } else {
+      DT[, (cc) := as.integer(!duplicated(.SD[[ff]])), .SDcols = ff]
+    }
+
+    ## Cumulative number of FE levels seen.
+    if (length(by)) {
+      DT[, (cc) := cumsum(get(cc)), by = by]
+    } else {
+      DT[, (cc) := cumsum(get(cc))]
+    }
+
+    rank_cols <- c(rank_cols, cc)
+  }
+
+  ## Approximate additive FE rank.
+  ##
+  ## For ordinary additive FE, a rough rank is:
+  ##   sum(number of observed levels per FE dimension) - number of FE dimensions
+  ##
+  ## The subtraction accounts for one normalization per FE dimension. This is approximate
+  ## for multiway FE and can be wrong with disconnected components, nesting, and slopes.
+  if (conservative) {
+    ## More conservative: do not subtract normalizations.
+    DT[, (out) := rowSums(.SD), .SDcols = rank_cols]
+  } else {
+    DT[
+      ,
+      (out) := pmax(0L, rowSums(.SD) - length(rank_cols)),
+      .SDcols = rank_cols
+    ]
+  }
+
+  DT[, (rank_cols) := NULL]
+
+  invisible(DT)
+}
 
 ####### FIND OPTIMAL CUTOFF AND TEST #############
 forest_test <- function(
@@ -2626,7 +3484,10 @@ forest_test <- function(
     store_grid = TRUE,
     verbose = FALSE,
     screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant"),
-    alpha = 0.05
+    alpha = 0.05,
+    fe_expr = NULL,
+    fe_rank_adj = !is.null(fe_expr),
+    fe_rank_conservative = TRUE
 ) {
   screen <- match.arg(screen)
 
@@ -2684,7 +3545,10 @@ forest_test <- function(
       store_grid = store_grid,
       verbose = verbose,
       screen = screen,
-      alpha = alpha
+      alpha = alpha,
+      fe_expr = NULL,
+      fe_rank_adj = !is.null(fe_expr),
+      fe_rank_conservative = TRUE
     )
   }
 
@@ -2846,7 +3710,10 @@ forest_test_core <- function(
     store_grid = TRUE,
     verbose = FALSE,
     screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant"),
-    alpha = 0.05
+    alpha = 0.05,
+    fe_expr = NULL,
+    fe_rank_adj = !is.null(fe_expr),
+    fe_rank_conservative = TRUE
 ) {
 
   select_keep_ids <- function(cand, choose_by, id_by, alpha) {
@@ -3006,17 +3873,97 @@ forest_test_core <- function(
     seq_len(n)
   }
 
-  crv1_mean <- function(score, w, cl) {
+  crv1_mean <- function(score,
+                        w = NULL,
+                        cl = NULL,
+                        rank_adj = 0) {
+    score <- as.numeric(score)
+    n0 <- length(score)
+
+    if (n0 == 0L) {
+      return(list(
+        coef = NA_real_, se = NA_real_, t = NA_real_,
+        N = 0L, G = 0L, rank_adj = rank_adj, df = NA_real_
+      ))
+    }
+
+    if (is.null(w)) {
+      w <- rep(1.0, n0)
+    } else {
+      w <- as.numeric(w)
+    }
+
+    if (length(w) != n0) {
+      stop("`w` must be NULL or have the same length as `score`.", call. = FALSE)
+    }
+
+    if (is.null(cl)) {
+      cl <- seq_len(n0)
+    } else {
+      if (length(cl) != n0) {
+        stop("`cl` must be NULL or have the same length as `score`.", call. = FALSE)
+      }
+    }
+
+    ok <- is.finite(score) & is.finite(w) & w >= 0 & !is.na(cl)
+
+    if (!any(ok)) {
+      return(list(
+        coef = NA_real_, se = NA_real_, t = NA_real_,
+        N = 0L, G = 0L, rank_adj = rank_adj, df = NA_real_
+      ))
+    }
+
+    score <- score[ok]
+    w <- w[ok]
+    cl <- cl[ok]
+
+    cl <- as.integer(factor(cl, exclude = NULL))
+
+    rank_adj <- as.numeric(rank_adj)
+    if (length(rank_adj) != 1L || !is.finite(rank_adj) || rank_adj < 0) {
+      stop("`rank_adj` must be a single nonnegative finite number.", call. = FALSE)
+    }
+
     dt0 <- data.table::data.table(score = score, w = w, cl = cl)
-    gb <- dt0[, .(U = sum(w * score), W = sum(w)), by = cl]
+
+    gb <- dt0[, .(
+      U = sum(w * score),
+      W = sum(w)
+    ), by = cl]
+
     G <- nrow(gb)
     U <- sum(gb$U)
     W <- sum(gb$W)
+
+    if (!is.finite(W) || W <= 0) {
+      return(list(
+        coef = NA_real_, se = NA_real_, t = NA_real_,
+        N = length(score), G = G, rank_adj = rank_adj, df = NA_real_
+      ))
+    }
+
     theta <- U / W
     ug <- gb$U - theta * gb$W
-    se <- sqrt((G / pmax.int(G - 1L, 1L)) * sum(ug^2)) / abs(W)
-    if (G < 2L || !is.finite(se)) se <- NA_real_
-    list(coef = theta, se = se, t = theta / se, G = G, N = length(score))
+
+    df <- G - 1 - rank_adj
+
+    if (G < 2L || df <= 0 || !is.finite(df)) {
+      se <- NA_real_
+    } else {
+      se <- sqrt((G / df) * sum(ug^2)) / abs(W)
+      if (!is.finite(se)) se <- NA_real_
+    }
+
+    list(
+      coef = theta,
+      se = se,
+      t = theta / se,
+      N = length(score),
+      G = G,
+      rank_adj = rank_adj,
+      df = df
+    )
   }
 
   select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05) {
@@ -3138,6 +4085,18 @@ forest_test_core <- function(
 
     data.table::setorder(dt, sample, pred)
 
+    if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+      add_running_fe_rank(
+        DT = dt,
+        fe_expr = fe_expr,
+        by = "sample",
+        out = ".fe_rank_running",
+        conservative = fe_rank_conservative
+      )
+    } else {
+      dt[, .fe_rank_running := 0L]
+    }
+
     dt[, N := seq_len(.N), by = sample]
     dt[, `:=`(a = w * score, b = w)]
     dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = .(sample, cl)]
@@ -3160,9 +4119,6 @@ forest_test_core <- function(
 
     dt[, sumS2 := (TA2 - 2 * m * TAB + (m^2) * TB2) / (SW^2)]
 
-    ## Numerical safety:
-    ## The expression for sumS2 is theoretically nonnegative, but can be
-    ## slightly negative from cancellation in cumulative sums.
     tol_var <- 1e-12
 
     if (any(dt$sumS2 < -tol_var & dt$G >= minsize, na.rm = TRUE)) {
@@ -3177,11 +4133,17 @@ forest_test_core <- function(
       sumS2 := 0
     ]
 
+    dt[, df := G - 1 - .fe_rank_running]
+
     dt[, se := NA_real_]
 
     dt[
-      G >= 2L & SW > 0 & is.finite(sumS2) & sumS2 >= 0,
-      se := sqrt((G / (G - 1L)) * sumS2)
+      G >= 2L &
+        df > 0 &
+        SW > 0 &
+        is.finite(sumS2) &
+        sumS2 >= 0,
+      se := sqrt((G / df) * sumS2)
     ]
 
     dt[
@@ -3237,8 +4199,8 @@ forest_test_core <- function(
       is.finite(dt$t_stat)
 
     res <- dt[elig, .SD[which.min(t_stat)], by = sample,
-              .SDcols = c("G", "N", "m", "se", "t_stat", "pred")]
-
+              .SDcols = c("G", "N", "m", "se", "t_stat", "pred",
+                          ".fe_rank_running", "df")]
     cut1 <- res[sample == 1L, pred]
     cut2 <- res[sample == 2L, pred]
 
@@ -3282,6 +4244,8 @@ forest_test_core <- function(
       sample = res$sample,
       G = res$G,
       N = res$N,
+      fe_rank = res$.fe_rank_running,
+      df = res$df,
       coef = res$m,
       stderr = res$se,
       t = res$t_stat,
@@ -3487,6 +4451,7 @@ forest_test_core <- function(
   }
 
   dt_test <- data.table::data.table(
+    rowid = seq_len(n),
     score = scorev,
     w = wv,
     cl = clv
@@ -3501,7 +4466,24 @@ forest_test_core <- function(
   ## First build the valid final tests.
   ## In sample_pool_after_margin_select mode this is intentionally sample-specific.
   if (length(test_by) == 0L) {
-    o <- crv1_mean(dt_test$score, dt_test$w, dt_test$cl)
+    rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+      fixest_fe_rank(
+        data = data,
+        idx = dt_test$rowid,
+        fe_expr = fe_expr,
+        weight_col = weight_col,
+        ssc = fixest::ssc(K.fixef = "full")
+      )
+    } else {
+      0L
+    }
+
+    o <- crv1_mean(
+      score = dt_test$score,
+      w = dt_test$w,
+      cl = dt_test$cl,
+      rank_adj = rank_adj
+    )
 
     test_out <- data.table::data.table(
       train = FALSE,
@@ -3509,6 +4491,8 @@ forest_test_core <- function(
       sample = NA_integer_,
       G = o$G,
       N = o$N,
+      fe_rank = rank_adj,
+      df = o$df,
       coef = o$coef,
       stderr = o$se,
       t = o$t,
@@ -3526,12 +4510,32 @@ forest_test_core <- function(
 
   } else {
     test_out <- dt_test[, {
-      o <- crv1_mean(score, w, cl)
+      rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+        fixest_fe_rank(
+          data = data,
+          idx = rowid,
+          fe_expr = fe_expr,
+          weight_col = weight_col,
+          ssc = fixest::ssc(K.fixef = "full")
+        )
+      } else {
+        0L
+      }
+
+      o <- crv1_mean(
+        score = score,
+        w = w,
+        cl = cl,
+        rank_adj = rank_adj
+      )
+
       data.table::data.table(
         train = FALSE,
         relevant = 1L,
         G = o$G,
         N = o$N,
+        fe_rank = rank_adj,
+        df = o$df,
         coef = o$coef,
         stderr = o$se,
         t = o$t,
@@ -3605,12 +4609,32 @@ forest_test_core <- function(
         )
 
         test_out_pool <- dt_common[, {
-          o <- crv1_mean(score, w, cl)
+          rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+            fixest_fe_rank(
+              data = data,
+              idx = rowid,
+              fe_expr = fe_expr,
+              weight_col = weight_col,
+              ssc = fixest::ssc(K.fixef = "full")
+            )
+          } else {
+            0L
+          }
+
+          o <- crv1_mean(
+            score = score,
+            w = w,
+            cl = cl,
+            rank_adj = rank_adj
+          )
+
           data.table::data.table(
             train = FALSE,
             relevant = 1L,
             G = o$G,
             N = o$N,
+            fe_rank = rank_adj,
+            df = o$df,
             coef = o$coef,
             stderr = o$se,
             t = o$t,
@@ -3655,7 +4679,11 @@ forest_test_core <- function(
     clv = clv,
     by_cols = test_by,
     sample_col = sample_col,
-    crv1_mean_fun = crv1_mean
+    crv1_mean_fun = crv1_mean,
+    fe_expr = fe_expr,
+    fe_rank_adj = fe_rank_adj,
+    weight_col = weight_col,
+    ssc = fixest::ssc(K.fixef = "full")
   )
 
   Xmeans <- Xmeans_all <- XSD <- NULL
@@ -3781,51 +4809,121 @@ global_means_crv1 <- function(
     scorev,
     wv,
     clv,
-    by_cols = character(),     # character vector of grouping cols (e.g. test_by)
-    sample_col = "sample",     # name of sample column (only used to fill NA if absent)
-    crv1_mean_fun             # function(score, w, cl) -> list(coef,se,t,G,N)
+    by_cols = character(),
+    sample_col = "sample",
+    crv1_mean_fun,
+    fe_expr = NULL,
+    fe_rank_adj = !is.null(fe_expr),
+    weight_col = NULL,
+    ssc = fixest::ssc(K.fixef = "full")
 ) {
   stopifnot(data.table::is.data.table(data))
-  stopifnot(is.numeric(scorev), is.numeric(wv), length(scorev) == length(wv), length(wv) == length(clv))
+  stopifnot(
+    is.numeric(scorev),
+    is.numeric(wv),
+    length(scorev) == length(wv),
+    length(wv) == length(clv),
+    length(scorev) == nrow(data)
+  )
   stopifnot(is.character(by_cols))
   stopifnot(is.character(sample_col), length(sample_col) == 1L)
   stopifnot(is.function(crv1_mean_fun))
 
-  # Build small table
-  dt_all <- data.table::data.table(score = scorev, w = wv, cl = clv)
-
-  # Attach grouping columns (standard eval; no .. confusion)
   by_cols <- unique(by_cols)
+
   if (length(by_cols) > 0L) {
     missing <- setdiff(by_cols, names(data))
-    if (length(missing)) stop("global_means_crv1: missing grouping columns in data: ",
-                              paste(missing, collapse = ", "))
+    if (length(missing)) {
+      stop(
+        "global_means_crv1: missing grouping columns in data: ",
+        paste(missing, collapse = ", "),
+        call. = FALSE
+      )
+    }
+  }
+
+  if (!is.null(weight_col)) {
+    stopifnot(is.character(weight_col), length(weight_col) == 1L)
+    stopifnot(weight_col %chin% names(data))
+  }
+
+  dt_all <- data.table::data.table(
+    rowid = seq_len(nrow(data)),
+    score = scorev,
+    w = wv,
+    cl = clv
+  )
+
+  if (length(by_cols) > 0L) {
     dt_all[, (by_cols) := data[, .SD, .SDcols = by_cols]]
   }
 
-  # Compute
+  rank_for_rows <- function(rowid) {
+    if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+      fixest_fe_rank(
+        data = data,
+        idx = rowid,
+        fe_expr = fe_expr,
+        weight_col = weight_col,
+        ssc = ssc
+      )
+    } else {
+      0L
+    }
+  }
+
   if (length(by_cols) == 0L) {
-    o <- crv1_mean_fun(dt_all$score, dt_all$w, dt_all$cl)
+    rank_adj <- rank_for_rows(dt_all$rowid)
+
+    o <- crv1_mean_fun(
+      score = dt_all$score,
+      w = dt_all$w,
+      cl = dt_all$cl,
+      rank_adj = rank_adj
+    )
+
     global_dt <- data.table::data.table(
       train = FALSE,
       sample = NA_integer_,
-      G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+      G = o$G,
+      N = o$N,
+      fe_rank = rank_adj,
+      df = o$df,
+      coef = o$coef,
+      stderr = o$se,
+      t = o$t,
       tau_cutoff = NA_real_,
       p.raw = stats::pnorm(o$t)
     )
+
   } else {
     global_dt <- dt_all[, {
-      o <- crv1_mean_fun(score, w, cl)
+      rank_adj <- rank_for_rows(rowid)
+
+      o <- crv1_mean_fun(
+        score = score,
+        w = w,
+        cl = cl,
+        rank_adj = rank_adj
+      )
+
       data.table::data.table(
         train = FALSE,
-        G = o$G, N = o$N, coef = o$coef, stderr = o$se, t = o$t,
+        G = o$G,
+        N = o$N,
+        fe_rank = rank_adj,
+        df = o$df,
+        coef = o$coef,
+        stderr = o$se,
+        t = o$t,
         tau_cutoff = NA_real_,
         p.raw = stats::pnorm(o$t)
       )
     }, by = by_cols]
 
-    # If sample_col isn't in the grouping, add it so schema matches your results tables
-    if (!(sample_col %chin% names(global_dt))) global_dt[, (sample_col) := NA_integer_]
+    if (!(sample_col %chin% names(global_dt))) {
+      global_dt[, (sample_col) := NA_integer_]
+    }
   }
 
   global_dt
