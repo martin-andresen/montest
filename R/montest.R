@@ -158,7 +158,7 @@
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
-                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",
+                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
@@ -2033,8 +2033,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative)
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())
