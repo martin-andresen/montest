@@ -1568,79 +1568,80 @@ leave_cluster_out_mean <- function(DT,
                                    y_name,
                                    cluster_name = NULL,
                                    by = NULL,
-                                   out_name = NULL,
-                                   weight_name = NULL,
-                                   i = NULL) {
+                                   out_name = paste0(y_name, ".hat"),
+                                   weight_name = NULL) {
   stopifnot(data.table::is.data.table(DT))
-  stopifnot(y_name %in% names(DT))
+  stopifnot(is.character(y_name), length(y_name) == 1L, y_name %in% names(DT))
+  stopifnot(is.character(out_name), length(out_name) == 1L)
 
-  if (!is.null(cluster_name)) stopifnot(cluster_name %in% names(DT))
-  if (!is.null(weight_name))  stopifnot(weight_name %in% names(DT))
+  by <- unique(as.character(by %||% character()))
+  by <- by[by %in% names(DT)]
 
-  if (is.null(by)) by <- character()
-  by <- unique(as.character(by))
-  stopifnot(all(by %in% names(DT)))
-
-  if (is.null(out_name)) out_name <- paste0(y_name, ".lco")
-
-  idx <- if (is.null(i)) seq_len(nrow(DT)) else as.integer(i)
-
-  tmp_cluster <- FALSE
-  cl_name <- cluster_name
-
-  if (is.null(cl_name)) {
-    cl_name <- ".__lco_row_cluster__"
-    tmp_cluster <- TRUE
-    DT[idx, (cl_name) := seq_along(idx)]
+  if (!is.null(cluster_name)) {
+    stopifnot(is.character(cluster_name), length(cluster_name) == 1L)
+    stopifnot(cluster_name %in% names(DT))
   }
 
-  by_cl <- unique(c(by, cl_name))
-
-  if (is.null(weight_name)) {
-    cl <- DT[idx, .(
-      yw_sum = sum(get(y_name), na.rm = TRUE),
-      w_sum  = sum(!is.na(get(y_name)))
-    ), by = by_cl]
-  } else {
-    cl <- DT[idx, {
-      y <- get(y_name)
-      w <- get(weight_name)
-      ok <- !is.na(y) & !is.na(w)
-
-      .(
-        yw_sum = sum(w[ok] * y[ok]),
-        w_sum  = sum(w[ok])
-      )
-    }, by = by_cl]
+  if (!is.null(weight_name)) {
+    stopifnot(is.character(weight_name), length(weight_name) == 1L)
+    stopifnot(weight_name %in% names(DT))
   }
-
-  tot <- cl[, .(
-    yw_tot = sum(yw_sum, na.rm = TRUE),
-    w_tot  = sum(w_sum, na.rm = TRUE),
-    G      = .N
-  ), by = by]
-
-  cl <- tot[cl, on = by]
-
-  cl[, (out_name) := data.table::fifelse(
-    w_tot > w_sum,
-    (yw_tot - yw_sum) / (w_tot - w_sum),
-    NA_real_
-  )]
 
   if (!(out_name %in% names(DT))) {
     DT[, (out_name) := NA_real_]
   }
 
-  DT[idx, (out_name) := cl[
-    .SD,
-    on = by_cl,
-    x[[out_name]]
-  ]]
+  cols <- unique(c(y_name, cluster_name, weight_name))
 
-  if (tmp_cluster) {
-    DT[, (cl_name) := NULL]
-  }
+  DT[
+    ,
+    (out_name) := {
+      y <- .SD[[y_name]]
+      w <- if (!is.null(weight_name)) .SD[[weight_name]] else rep(1, .N)
+
+      ok <- is.finite(y) & is.finite(w) & w > 0
+
+      if (!any(ok)) {
+        rep(NA_real_, .N)
+
+      } else if (is.null(cluster_name)) {
+        ## Leave-one-observation-out weighted mean.
+        wy <- ifelse(ok, w * y, 0)
+        ww <- ifelse(ok, w, 0)
+
+        total_wy <- sum(wy)
+        total_w  <- sum(ww)
+
+        denom <- total_w - ww
+        out <- (total_wy - wy) / denom
+        out[!is.finite(out) | denom <= 0] <- total_wy / total_w
+        out
+
+      } else {
+        ## Leave-one-cluster-out weighted mean.
+        cl <- .SD[[cluster_name]]
+
+        wy <- ifelse(ok, w * y, 0)
+        ww <- ifelse(ok, w, 0)
+
+        total_wy <- sum(wy)
+        total_w  <- sum(ww)
+
+        cluster_wy <- rowsum(wy, cl, reorder = FALSE)
+        cluster_w  <- rowsum(ww, cl, reorder = FALSE)
+
+        cl_key <- as.character(cl)
+        denom <- total_w - as.numeric(cluster_w[cl_key, 1L])
+        numer <- total_wy - as.numeric(cluster_wy[cl_key, 1L])
+
+        out <- numer / denom
+        out[!is.finite(out) | denom <= 0] <- total_wy / total_w
+        out
+      }
+    },
+    by = by,
+    .SDcols = cols
+  ]
 
   invisible(DT)
 }
@@ -2076,114 +2077,106 @@ make_X_residualized_from_FE <- function(DT,
                                         by = NULL,
                                         weight = NULL,
                                         fixest_opts = list(),
-                                        drop_zero_var = TRUE) {
+                                        env = parent.frame()) {
   stopifnot(data.table::is.data.table(DT))
+
+  `%||%` <- function(x, y) if (is.null(x)) y else x
 
   if (is.null(x_expr) || identical(x_expr, quote(1))) {
     return(list(
       x_names = NULL,
-      residualized = NULL,
-      moderators = NULL,
-      dropped = NULL,
-      col_terms = NULL
+      raw_names = NULL,
+      resid_names = NULL,
+      has_FE = !is.null(fe_expr)
     ))
   }
 
-  fe_vars <- if (is.null(fe_expr)) character() else all.vars(fe_expr)
+  by <- unique(as.character(by %||% character()))
+  by <- by[by %in% names(DT)]
 
-  x_fml <- stats::as.formula(call("~", x_expr))
-  trm <- stats::terms(x_fml, data = DT)
-  mm <- stats::model.matrix(trm, data = DT)
+  ## Build model matrix from the X formula.
+  fml_x <- stats::as.formula(call("~", x_expr), env = env)
+
+  mm <- stats::model.matrix(fml_x, data = DT)
 
   if ("(Intercept)" %in% colnames(mm)) {
     mm <- mm[, setdiff(colnames(mm), "(Intercept)"), drop = FALSE]
   }
 
-  if (!ncol(mm)) {
+  if (ncol(mm) == 0L) {
     return(list(
       x_names = NULL,
-      residualized = NULL,
-      moderators = NULL,
-      dropped = NULL,
-      col_terms = NULL
+      raw_names = NULL,
+      resid_names = NULL,
+      has_FE = !is.null(fe_expr)
     ))
   }
 
-  term_labels <- attr(trm, "term.labels")
-  assign_id <- attr(mm, "assign")
-  col_terms <- ifelse(assign_id == 0L, "(Intercept)", term_labels[assign_id])
+  raw_names <- paste0(prefix, "_", make.names(colnames(mm), unique = TRUE))
 
-  term_uses_fe <- vapply(col_terms, function(tt) {
-    if (tt == "(Intercept)") return(FALSE)
+  ## Ensure names are unique relative to existing DT columns.
+  raw_names <- make.unique(c(names(DT), raw_names), sep = "_")
+  raw_names <- tail(raw_names, ncol(mm))
 
-    vars <- tryCatch(
-      all.vars(stats::str2lang(tt)),
-      error = function(e) character()
-    )
-
-    any(vars %in% fe_vars)
-  }, logical(1))
-
-  raw_cols <- character(ncol(mm))
-
-  for (j in seq_len(ncol(mm))) {
-    nm <- paste0(prefix, "_", j)
-    DT[, (nm) := as.numeric(mm[, j])]
-    raw_cols[j] <- nm
+  ## Assign model-matrix columns one by one.
+  ## This is slower than bulk assignment, but robust.
+  for (jj in seq_len(ncol(mm))) {
+    DT[, (raw_names[jj]) := as.numeric(mm[, jj])]
   }
 
-  ordinary_cols <- raw_cols[!term_uses_fe]
-  moderator_cols <- raw_cols[term_uses_fe]
+  ## No FE: the raw model-matrix columns are the forest/nuisance features.
+  if (is.null(fe_expr)) {
+    return(list(
+      x_names = raw_names,
+      raw_names = raw_names,
+      resid_names = raw_names,
+      has_FE = FALSE
+    ))
+  }
 
-  if (length(ordinary_cols)) {
+  ## FE present: residualize each model-matrix column from FE.
+  resid_names <- paste0(prefix, "_tilde_", seq_along(raw_names))
+  resid_names <- make.unique(c(names(DT), resid_names), sep = "_")
+  resid_names <- tail(resid_names, length(raw_names))
+
+  for (jj in seq_along(raw_names)) {
     po <- feols_partial_out(
       DT = DT,
-      y = ordinary_cols,
+      y = raw_names[jj],
       rhs_expr = quote(1),
       fe_expr = fe_expr,
       by = by,
       weight = weight,
-      prefix = paste0(ordinary_cols, "_fe"),
+      prefix = resid_names[jj],
       keep = "resid",
       fixest_opts = fixest_opts
     )
 
-    resid_cols <- po$resid
-
-    # Drop raw ordinary columns; keep residualized versions.
-    DT[, (ordinary_cols) := NULL]
-  } else {
-    resid_cols <- character()
+    ## feols_partial_out() should return the residual column name in po$resid.
+    if (!is.null(po$resid) && po$resid %in% names(DT)) {
+      if (!identical(po$resid, resid_names[jj])) {
+        DT[, (resid_names[jj]) := get(po$resid)]
+      }
+    } else {
+      stop(
+        "Internal error: `feols_partial_out()` did not return a valid residual column ",
+        "when residualizing X feature `", raw_names[jj], "`.",
+        call. = FALSE
+      )
+    }
   }
 
-  x_names <- c(resid_cols, moderator_cols)
-
-  dropped <- character()
-
-  if (drop_zero_var && length(x_names)) {
-    keep <- x_names[vapply(x_names, function(v) {
-      x <- DT[[v]]
-      x <- x[is.finite(x)]
-      data.table::uniqueN(x) > 1L
-    }, logical(1))]
-
-    dropped <- setdiff(x_names, keep)
-
-    if (length(dropped)) {
-      DT[, (dropped) := NULL]
-    }
-
-    x_names <- keep
-    resid_cols <- intersect(resid_cols, keep)
-    moderator_cols <- intersect(moderator_cols, keep)
+  ## Drop raw columns after residualizing to avoid carrying duplicates.
+  drop_raw <- intersect(raw_names, names(DT))
+  if (length(drop_raw)) {
+    DT[, (drop_raw) := NULL]
   }
 
   list(
-    x_names = null_if_empty(x_names),
-    residualized = null_if_empty(resid_cols),
-    moderators = null_if_empty(moderator_cols),
-    dropped = null_if_empty(dropped),
-    col_terms = col_terms
+    x_names = resid_names,
+    raw_names = raw_names,
+    resid_names = resid_names,
+    has_FE = TRUE
   )
 }
 
@@ -2421,115 +2414,91 @@ make_X_residualized_from_FE <- function(DT,
                                         prefix = "__x",
                                         by = NULL,
                                         weight = NULL,
-                                        fixest_opts = list(),
-                                        drop_zero_var = TRUE) {
+                                        fixest_opts = list()) {
   stopifnot(data.table::is.data.table(DT))
 
   if (is.null(x_expr) || identical(x_expr, quote(1))) {
     return(list(
       x_names = NULL,
-      residualized = NULL,
-      moderators = NULL,
-      dropped = NULL,
-      col_terms = NULL
+      raw_names = NULL,
+      resid_names = NULL,
+      has_FE = !is.null(fe_expr)
     ))
   }
 
-  fe_vars <- if (is.null(fe_expr)) character() else all.vars(fe_expr)
+  by <- unique(as.character(by %||% character()))
+  by <- by[by %in% names(DT)]
 
-  x_fml <- stats::as.formula(call("~", x_expr))
-  trm <- stats::terms(x_fml, data = DT)
-  mm <- stats::model.matrix(trm, data = DT)
+  ## 1. Build raw model matrix from formula RHS.
+  fml_x <- stats::as.formula(
+    call("~", x_expr),
+    env = parent.frame()
+  )
 
+  mm <- stats::model.matrix(fml_x, data = DT)
+
+  ## Drop intercept if present.
   if ("(Intercept)" %in% colnames(mm)) {
     mm <- mm[, setdiff(colnames(mm), "(Intercept)"), drop = FALSE]
   }
 
-  if (!ncol(mm)) {
+  if (ncol(mm) == 0L) {
     return(list(
       x_names = NULL,
-      residualized = NULL,
-      moderators = NULL,
-      dropped = NULL,
-      col_terms = NULL
+      raw_names = NULL,
+      resid_names = NULL,
+      has_FE = !is.null(fe_expr)
     ))
   }
 
-  term_labels <- attr(trm, "term.labels")
-  assign_id <- attr(mm, "assign")
-  col_terms <- ifelse(assign_id == 0L, "(Intercept)", term_labels[assign_id])
+  raw_names <- paste0(prefix, "_raw_", make.names(colnames(mm), unique = TRUE))
+  mm_dt <- data.table::as.data.table(mm)
+  data.table::setnames(mm_dt, raw_names)
+  DT[, (raw_names) := mm_dt]
 
-  term_uses_fe <- vapply(col_terms, function(tt) {
-    if (tt == "(Intercept)") return(FALSE)
-
-    vars <- tryCatch(
-      all.vars(stats::str2lang(tt)),
-      error = function(e) character()
-    )
-
-    any(vars %in% fe_vars)
-  }, logical(1))
-
-  raw_cols <- character(ncol(mm))
-
-  for (j in seq_len(ncol(mm))) {
-    nm <- paste0(prefix, "_", j)
-    DT[, (nm) := as.numeric(mm[, j])]
-    raw_cols[j] <- nm
+  ## 2. If no FE, raw model-matrix columns ARE the forest features.
+  if (is.null(fe_expr)) {
+    return(list(
+      x_names = raw_names,
+      raw_names = raw_names,
+      resid_names = raw_names,
+      has_FE = FALSE
+    ))
   }
 
-  ordinary_cols <- raw_cols[!term_uses_fe]
-  moderator_cols <- raw_cols[term_uses_fe]
+  ## 3. If FE exist, residualize each model-matrix column from FE.
+  resid_names <- paste0(prefix, "_res_", seq_along(raw_names))
 
-  if (length(ordinary_cols)) {
+  for (jj in seq_along(raw_names)) {
+    out_j <- resid_names[jj]
+
     po <- feols_partial_out(
       DT = DT,
-      y = ordinary_cols,
+      y = raw_names[jj],
       rhs_expr = quote(1),
       fe_expr = fe_expr,
       by = by,
       weight = weight,
-      prefix = paste0(ordinary_cols, "_fe"),
+      prefix = out_j,
       keep = "resid",
       fixest_opts = fixest_opts
     )
 
-    resid_cols <- po$resid
-
-    # Drop raw ordinary columns; keep residualized versions.
-    DT[, (ordinary_cols) := NULL]
-  } else {
-    resid_cols <- character()
-  }
-
-  x_names <- c(resid_cols, moderator_cols)
-
-  dropped <- character()
-
-  if (drop_zero_var && length(x_names)) {
-    keep <- x_names[vapply(x_names, function(v) {
-      x <- DT[[v]]
-      x <- x[is.finite(x)]
-      data.table::uniqueN(x) > 1L
-    }, logical(1))]
-
-    dropped <- setdiff(x_names, keep)
-
-    if (length(dropped)) {
-      DT[, (dropped) := NULL]
+    ## Depending on your feols_partial_out() return convention:
+    ## if po$resid is the created residual column, copy/rename it.
+    if (!identical(po$resid, out_j)) {
+      DT[, (out_j) := get(po$resid)]
     }
-
-    x_names <- keep
-    resid_cols <- intersect(resid_cols, keep)
-    moderator_cols <- intersect(moderator_cols, keep)
   }
+
+  ## Optional: drop raw model-matrix columns after residualizing.
+  DT[, (raw_names) := NULL]
 
   list(
-    x_names = null_if_empty(x_names),
-    residualized = null_if_empty(resid_cols),
-    moderators = null_if_empty(moderator_cols),
-    dropped = null_if_empty(dropped),
-    col_terms = col_terms
+    x_names = resid_names,
+    raw_names = raw_names,
+    resid_names = resid_names,
+    has_FE = TRUE
   )
 }
 

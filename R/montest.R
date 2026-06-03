@@ -157,7 +157,7 @@
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
-                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
+                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=FALSE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
@@ -174,10 +174,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ##Check formula and validate
   v <- validate_iv(fml, data)
 
-  Y <- v$Y
-  D <- v$D
-  Z <- v$Z
-  X <- v$X
+  Y <- if (is.null(v$Y)) NULL else as.character(v$Y)[1L]
+  D <- as.character(v$D)[1L]
+  Z <- as.character(v$Z)[1L]
+  X_forest <- v$X
+  X=v$X
+
   FE <- v$FE
 
   X_expr_forest <- v$X_expr
@@ -528,7 +530,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   n=nrow(data)
   if (is.null(cluster)==FALSE) {
-    G <- uniqueN(data[[cluster]])
+    G <- data.table::uniqueN(data[[cluster]])
     if (G<=2*minsize) stop("Number of clusters is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
   } else {
     if (n<=2*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
@@ -751,13 +753,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   }
 
   ## ----------------------
-  ## CREATE X tilde matrix
+  ## CREATE X tilde/forest matrix
   ## -----------------------
 
   X_forest <- NULL
   X_forest_info <- NULL
 
   if (has_X_expr_forest) {
+
     X_forest_info <- make_X_residualized_from_FE(
       DT          = data,
       x_expr      = X_expr_forest,
@@ -769,6 +772,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     )
 
     X_forest <- X_forest_info$x_names
+
+    if (is.null(X_forest) || length(X_forest) == 0L) {
+      stop(
+        "Internal error: the main X formula is non-empty, but no forest feature ",
+        "columns were created. This likely means `make_X_residualized_from_FE()` ",
+        "does not handle the no-FE case correctly.",
+        call. = FALSE
+      )
+    }
   }
 
   ## ---------------------------------------------------------------------
@@ -801,28 +813,33 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   )
 
 
+
+
   ## ---------------------------------------------------------------------
   ## Normalize only when there are no FE and Z is binary
   ## ---------------------------------------------------------------------
 
   if (isTRUE(normalize.Z) && !has_FE) {
-    zhat_col <- paste0(Z, ".hat")
+    z_col <- as.character(Z)[1L]
+    zhat_col <- paste0(z_col, ".hat")
     by_norm <- unique(c("sample", margins))
 
-    ## Recenter only within sample ?? margin cells.
+    stopifnot(z_col %in% names(data))
+    stopifnot(zhat_col %in% names(data))
+
     data[
       ,
-      (zhat_col) := .SD[[zhat_col]] +
-        mean(.SD[[Z]] - .SD[[zhat_col]], na.rm = TRUE),
-      by = by_norm,
-      .SDcols = c(Z, zhat_col)
+      (zhat_col) := {
+        z_val <- get(z_col)
+        zh_val <- get(zhat_col)
+        zh_val + mean(z_val - zh_val, na.rm = TRUE)
+      },
+      by = by_norm
     ]
 
-    ## Binary/margin Z: keep propensities valid after recentering.
     data[
       z_is_linear_raw != TRUE,
-      (zhat_col) := pmin(pmax(.SD[[zhat_col]], aipw.clip), 1 - aipw.clip),
-      .SDcols = zhat_col
+      (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
     ]
   }
 
@@ -1414,10 +1431,17 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   byvars <- c("sample", margins)
 
-  cell_size <- data[, .(
-    n_obs = .N,
-    n_clusters = uniqueN(get(cluster))
-  ), by = byvars]
+  if (!is.null(cluster)) {
+    cell_size <- data[, .(
+      n_obs = .N,
+      n_clusters = data.table::uniqueN(.SD[[cluster]], na.rm = TRUE)
+    ), by = byvars, .SDcols = cluster]
+  } else {
+    cell_size <- data[, .(
+      n_obs = .N,
+      n_clusters = .N
+    ), by = byvars]
+  }
 
   cell_size[, bad_size := n_obs < minsize | n_clusters < minsize]
 
@@ -1445,7 +1469,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
         paste(paste(names(r), r, sep = "="), collapse = ", ")
       })
 
-      browser()
       warning(
         "Dropping ", nrow(bad_margins),
         " margin cell(s) because at least one sample half has ",
@@ -1733,7 +1756,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   # common summaries
   data[, n_group := .N, by = byvars]
-  data[, nQ      := uniqueN(Q, na.rm = TRUE), by = byvars]
+  data[, nQ      := data.table::uniqueN(Q, na.rm = TRUE), by = byvars]
   data[, sdQ     := stats::sd(Q, na.rm = TRUE), by = byvars]
 
   # family/type flags
