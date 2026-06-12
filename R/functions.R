@@ -2728,7 +2728,8 @@ fit_models <- function(DT,
                        aipw.clip = 1e-3,
                        shrink = FALSE,
                        verbose = FALSE,
-                       target = c("all", "overlap")) {
+                       target = c("all", "overlap"),
+                       z_linear_score_name = "z_use_linear_score") {
 
   target <- match.arg(target)
   stopifnot(data.table::is.data.table(DT))
@@ -2811,8 +2812,9 @@ fit_models <- function(DT,
   wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
   cl_all     <- if (!is.null(cluster_name)) DT[[cluster_name]] else NULL
 
-  z_is_linear_all <- if ("z_use_linear_score" %in% names(DT)) {
-    as.logical(DT[["z_use_linear_score"]])
+  z_is_linear_all <- if (!is.null(z_linear_score_name) &&
+                         z_linear_score_name %in% names(DT)) {
+    as.logical(DT[[z_linear_score_name]])
   } else if ("z_is_linear" %in% names(DT)) {
     as.logical(DT[["z_is_linear"]])
   } else {
