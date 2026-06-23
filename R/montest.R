@@ -1111,14 +1111,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   #######STACK ACROSS MARGINS ##########
 
-  ## helper: all subsets of Y support
-  all_subsets <- function(vals, min_size = 1L, max_size = length(vals)) {
-    out <- vector("list", 0L)
-    for (k in min_size:max_size) {
-      out <- c(out, combn(vals, k, simplify = FALSE))
-    }
-    out
-  }
 
   # --------------------------------------------------
   # Build one unified condition index

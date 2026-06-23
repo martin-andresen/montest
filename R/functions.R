@@ -1,6 +1,16 @@
 
 
 ##################################################### HELPER FUNCTIONS ######################################
+
+## helper: all subsets of Y support
+all_subsets <- function(vals, min_size = 1L, max_size = length(vals)) {
+  out <- vector("list", 0L)
+  for (k in min_size:max_size) {
+    out <- c(out, combn(vals, k, simplify = FALSE))
+  }
+  out
+}
+
 append_to_main_rhs <- function(fml, y_name) {
   fml <- if (inherits(fml, "formula")) fml else stats::as.formula(fml)
 
