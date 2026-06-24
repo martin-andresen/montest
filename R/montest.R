@@ -1887,6 +1887,60 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuisances - use OOB for forest.
 
 
+  ### SIMPLE, KR ###
+
+  i_simple_kr <- which(data$condition %in% c("simple", "KR"))
+
+  if (length(i_simple_kr)) {
+    fit_models(
+      DT = data,
+      i = i_simple_kr,
+      forest_type = "causal",
+      y_name = "Q",
+      x_names = X_forest,
+      w_name = Z,
+      y_hat_name = "Q.hat",
+      w_hat_name = zhat,
+      zvar_name = Zvarhat,
+      z_score_linear_name = "z_use_linear_score",
+      folds = foldname,
+      margins = margins,
+      weight_name = weight,
+      cluster_name = cluster,
+      forest_opts = Cparameters,
+      aipw.clip = aipw.clip,
+      shrink = (shrink > 0),
+      target = target
+    )
+  }
+
+  ##AHS
+
+  i_ahs <- which(data$condition == "AHS")
+
+  if (length(i_ahs)) {
+    fit_models(
+      DT = data,
+      i = i_ahs,
+      forest_type = "causal",
+      y_name = "Q",
+      x_names = null_if_empty(c(X_forest, y_name_rhs)),
+      w_name = Z,
+      y_hat_name = "Q.hat",
+      w_hat_name = zhat,
+      zvar_name = Zvarhat,
+      z_score_linear_name = "z_use_linear_score",
+      folds = foldname,
+      margins = margins,
+      weight_name = weight,
+      cluster_name = cluster,
+      forest_opts = Cparameters,
+      aipw.clip = aipw.clip,
+      shrink = (shrink > 0),
+      target = target
+    )
+  }
+
   ## ------------------------------------------------------------
   ## MW: no target; conditional mean E[Q | X]
   ## ------------------------------------------------------------
@@ -1912,118 +1966,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   }
 
 
-  ## ------------------------------------------------------------
-  ## FWL / residual scores for all linear-Z rows
-  ## Q.hat and Z.hat already exist.
-  ## ------------------------------------------------------------
-  if (identical(target, "overlap") && any(data$z_use_linear_score == TRUE)) {
-    i_fwl <- which(data$z_use_linear_score == TRUE)
-
-    make_scores(
-      DT = data,
-      y_name = "Q",
-      z_name = Z,
-      y_hat_name = "Q.hat",
-      z_hat_name = zhat,
-      tau_name = NULL,
-      target = "overlap",
-      zvar_name = NULL,
-      score_name = "scores",
-      i = i_fwl,
-      z_is_linear_name = "z_use_linear_score",
-      clip = aipw.clip,
-      var_floor = 1e-6
-    )
-    if (testtype=="forest") {
-      fit_models(
-        DT = data,
-        i = i_fwl,
-        forest_type = "regression",
-        y_name = "scores",
-        x_names = X_forest,
-        w_name = NULL,
-        zvar_name = NULL,
-        folds = foldname,
-        margins = margins,
-        weight_name = weight,
-        cluster_name = cluster,
-        forest_opts = Cparameters,
-        aipw.clip = aipw.clip,
-        shrink = (shrink > 0),
-        target = "overlap"
-      )
-
-    }
-  }
-
-
-  ## ------------------------------------------------------------
-  ## AIPW scores for non-linear / binary-Z rows + linear Z rows when target="all"
-  ## ------------------------------------------------------------
-  if (any(data$condition %in% c("simple", "KR"))) {
-    i_simple_kr <- which(
-      data$condition %in% c("simple", "KR") &
-        (
-          data$z_use_linear_score != TRUE |
-            identical(target, "all")
-        )
-    )
-
-    if (length(i_simple_kr)) {
-      fit_models(
-        DT = data,
-        i = i_simple_kr,
-        forest_type = "causal",
-        y_name = "Q",
-        x_names = X_forest,
-        w_name = Z,
-        zvar_name = Zvarhat,
-        folds = foldname,
-        margins = margins,
-        weight_name = weight,
-        cluster_name = cluster,
-        forest_opts = Cparameters,
-        aipw.clip = aipw.clip,
-        shrink = (shrink > 0),
-        target = target
-      )
-    }
-  }
-
-
-  ## ------------------------------------------------------------
-  ## AHS: AIPW scores for non-linear / binary-Z rows,
-  ## with RHS outcome controls included in X
-  ## ------------------------------------------------------------
-  if (any(data$condition == "AHS")) {
-    i_ahs <- which(
-      data$condition == "AHS" &
-        (
-          data$z_use_linear_score != TRUE |
-            identical(target, "all")
-        )
-    )
-
-    if (length(i_ahs)) {
-      fit_models(
-        DT = data,
-        i = i_ahs,
-        forest_type = "causal",
-        y_name = "Q",
-        x_names = null_if_empty(c(X_forest, y_name_rhs)),
-        w_name = Z,
-        zvar_name = Zvarhat,
-        folds = foldname,
-        margins = margins,
-        weight_name = weight,
-        cluster_name = cluster,
-        forest_opts = Cparameters,
-        aipw.clip = aipw.clip,
-        shrink = (shrink > 0),
-        target = target
-      )
-    }
-  }
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
