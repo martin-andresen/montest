@@ -2838,18 +2838,17 @@ fit_models <- function(DT,
     NULL
   }
 
-  if (do_scores &&
-      identical(target, "all") &&
-      any(z_is_linear_all[i], na.rm = TRUE)) {
+  if (do_scores && any(z_is_linear_all[i], na.rm = TRUE)) {
 
     if (is.null(zvar_all)) {
       stop(
-        "`zvar_name` is required when target = 'all' for continuous/linear-score Z rows.",
+        "`zvar_name` is required for continuous/linear-score Z rows.",
         call. = FALSE
       )
     }
 
     bad_zvar <- z_is_linear_all[i] & !is.finite(zvar_all[i])
+
     if (any(bad_zvar, na.rm = TRUE)) {
       stop(
         "Non-finite values found in `", zvar_name,
