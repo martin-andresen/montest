@@ -1895,22 +1895,27 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     fit_models(
       DT = data,
       i = i_simple_kr,
+
       forest_type = "causal",
       y_name = "Q",
       x_names = X_forest,
-      w_name = Z,
-      y_hat_name = "Q.hat",
-      w_hat_name = zhat,
-      zvar_name = Zvarhat,
-      z_score_linear_name = "z_use_linear_score",
-      folds = foldname,
+
       margins = margins,
+
+      w_name = Z,
+      zvar_name = Zvarhat,
+
+      folds = foldname,
       weight_name = weight,
       cluster_name = cluster,
+
       forest_opts = Cparameters,
       aipw.clip = aipw.clip,
       shrink = (shrink > 0),
-      target = target
+      verbose = FALSE,
+
+      target = target,
+      z_linear_score_name = "z_use_linear_score"
     )
   }
 
@@ -1922,22 +1927,27 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     fit_models(
       DT = data,
       i = i_ahs,
+
       forest_type = "causal",
       y_name = "Q",
       x_names = null_if_empty(c(X_forest, y_name_rhs)),
-      w_name = Z,
-      y_hat_name = "Q.hat",
-      w_hat_name = zhat,
-      zvar_name = Zvarhat,
-      z_score_linear_name = "z_use_linear_score",
-      folds = foldname,
+
       margins = margins,
+
+      w_name = Z,
+      zvar_name = Zvarhat,
+
+      folds = foldname,
       weight_name = weight,
       cluster_name = cluster,
+
       forest_opts = Cparameters,
       aipw.clip = aipw.clip,
       shrink = (shrink > 0),
-      target = target
+      verbose = FALSE,
+
+      target = target,
+      z_linear_score_name = "z_use_linear_score"
     )
   }
 
