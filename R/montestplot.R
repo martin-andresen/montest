@@ -73,7 +73,7 @@ montestplot<-function(object,sample=NULL,margins=NULL,numX=10) {
 
   ## Plot X means
     vals=(object$Xmeans-object$Xmeans_all)/object$XSD
-    vals=vals[sno,-1]
+    if (is.null(sample)==FALSE) vals=vals[sno,-1]
     setcolorder(vals,names(vals)[order(abs(unlist(vals[1])), decreasing = TRUE)])
     names=names(vals)
     vals=as.numeric(vals)
