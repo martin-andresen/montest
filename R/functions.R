@@ -191,7 +191,7 @@ fixest_fe_rank <- function(data,
     return(0L)
   }
 
-  y_tmp <- "..rank_y__"
+  y_tmp <- "rank_y_dummy"
   while (y_tmp %in% names(dsub)) {
     y_tmp <- paste0(y_tmp, "_")
   }
