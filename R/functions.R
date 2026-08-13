@@ -228,20 +228,19 @@ fixest_fe_rank <- function(data,
     return(0L)
   }
 
-  k_total <- tryCatch(
-    fixest::degrees_freedom(fit, type = "k", ssc = ssc),
-    error = function(e) NA_real_
-  )
+  fe_coefs <- tryCatch(fixest::fixef(fit), error = function(e) NULL)
 
-  if (!is.finite(k_total)) {
+  if (is.null(fe_coefs)) {
     return(0L)
   }
 
-  ## Model is y ~ 1 | FE, so subtract the intercept/non-FE regressor.
-  ## The remainder is the FE df counted by fixest under the chosen ssc.
-  rank_fe <- max(0L, as.integer(round(k_total - 1L)))
+  ## Total number of FE levels/parameters across all FE dimensions ???
+  ## matches the "conservative" convention `add_running_fe_rank()` already
+  ## uses on the train side (sum of levels per FE dimension, nothing
+  ## subtracted for normalization).
+  rank_fe <- sum(vapply(fe_coefs, length, integer(1)))
 
-  rank_fe
+  as.integer(rank_fe)
 }
 
 CART_test <- function(
