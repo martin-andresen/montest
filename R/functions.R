@@ -3291,7 +3291,7 @@ forest_test <- function(
       verbose = verbose,
       screen = screen,
       alpha = alpha,
-      fe_expr = NULL,
+      fe_expr = fe_expr,
       fe_rank_adj = !is.null(fe_expr),
       fe_rank_conservative = TRUE
     )
