@@ -453,7 +453,7 @@ fe_rank <- function(data,
 
   if (isTRUE(verbose) && nrow(detail)) {
     print(detail)
-    message(sprintf("reghdfe_fe_rank: total rank / DoF lost to FEs = %d", as.integer(total)))
+    message(sprintf("fe_rank: total rank / DoF lost to FEs = %d", as.integer(total)))
   }
 
   list(rank = as.integer(total), detail = detail)
@@ -834,7 +834,7 @@ CART_test <- function(
           idx = rowid,
           fe_expr = fe_expr,
           weight_col = weight_col
-        )
+        )$rank
       } else {
         0L
       }
@@ -955,7 +955,7 @@ CART_test <- function(
               idx = rowid,
               fe_expr = fe_expr,
               weight_col = weight_col
-            )
+            )$rank
           }
 
           o <- crv1_mean(
@@ -1255,7 +1255,7 @@ CART_test <- function(
         idx = idx_keep_all,
         fe_expr = fe_expr,
         weight_col = weight_col
-      )
+      )$rank
     } else {
       0L
     }
@@ -3657,6 +3657,100 @@ forest_test <- function(
   out
 }
 
+crv1_mean <- function(score,
+                      w = NULL,
+                      cl = NULL,
+                      rank_adj = 0) {
+  score <- as.numeric(score)
+  n0 <- length(score)
+
+  if (n0 == 0L) {
+    return(list(
+      coef = NA_real_, se = NA_real_, t = NA_real_,
+      N = 0L, G = 0L, rank_adj = rank_adj, df = NA_real_
+    ))
+  }
+
+  if (is.null(w)) {
+    w <- rep(1.0, n0)
+  } else {
+    w <- as.numeric(w)
+  }
+
+  if (length(w) != n0) {
+    stop("`w` must be NULL or have the same length as `score`.", call. = FALSE)
+  }
+
+  if (is.null(cl)) {
+    cl <- seq_len(n0)
+  } else {
+    if (length(cl) != n0) {
+      stop("`cl` must be NULL or have the same length as `score`.", call. = FALSE)
+    }
+  }
+
+  ok <- is.finite(score) & is.finite(w) & w >= 0 & !is.na(cl)
+
+  if (!any(ok)) {
+    return(list(
+      coef = NA_real_, se = NA_real_, t = NA_real_,
+      N = 0L, G = 0L, rank_adj = rank_adj, df = NA_real_
+    ))
+  }
+
+  score <- score[ok]
+  w <- w[ok]
+  cl <- cl[ok]
+
+  cl <- as.integer(factor(cl, exclude = NULL))
+
+  rank_adj <- as.numeric(rank_adj)
+  if (length(rank_adj) != 1L || !is.finite(rank_adj) || rank_adj < 0) {
+    stop("`rank_adj` must be a single nonnegative finite number.", call. = FALSE)
+  }
+
+  dt0 <- data.table::data.table(score = score, w = w, cl = cl)
+
+  gb <- dt0[, .(
+    U = sum(w * score),
+    W = sum(w)
+  ), by = cl]
+
+  G <- nrow(gb)
+  U <- sum(gb$U)
+  W <- sum(gb$W)
+
+  if (!is.finite(W) || W <= 0) {
+    return(list(
+      coef = NA_real_, se = NA_real_, t = NA_real_,
+      N = length(score), G = G, rank_adj = rank_adj, df = NA_real_
+    ))
+  }
+
+  theta <- U / W
+  ug <- gb$U - theta * gb$W
+
+  df <- G - 1 - rank_adj
+
+  if (G < 2L || df <= 0 || !is.finite(df)) {
+    se <- NA_real_
+  } else {
+    se <- sqrt((G / df) * sum(ug^2)) / abs(W)
+    if (!is.finite(se)) se <- NA_real_
+  }
+
+  list(
+    coef = theta,
+    se = se,
+    t = theta / se,
+    N = length(score),
+    G = G,
+    rank_adj = rank_adj,
+    df = df
+  )
+}
+
+
 forest_test_core <- function(
     data,
     cluster = NULL,
@@ -3841,98 +3935,6 @@ forest_test_core <- function(
   fe_vars_needed <- fe_vars_needed[fe_vars_needed %in% names(data)]
   fe_dt_full <- if (length(fe_vars_needed)) data[, ..fe_vars_needed] else NULL
 
-  crv1_mean <- function(score,
-                        w = NULL,
-                        cl = NULL,
-                        rank_adj = 0) {
-    score <- as.numeric(score)
-    n0 <- length(score)
-
-    if (n0 == 0L) {
-      return(list(
-        coef = NA_real_, se = NA_real_, t = NA_real_,
-        N = 0L, G = 0L, rank_adj = rank_adj, df = NA_real_
-      ))
-    }
-
-    if (is.null(w)) {
-      w <- rep(1.0, n0)
-    } else {
-      w <- as.numeric(w)
-    }
-
-    if (length(w) != n0) {
-      stop("`w` must be NULL or have the same length as `score`.", call. = FALSE)
-    }
-
-    if (is.null(cl)) {
-      cl <- seq_len(n0)
-    } else {
-      if (length(cl) != n0) {
-        stop("`cl` must be NULL or have the same length as `score`.", call. = FALSE)
-      }
-    }
-
-    ok <- is.finite(score) & is.finite(w) & w >= 0 & !is.na(cl)
-
-    if (!any(ok)) {
-      return(list(
-        coef = NA_real_, se = NA_real_, t = NA_real_,
-        N = 0L, G = 0L, rank_adj = rank_adj, df = NA_real_
-      ))
-    }
-
-    score <- score[ok]
-    w <- w[ok]
-    cl <- cl[ok]
-
-    cl <- as.integer(factor(cl, exclude = NULL))
-
-    rank_adj <- as.numeric(rank_adj)
-    if (length(rank_adj) != 1L || !is.finite(rank_adj) || rank_adj < 0) {
-      stop("`rank_adj` must be a single nonnegative finite number.", call. = FALSE)
-    }
-
-    dt0 <- data.table::data.table(score = score, w = w, cl = cl)
-
-    gb <- dt0[, .(
-      U = sum(w * score),
-      W = sum(w)
-    ), by = cl]
-
-    G <- nrow(gb)
-    U <- sum(gb$U)
-    W <- sum(gb$W)
-
-    if (!is.finite(W) || W <= 0) {
-      return(list(
-        coef = NA_real_, se = NA_real_, t = NA_real_,
-        N = length(score), G = G, rank_adj = rank_adj, df = NA_real_
-      ))
-    }
-
-    theta <- U / W
-    ug <- gb$U - theta * gb$W
-
-    df <- G - 1 - rank_adj
-
-    if (G < 2L || df <= 0 || !is.finite(df)) {
-      se <- NA_real_
-    } else {
-      se <- sqrt((G / df) * sum(ug^2)) / abs(W)
-      if (!is.finite(se)) se <- NA_real_
-    }
-
-    list(
-      coef = theta,
-      se = se,
-      t = theta / se,
-      N = length(score),
-      G = G,
-      rank_adj = rank_adj,
-      df = df
-    )
-  }
 
   select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05) {
     tt <- dt_grp[[t_col]]
@@ -4444,7 +4446,7 @@ forest_test_core <- function(
         idx = dt_test$rowid,
         fe_expr = fe_expr,
         weight_col = weight_col
-      )
+      )$rank
     } else {
       0L
     }
@@ -4584,8 +4586,8 @@ forest_test_core <- function(
               data = data,
               idx = rowid,
               fe_expr = fe_expr,
-              weight_col = weight_col,
-            )
+              weight_col = weight_col
+            )$rank
           } else {
             0L
           }
