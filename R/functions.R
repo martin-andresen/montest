@@ -176,70 +176,290 @@ shrink_te_crossfit <- function(data,
   invisible(DT)
 }
 
+#' Estimate degrees-of-freedom lost to a set of fixed effects, reghdfe-style
+#'
+#' Mirrors the *default* DoF-adjustment logic documented for Stata's
+#' \code{reghdfe} (Correia), as opposed to \code{fixest}'s flat
+#' \code{"- 1"} heuristic (see \code{fe_rank()}):
+#'
+#'   * For the first two additive categorical FE terms, redundancy is
+#'     computed EXACTLY via the number of connected components in the
+#'     bipartite incidence graph linking their levels (the classic
+#'     Abowd-Kramarz-Margolis / "mobility group" result): with C
+#'     connected components, rank(FE1, FE2) = K1 + K2 - C.
+#'   * For a third (and later) categorical FE term, the true joint
+#'     redundancy has no known closed form, so reghdfe falls back to a
+#'     conservative pairwise approximation: compute connected components
+#'     between the new term and each already-included term, and combine
+#'     those pairwise estimates into a single working redundancy M_j.
+#'     reghdfe's own docs describe this as a documented "open problem"
+#'     beyond two dimensions, addressed with a deliberately conservative
+#'     bound rather than an exact answer.
+#'   * Varying-slope terms (fixest's `group[x]` / `group[[x]]`, Stata's
+#'     `i.group##c.x` / `i.group#c.x`) are handled with reghdfe's local
+#'     degeneracy checks rather than full connectivity: a slope bundled
+#'     with its own intercept (`group[x]`) drops one parameter for every
+#'     group where `x` is constant within-group (collinear with that
+#'     group's own intercept); a slope-only term (`group[[x]]`) drops one
+#'     parameter for every group where `x` is identically zero
+#'     within-group.
+#'
+#' IMPORTANT CAVEAT: this is a good-faith reimplementation from reghdfe's
+#' public documentation, not a byte-for-byte port -- there is no Stata
+#' available to validate against directly in the environment this was
+#' written in. Two things in particular are judgment calls rather than
+#' verified reghdfe internals:
+#'
+#'   1. Direction of the pairwise-combination rule for 3+ FE terms. This
+#'      function takes the *minimum* of the pairwise connected-component
+#'      counts as the working redundancy M_j for term j (i.e. it assumes
+#'      the LEAST redundancy that the available pairwise evidence can
+#'      support). That is the conservative choice for a testing
+#'      procedure: it can only ever UNDER-net redundancy, so it can only
+#'      ever OVER-state the DoF lost to the FEs (same "safer to
+#'      overcount rank" philosophy already used in `fe_rank()`).
+#'      If you can validate against a real reghdfe run on your data and
+#'      it turns out reghdfe instead takes the maximum, flip `min` to
+#'      `max` in the loop below -- it's a one-line change, isolated and
+#'      commented at the call site.
+#'   2. Slope terms do not participate in cross-term connectivity checks
+#'      against unrelated categorical FEs; reghdfe's own documentation
+#'      only describes the local (within-slope-term) degeneracy checks,
+#'      not a general slope-vs-FE collinearity detector, so this function
+#'      doesn't invent one either.
+#'
+#' @param data data.table containing all FE columns.
+#' @param idx integer row indices into `data` to restrict to (e.g. a
+#'   candidate-cell subset). `NULL` uses all rows.
+#' @param fe_expr one-sided formula giving the FE specification, using
+#'   fixest syntax: `~ fe1 + fe2^fe3 + grp[x] + grp2[[z]]`, where
+#'     `fe1`            plain categorical FE
+#'     `fe2^fe3`        interacted categorical FE (one dummy per observed
+#'                      combination)
+#'     `grp[x]`         group intercept + slope on `x` within `grp`
+#'                      (Stata `i.grp##c.x`)
+#'     `grp2[[z]]`      slope-only on `z` within `grp2`, no intercept
+#'                      (Stata `i.grp2#c.z`)
+#' @param weight_col optional column name of a weight variable. Currently
+#'   unused (reghdfe's documented DoF-adjustment rules are stated for the
+#'   unweighted case); accepted for signature-compatibility with
+#'   `fe_rank()` and so callers don't need to branch.
+#' @param verbose if TRUE, prints a per-term breakdown (K, M, net
+#'   contribution) mirroring reghdfe's own `e(K#)`/`e(M#)` diagnostics.
+#' @param ssc unused. Accepted only so every existing `fe_rank(...,
+#'   ssc = fixest::ssc(K.fixef = "full"))` call site can switch to this
+#'   function by renaming the call and unwrapping `$rank`, without also
+#'   having to strip the now-meaningless `ssc` argument at each of the
+#'   ~9 call sites in `functions.R`.
+#'
+#' @return a list with `rank` (integer scalar, the total estimated DoF
+#'   lost to the FEs -- reghdfe's `e(df_a)`) and `detail` (a data.table
+#'   breakdown by term).
+fe_rank <- function(data,
+                    idx = NULL,
+                    fe_expr,
+                    weight_col = NULL,
+                    verbose = FALSE,
+                    ssc = NULL) {
 
-fixest_fe_rank <- function(data,
-                           idx,
-                           fe_expr = NULL,
-                           weight_col = NULL,
-                           ssc = NULL) {
-  if (is.null(fe_expr) || length(idx) == 0L) {
-    return(0L)
+  empty_result <- function() {
+    list(rank = 0L, detail = data.table::data.table(
+      label = character(0), K = integer(0), M = integer(0), contribution = integer(0)
+    ))
   }
 
-  fe_vars <- unique(all.vars(fe_expr))
-  fe_vars <- fe_vars[fe_vars %in% names(data)]
+  if (is.null(fe_expr)) return(empty_result())
 
-  if (!length(fe_vars)) {
-    return(0L)
+  dsub <- if (!is.null(idx)) {
+    if (!length(idx)) return(empty_result())
+    data[idx]
+  } else {
+    data
+  }
+  if (!nrow(dsub)) return(empty_result())
+
+  ## ---- language-tree helpers -------------------------------------------
+
+  # flatten a left-associative chain of a binary operator (e.g. "+" or "^")
+  # into a flat list of its operands
+  .split_top <- function(expr, op_name) {
+    op_sym <- as.name(op_name)
+    if (is.call(expr) && length(expr) == 3L && identical(expr[[1]], op_sym)) {
+      c(.split_top(expr[[2]], op_name), .split_top(expr[[3]], op_name))
+    } else {
+      list(expr)
+    }
   }
 
-  dsub <- data[idx, ..fe_vars]
-
-  if (!nrow(dsub)) {
-    return(0L)
+  .classify_fe_term <- function(term) {
+    if (is.symbol(term)) {
+      return(list(kind = "fe", vars = deparse(term)))
+    }
+    if (is.call(term) && length(term) == 3L) {
+      if (identical(term[[1]], as.name("^"))) {
+        parts <- .split_top(term, "^")
+        vars <- vapply(parts, deparse, character(1))
+        return(list(kind = "fe_interaction", vars = vars))
+      }
+      if (identical(term[[1]], quote(`[`))) {
+        if (is.symbol(term[[3]])) {
+          return(list(kind = "slope_bundled", group = deparse(term[[2]]), xvar = deparse(term[[3]])))
+        }
+      }
+      if (identical(term[[1]], quote(`[[`))) {
+        if (is.symbol(term[[3]])) {
+          return(list(kind = "slope_only", group = deparse(term[[2]]), xvar = deparse(term[[3]])))
+        }
+      }
+    }
+    # fallback: unrecognized structure -> treat as one opaque plain FE
+    list(kind = "fe", vars = paste(all.vars(term), collapse = "."), fallback = TRUE)
   }
 
-  ## Total FE levels actually observed in this subset, summed across FE
-  ## dimensions -- same convention add_running_fe_rank() uses for train.
-  ## Plain uniqueN() rather than a throwaway fixest fit: the fixest-
-  ## internals route (degrees_freedom()/fixef() on a dummy y~1|FE model)
-  ## has repeatedly proven unreliable here and isn't worth chasing further.
-  rank_fe <- sum(vapply(fe_vars, function(v) data.table::uniqueN(dsub[[v]]), integer(1)))
+  ## ---- union-find (path compression + union by rank) --------------------
 
-  as.integer(rank_fe)
+  .uf_make <- function(n) list(parent = seq_len(n), rank = integer(n))
+
+  .uf_find <- function(uf, x) {
+    parent <- uf$parent
+    root <- x
+    while (parent[root] != root) root <- parent[root]
+    while (parent[x] != root) {
+      nxt <- parent[x]
+      parent[x] <- root
+      x <- nxt
+    }
+    uf$parent <- parent
+    list(uf = uf, root = root)
+  }
+
+  .uf_union <- function(uf, x, y) {
+    fx <- .uf_find(uf, x); uf <- fx$uf; rx <- fx$root
+    fy <- .uf_find(uf, y); uf <- fy$uf; ry <- fy$root
+    if (rx == ry) return(uf)
+    if (uf$rank[rx] < uf$rank[ry]) { tmp <- rx; rx <- ry; ry <- tmp }
+    uf$parent[ry] <- rx
+    if (uf$rank[rx] == uf$rank[ry]) uf$rank[rx] <- uf$rank[rx] + 1L
+    uf
+  }
+
+  # number of connected components in the bipartite graph linking the
+  # observed levels of `a` to the observed levels of `b` (one edge per
+  # observed (a,b) row-combination) -- the AKM "mobility group" count
+  .n_connected_components <- function(a, b) {
+    fa <- factor(a); fb <- factor(b)
+    n_a <- nlevels(fa); n_b <- nlevels(fb)
+    ia <- as.integer(fa); ib <- as.integer(fb) + n_a
+    pairs <- unique(data.table::data.table(x = ia, y = ib))
+    n_nodes <- n_a + n_b
+    uf <- .uf_make(n_nodes)
+    if (nrow(pairs)) {
+      for (k in seq_len(nrow(pairs))) uf <- .uf_union(uf, pairs$x[k], pairs$y[k])
+    }
+    roots <- vapply(seq_len(n_nodes), function(v) .uf_find(uf, v)$root, integer(1))
+    data.table::uniqueN(roots)
+  }
+
+  ## ---- parse the FE formula into terms -----------------------------------
+
+  rhs <- if (length(fe_expr) == 2L) fe_expr[[2]] else fe_expr[[3]]
+  parsed <- lapply(.split_top(rhs, "+"), .classify_fe_term)
+
+  cat_terms <- list()   # categorical / interacted-categorical terms, in order
+  slope_rows <- list()  # locally-adjusted slope-term contributions
+
+  for (p in parsed) {
+
+    if (p$kind %in% c("fe", "fe_interaction")) {
+      vars <- p$vars
+      missing_vars <- setdiff(vars, names(dsub))
+      if (length(missing_vars)) {
+        if (verbose) message("reghdfe_fe_rank: skipping term, missing column(s): ",
+                             paste(missing_vars, collapse = ", "))
+        next
+      }
+      if (length(vars) == 1L) {
+        combined <- dsub[[vars]]
+        label <- vars
+      } else {
+        combined <- do.call(paste, c(lapply(vars, function(v) dsub[[v]]), sep = "\r"))
+        label <- paste(vars, collapse = "^")
+      }
+      cat_terms[[length(cat_terms) + 1L]] <- list(label = label, values = combined)
+
+    } else if (p$kind %in% c("slope_bundled", "slope_only")) {
+      grp <- p$group; xv <- p$xvar
+      if (!(grp %in% names(dsub)) || !(xv %in% names(dsub))) {
+        if (verbose) message("reghdfe_fe_rank: skipping slope term, missing column(s): ", grp, ", ", xv)
+        next
+      }
+      k_raw <- data.table::uniqueN(dsub[[grp]])
+
+      if (p$kind == "slope_bundled") {
+        # group[x]: intercept + slope, bundled -- also register the plain
+        # group intercept as its own categorical term (participates in
+        # cross-term connectivity normally)
+        cat_terms[[length(cat_terms) + 1L]] <- list(label = grp, values = dsub[[grp]])
+        degenerate <- dsub[, .(const = data.table::uniqueN(get(xv)) <= 1L), by = grp]$const
+        n_degenerate <- sum(degenerate)
+        label <- sprintf("%s[%s] (slope, bundled intercept)", grp, xv)
+      } else {
+        # group[[x]]: slope only, no intercept term registered
+        degenerate <- dsub[, .(allzero = all(get(xv) == 0)), by = grp]$allzero
+        n_degenerate <- sum(degenerate)
+        label <- sprintf("%s[[%s]] (slope only)", grp, xv)
+      }
+
+      k_eff <- k_raw - n_degenerate
+      slope_rows[[length(slope_rows) + 1L]] <- data.table::data.table(
+        label = label, K = k_raw, M = n_degenerate, contribution = k_eff
+      )
+    }
+  }
+
+  ## ---- combine categorical terms: exact for the first pair, conservative
+  ##      pairwise-min approximation for term 3+ --------------------------
+
+  cat_rows <- list()
+  running_total <- 0L
+
+  if (length(cat_terms)) {
+    K1 <- data.table::uniqueN(cat_terms[[1]]$values)
+    cat_rows[[1]] <- data.table::data.table(label = cat_terms[[1]]$label, K = K1, M = 0L, contribution = K1)
+    running_total <- K1
+
+    if (length(cat_terms) >= 2L) {
+      for (j in 2:length(cat_terms)) {
+        Kj <- data.table::uniqueN(cat_terms[[j]]$values)
+        pairwise_C <- vapply(
+          seq_len(j - 1L),
+          function(i) .n_connected_components(cat_terms[[i]]$values, cat_terms[[j]]$values),
+          numeric(1)
+        )
+        # conservative choice: the SMALLEST pairwise redundancy estimate
+        # (see caveat #1 in the roxygen header above) -- exact when j == 2
+        Mj <- min(pairwise_C)
+        contribution <- Kj - Mj
+        running_total <- running_total + contribution
+        cat_rows[[length(cat_rows) + 1L]] <- data.table::data.table(
+          label = cat_terms[[j]]$label, K = Kj, M = Mj, contribution = contribution
+        )
+      }
+    }
+  }
+
+  detail <- data.table::rbindlist(c(cat_rows, slope_rows), use.names = TRUE, fill = TRUE)
+  total <- running_total + sum(vapply(slope_rows, function(r) r$contribution, numeric(1)))
+
+  if (isTRUE(verbose) && nrow(detail)) {
+    print(detail)
+    message(sprintf("reghdfe_fe_rank: total rank / DoF lost to FEs = %d", as.integer(total)))
+  }
+
+  list(rank = as.integer(total), detail = detail)
 }
 
-# fixest_fe_rank <- function(data,
-#                            idx,
-#                            fe_expr = NULL,
-#                            weight_col = NULL,
-#                            ssc = NULL) {
-#   if (is.null(fe_expr) || length(idx) == 0L) {
-#     return(0L)
-#   }
-#
-#   fe_vars <- unique(all.vars(fe_expr))
-#   fe_vars <- fe_vars[fe_vars %in% names(data)]
-#
-#   if (!length(fe_vars)) {
-#     return(0L)
-#   }
-#
-#   dsub <- data[idx, ..fe_vars]
-#
-#   if (!nrow(dsub)) {
-#     return(0L)
-#   }
-#
-#   ## Total FE levels actually observed in this subset, summed across FE
-#   ## dimensions -- same convention add_running_fe_rank() uses for train.
-#   ## Plain uniqueN() rather than a throwaway fixest fit: the fixest-
-#   ## internals route (degrees_freedom()/fixef() on a dummy y~1|FE model)
-#   ## has repeatedly proven unreliable here and isn't worth chasing further.
-#   rank_fe <- sum(vapply(fe_vars, function(v) data.table::uniqueN(dsub[[v]]), integer(1)))
-#
-#   as.integer(rank_fe)
-# }
+
 
 CART_test <- function(
     data,
@@ -609,12 +829,11 @@ CART_test <- function(
 
     out <- dtg[, {
       rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-        fixest_fe_rank(
+        fe_rank(
           data = data,
           idx = rowid,
           fe_expr = fe_expr,
-          weight_col = weight_col,
-          ssc = fixest::ssc(K.fixef = "full")
+          weight_col = weight_col
         )
       } else {
         0L
@@ -731,12 +950,11 @@ CART_test <- function(
           rank_adj <- 0L
 
           if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-            rank_adj <- fixest_fe_rank(
+            rank_adj <- fe_rank(
               data = data,
               idx = rowid,
               fe_expr = fe_expr,
-              weight_col = weight_col,
-              ssc = fixest::ssc(K.fixef = "full")
+              weight_col = weight_col
             )
           }
 
@@ -1032,12 +1250,11 @@ CART_test <- function(
     cl <- if (!is.null(cluster_col)) data[[cluster_col]][idx_keep_all] else NULL
 
     rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-      fixest_fe_rank(
+      fe_rank(
         data = data,
         idx = idx_keep_all,
         fe_expr = fe_expr,
-        weight_col = weight_col,
-        ssc = fixest::ssc(K.fixef = "full")
+        weight_col = weight_col
       )
     } else {
       0L
@@ -4222,12 +4439,11 @@ forest_test_core <- function(
   ## In sample_pool_after_margin_select mode this is intentionally sample-specific.
   if (length(test_by) == 0L) {
     rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-      fixest_fe_rank(
+      fe_rank(
         data = data,
         idx = dt_test$rowid,
         fe_expr = fe_expr,
-        weight_col = weight_col,
-        ssc = fixest::ssc(K.fixef = "full")
+        weight_col = weight_col
       )
     } else {
       0L
@@ -4266,12 +4482,11 @@ forest_test_core <- function(
   } else {
     test_out <- dt_test[, {
       rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-        fixest_fe_rank(
+        fe_rank(
           data = data,
           idx = rowid,
           fe_expr = fe_expr,
-          weight_col = weight_col,
-          ssc = fixest::ssc(K.fixef = "full")
+          weight_col = weight_col
         )
       } else {
         0L
@@ -4365,12 +4580,11 @@ forest_test_core <- function(
 
         test_out_pool <- dt_common[, {
           rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-            fixest_fe_rank(
+            fe_rank(
               data = data,
               idx = rowid,
               fe_expr = fe_expr,
               weight_col = weight_col,
-              ssc = fixest::ssc(K.fixef = "full")
             )
           } else {
             0L
@@ -4613,19 +4827,13 @@ global_means_crv1 <- function(
     dt_all[, (by_cols) := data[, .SD, .SDcols = by_cols]]
   }
 
-  rank_for_rows <- function(rowid) {
-    if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-      fixest_fe_rank(
-        data = data,
-        idx = rowid,
-        fe_expr = fe_expr,
-        weight_col = weight_col,
-        ssc = ssc
-      )
-    } else {
-      0L
+    rank_for_rows <- function(rowid) {
+      if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
+        fe_rank(data = data, idx = rowid, fe_expr = fe_expr, weight_col = weight_col)$rank
+      } else {
+        0L
+      }
     }
-  }
 
   if (length(by_cols) == 0L) {
     rank_adj <- rank_for_rows(dt_all$rowid)
