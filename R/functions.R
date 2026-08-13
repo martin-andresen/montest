@@ -2567,6 +2567,7 @@ make_scores_vec <- function(Y,
                             target = c("all", "overlap"),
                             z_is_linear = FALSE,
                             Z.var.hat = NULL,
+                            weight = NULL,                      # <-- new
                             clip = 1e-3,
                             var_floor = 1e-6) {
   target <- match.arg(target)
@@ -2576,6 +2577,12 @@ make_scores_vec <- function(Y,
   if (length(z_is_linear) == 1L) {
     z_is_linear <- rep(z_is_linear, n)
   }
+
+  if (is.null(weight)) {                                        # <-- new
+    weight <- rep(1, n)                                         # <-- new
+  } else if (length(weight) != n) {                              # <-- new
+    stop("`weight` must have length equal to `Y`.", call. = FALSE)  # <-- new
+  }                                                               # <-- new
 
   score <- rep(NA_real_, n)
 
@@ -2601,6 +2608,7 @@ make_scores_vec <- function(Y,
     m <- as.numeric(Y.hat[ii])
     e <- as.numeric(Z.hat[ii])
     t <- as.numeric(tau[ii])
+    wt <- as.numeric(weight[ii])                                 # <-- new
 
     w <- as.numeric(z > 0.5)
 
@@ -2622,7 +2630,7 @@ make_scores_vec <- function(Y,
         ((1 - w) / (1 - e)) * (y - m0)
     } else {
       h <- e * (1 - e)
-      hbar <- mean(h, na.rm = TRUE)
+      hbar <- stats::weighted.mean(h, w = wt, na.rm = TRUE)       # <-- changed
 
       score[ii] <-
         (
@@ -2640,6 +2648,7 @@ make_scores_vec <- function(Y,
     z <- as.numeric(Z[ii])
     m <- as.numeric(Y.hat[ii])
     e <- as.numeric(Z.hat[ii])
+    wt <- as.numeric(weight[ii])                                 # <-- new
 
     zres <- z - e
     yres <- y - m
@@ -2657,10 +2666,10 @@ make_scores_vec <- function(Y,
       score[ii] <- t + (zres / v) * (yres - t * zres)
 
     } else {
-      zres_c <- zres - mean(zres, na.rm = TRUE)
-      yres_c <- yres - mean(yres, na.rm = TRUE)
+      zres_c <- zres - stats::weighted.mean(zres, w = wt, na.rm = TRUE)  # <-- changed
+      yres_c <- yres - stats::weighted.mean(yres, w = wt, na.rm = TRUE)  # <-- changed
 
-      den <- mean(zres_c^2, na.rm = TRUE)
+      den <- stats::weighted.mean(zres_c^2, w = wt, na.rm = TRUE)        # <-- changed
 
       score[ii] <- zres_c * yres_c / den
     }
@@ -2677,6 +2686,7 @@ make_scores <- function(DT,
                         tau_name,
                         target = c("all", "overlap"),
                         zvar_name = NULL,
+                        weight_name = NULL,                       # <-- new
                         score_name = "scores",
                         i = NULL,
                         z_is_linear_name = "z_is_linear",
@@ -2700,6 +2710,8 @@ make_scores <- function(DT,
     NULL
   }
 
+  weight <- if (!is.null(weight_name)) DT[[weight_name]][i] else NULL   # <-- new
+
   score <- make_scores_vec(
     Y = DT[[y_name]][i],
     Z = DT[[z_name]][i],
@@ -2709,6 +2721,7 @@ make_scores <- function(DT,
     target = target,
     z_is_linear = z_is_linear,
     Z.var.hat = Z.var.hat,
+    weight = weight,                                                    # <-- new
     clip = clip,
     var_floor = var_floor
   )
@@ -3125,6 +3138,7 @@ fit_models <- function(DT,
         target = target,
         z_is_linear = z_is_linear_all[idx1],
         Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx1] else NULL,
+        weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],   # <-- new
         clip = aipw.clip
       )
     }
@@ -3139,6 +3153,7 @@ fit_models <- function(DT,
         target = target,
         z_is_linear = z_is_linear_all[idx2],
         Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx2] else NULL,
+        weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],   # <-- new
         clip = aipw.clip
       )
     }
