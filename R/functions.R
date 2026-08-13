@@ -176,72 +176,70 @@ shrink_te_crossfit <- function(data,
   invisible(DT)
 }
 
+
 fixest_fe_rank <- function(data,
                            idx,
                            fe_expr = NULL,
                            weight_col = NULL,
-                           ssc = fixest::ssc(K.fixef = "full")) {
+                           ssc = NULL) {
   if (is.null(fe_expr) || length(idx) == 0L) {
     return(0L)
   }
 
-  dsub <- data[idx]
+  fe_vars <- unique(all.vars(fe_expr))
+  fe_vars <- fe_vars[fe_vars %in% names(data)]
+
+  if (!length(fe_vars)) {
+    return(0L)
+  }
+
+  dsub <- data[idx, ..fe_vars]
 
   if (!nrow(dsub)) {
     return(0L)
   }
 
-  y_tmp <- "rank_y_dummy"
-  while (y_tmp %in% names(dsub)) {
-    y_tmp <- paste0(y_tmp, "_")
-  }
-
-  dsub[, (y_tmp) := 0]
-
-  fml <- stats::as.formula(
-    paste0(y_tmp, " ~ 1 | ", deparse1(fe_expr))
-  )
-
-  args <- list(
-    fml = fml,
-    data = dsub,
-    notes = FALSE,
-    warn = FALSE,
-    ssc = ssc,
-    fixef.rm = "none"   # <-- y is a constant-zero placeholder used only to read off
-    #     FE degrees of freedom; with the default "perfect_fit",
-    #     every row looks "perfectly explained" by a constant
-    #     outcome, so fixest strips the sample instead of
-    #     reporting the rank we're actually asking for.
-  )
-
-  if (!is.null(weight_col)) {
-    args$weights <- stats::as.formula(paste0("~", weight_col))
-  }
-
-  fit <- tryCatch(
-    do.call(fixest::feols, args),
-    error = function(e) NULL
-  )
-
-  if (is.null(fit)) {
-    return(0L)
-  }
-
-  fe_coefs <- tryCatch(fixest::fixef(fit), error = function(e) NULL)
-
-  if (is.null(fe_coefs)) {
-    return(0L)
-  }
-
-  ## Total number of FE levels/parameters across all FE dimensions ???
-  ## matches the "conservative" convention `add_running_fe_rank()` already
-  ## uses on the train side (sum of levels per FE dimension, nothing
-  ## subtracted for normalization).
-  rank_fe <- sum(vapply(fe_coefs, length, integer(1)))
+  ## Total FE levels actually observed in this subset, summed across FE
+  ## dimensions -- same convention add_running_fe_rank() uses for train.
+  ## Plain uniqueN() rather than a throwaway fixest fit: the fixest-
+  ## internals route (degrees_freedom()/fixef() on a dummy y~1|FE model)
+  ## has repeatedly proven unreliable here and isn't worth chasing further.
+  rank_fe <- sum(vapply(fe_vars, function(v) data.table::uniqueN(dsub[[v]]), integer(1)))
 
   as.integer(rank_fe)
 }
+
+# fixest_fe_rank <- function(data,
+#                            idx,
+#                            fe_expr = NULL,
+#                            weight_col = NULL,
+#                            ssc = NULL) {
+#   if (is.null(fe_expr) || length(idx) == 0L) {
+#     return(0L)
+#   }
+#
+#   fe_vars <- unique(all.vars(fe_expr))
+#   fe_vars <- fe_vars[fe_vars %in% names(data)]
+#
+#   if (!length(fe_vars)) {
+#     return(0L)
+#   }
+#
+#   dsub <- data[idx, ..fe_vars]
+#
+#   if (!nrow(dsub)) {
+#     return(0L)
+#   }
+#
+#   ## Total FE levels actually observed in this subset, summed across FE
+#   ## dimensions -- same convention add_running_fe_rank() uses for train.
+#   ## Plain uniqueN() rather than a throwaway fixest fit: the fixest-
+#   ## internals route (degrees_freedom()/fixef() on a dummy y~1|FE model)
+#   ## has repeatedly proven unreliable here and isn't worth chasing further.
+#   rank_fe <- sum(vapply(fe_vars, function(v) data.table::uniqueN(dsub[[v]]), integer(1)))
+#
+#   as.integer(rank_fe)
+# }
 
 CART_test <- function(
     data,
