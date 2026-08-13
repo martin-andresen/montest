@@ -1980,6 +1980,13 @@ feols_partial_out <- function(DT,
   by <- unique(as.character(by %||% character()))
   by <- by[by %in% names(DT)]
 
+  ## Singleton/perfect-fit FE removal only affects reported SEs, not the
+  ## fitted/residual values we actually use here ??? but it does silently
+  ## shrink the row count `residuals()`/`fitted()` come back with. We only
+  ## ever consume residuals/fitted from this fit, so default to keeping
+  ## every row unless the caller explicitly asked for something else.
+  fixest_opts <- utils::modifyList(list(fixef.rm = "none"), fixest_opts)
+
   rhs_txt <- if (is.null(rhs_expr) || identical(rhs_expr, quote(1))) {
     "1"
   } else {
