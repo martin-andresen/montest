@@ -246,12 +246,7 @@ shrink_te_crossfit <- function(data,
 #'   `fe_rank()` and so callers don't need to branch.
 #' @param verbose if TRUE, prints a per-term breakdown (K, M, net
 #'   contribution) mirroring reghdfe's own `e(K#)`/`e(M#)` diagnostics.
-#' @param ssc unused. Accepted only so every existing `fe_rank(...,
-#'   ssc = fixest::ssc(K.fixef = "full"))` call site can switch to this
-#'   function by renaming the call and unwrapping `$rank`, without also
-#'   having to strip the now-meaningless `ssc` argument at each of the
-#'   ~9 call sites in `functions.R`.
-#'
+
 #' @return a list with `rank` (integer scalar, the total estimated DoF
 #'   lost to the FEs -- reghdfe's `e(df_a)`) and `detail` (a data.table
 #'   breakdown by term).
@@ -259,8 +254,7 @@ fe_rank <- function(data,
                     idx = NULL,
                     fe_expr,
                     weight_col = NULL,
-                    verbose = FALSE,
-                    ssc = NULL) {
+                    verbose = FALSE) {
 
   empty_result <- function() {
     list(rank = 0L, detail = data.table::data.table(
@@ -4489,7 +4483,7 @@ forest_test_core <- function(
           idx = rowid,
           fe_expr = fe_expr,
           weight_col = weight_col
-        )
+        )$rank
       } else {
         0L
       }
@@ -4653,8 +4647,7 @@ forest_test_core <- function(
     crv1_mean_fun = crv1_mean,
     fe_expr = fe_expr,
     fe_rank_adj = fe_rank_adj,
-    weight_col = weight_col,
-    ssc = fixest::ssc(K.fixef = "full")
+    weight_col = weight_col
   )
 
   Xmeans <- Xmeans_all <- XSD <- NULL
@@ -4785,8 +4778,7 @@ global_means_crv1 <- function(
     crv1_mean_fun,
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
-    weight_col = NULL,
-    ssc = fixest::ssc(K.fixef = "full")
+    weight_col = NULL
 ) {
   stopifnot(data.table::is.data.table(data))
   stopifnot(
