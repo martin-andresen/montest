@@ -356,7 +356,7 @@ fe_rank <- function(data,
 
   ## ---- parse the FE formula into terms -----------------------------------
 
-  rhs <- if (length(fe_expr) == 2L) fe_expr[[2]] else fe_expr[[3]]
+  rhs <- if (inherits(fe_expr, "formula")) fe_expr[[length(fe_expr)]] else fe_expr
   parsed <- lapply(.split_top(rhs, "+"), .classify_fe_term)
 
   cat_terms <- list()   # categorical / interacted-categorical terms, in order
