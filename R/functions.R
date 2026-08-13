@@ -2023,14 +2023,11 @@ feols_partial_out <- function(DT,
   }
 
   fml_for <- function(lhs) {
+    lhs_q <- paste0("`", gsub("`", "``", lhs), "`")   # backtick-quote so leading "_" etc. can't break the parser
     if (has_fe) {
-      stats::as.formula(
-        paste0(lhs, " ~ ", rhs_txt, " | ", deparse1(fe_expr))
-      )
+      stats::as.formula(paste0(lhs_q, " ~ ", rhs_txt, " | ", deparse1(fe_expr)))
     } else {
-      stats::as.formula(
-        paste0(lhs, " ~ ", rhs_txt)
-      )
+      stats::as.formula(paste0(lhs_q, " ~ ", rhs_txt))
     }
   }
 
@@ -2080,115 +2077,6 @@ feols_partial_out <- function(DT,
   )
 }
 
-make_X_residualized_from_FE <- function(DT,
-                                        x_expr,
-                                        fe_expr = NULL,
-                                        prefix = "__x",
-                                        by = NULL,
-                                        weight = NULL,
-                                        fixest_opts = list(),
-                                        env = parent.frame()) {
-  stopifnot(data.table::is.data.table(DT))
-
-  `%||%` <- function(x, y) if (is.null(x)) y else x
-
-  if (is.null(x_expr) || identical(x_expr, quote(1))) {
-    return(list(
-      x_names = NULL,
-      raw_names = NULL,
-      resid_names = NULL,
-      has_FE = !is.null(fe_expr)
-    ))
-  }
-
-  by <- unique(as.character(by %||% character()))
-  by <- by[by %in% names(DT)]
-
-  ## Build model matrix from the X formula.
-  fml_x <- stats::as.formula(call("~", x_expr), env = env)
-
-  mm <- stats::model.matrix(fml_x, data = DT)
-
-  if ("(Intercept)" %in% colnames(mm)) {
-    mm <- mm[, setdiff(colnames(mm), "(Intercept)"), drop = FALSE]
-  }
-
-  if (ncol(mm) == 0L) {
-    return(list(
-      x_names = NULL,
-      raw_names = NULL,
-      resid_names = NULL,
-      has_FE = !is.null(fe_expr)
-    ))
-  }
-
-  raw_names <- paste0(prefix, "_", make.names(colnames(mm), unique = TRUE))
-
-  ## Ensure names are unique relative to existing DT columns.
-  raw_names <- make.unique(c(names(DT), raw_names), sep = "_")
-  raw_names <- tail(raw_names, ncol(mm))
-
-  ## Assign model-matrix columns one by one.
-  ## This is slower than bulk assignment, but robust.
-  for (jj in seq_len(ncol(mm))) {
-    DT[, (raw_names[jj]) := as.numeric(mm[, jj])]
-  }
-
-  ## No FE: the raw model-matrix columns are the forest/nuisance features.
-  if (is.null(fe_expr)) {
-    return(list(
-      x_names = raw_names,
-      raw_names = raw_names,
-      resid_names = raw_names,
-      has_FE = FALSE
-    ))
-  }
-
-  ## FE present: residualize each model-matrix column from FE.
-  resid_names <- paste0(prefix, "_tilde_", seq_along(raw_names))
-  resid_names <- make.unique(c(names(DT), resid_names), sep = "_")
-  resid_names <- tail(resid_names, length(raw_names))
-
-  for (jj in seq_along(raw_names)) {
-    po <- feols_partial_out(
-      DT = DT,
-      y = raw_names[jj],
-      rhs_expr = quote(1),
-      fe_expr = fe_expr,
-      by = by,
-      weight = weight,
-      prefix = resid_names[jj],
-      keep = "resid",
-      fixest_opts = fixest_opts
-    )
-
-    ## feols_partial_out() should return the residual column name in po$resid.
-    if (!is.null(po$resid) && po$resid %in% names(DT)) {
-      if (!identical(po$resid, resid_names[jj])) {
-        DT[, (resid_names[jj]) := get(po$resid)]
-      }
-    } else {
-      stop(
-        "Internal error: `feols_partial_out()` did not return a valid residual column ",
-        "when residualizing X feature `", raw_names[jj], "`.",
-        call. = FALSE
-      )
-    }
-  }
-
-  ## Drop raw columns after residualizing to avoid carrying duplicates.
-  drop_raw <- intersect(raw_names, names(DT))
-  if (length(drop_raw)) {
-    DT[, (drop_raw) := NULL]
-  }
-
-  list(
-    x_names = resid_names,
-    raw_names = raw_names,
-    resid_names = resid_names,
-    has_FE = TRUE
-  )
-}
 
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
