@@ -207,7 +207,12 @@ fixest_fe_rank <- function(data,
     data = dsub,
     notes = FALSE,
     warn = FALSE,
-    ssc = ssc
+    ssc = ssc,
+    fixef.rm = "none"   # <-- y is a constant-zero placeholder used only to read off
+    #     FE degrees of freedom; with the default "perfect_fit",
+    #     every row looks "perfectly explained" by a constant
+    #     outcome, so fixest strips the sample instead of
+    #     reporting the rank we're actually asking for.
   )
 
   if (!is.null(weight_col)) {
