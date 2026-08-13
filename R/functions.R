@@ -2044,13 +2044,21 @@ feols_partial_out <- function(DT,
       lhs <- y[j]
       fml <- fml_for(lhs)
 
+      ## feols() drops any row with NA in a variable entering the formula
+      ## (or a NA/non-positive weight) and returns residuals()/fitted()
+      ## only for the rows it kept. Filter to those rows up front so the
+      ## length lines up with what we assign back into DT.
+      vars_needed <- intersect(all.vars(fml), names(dsub))
+      keep_row <- stats::complete.cases(dsub[, ..vars_needed])
+      if (!is.null(weight)) {
+        keep_row <- keep_row & !is.na(dsub[[weight]]) & dsub[[weight]] > 0
+      }
+
+      dsub_j <- dsub[keep_row]
+      ii_j   <- ii[keep_row]
+
       args <- c(
-        list(
-          fml = fml,
-          data = dsub,
-          notes = FALSE,
-          warn = FALSE
-        ),
+        list(fml = fml, data = dsub_j, notes = FALSE, warn = FALSE),
         fixest_opts
       )
 
@@ -2061,11 +2069,11 @@ feols_partial_out <- function(DT,
       fit <- do.call(fixest::feols, args)
 
       if (keep %in% c("resid", "both")) {
-        DT[ii, (out$resid[j]) := as.numeric(stats::residuals(fit))]
+        DT[ii_j, (out$resid[j]) := as.numeric(stats::residuals(fit))]
       }
 
       if (keep %in% c("fitted", "both")) {
-        DT[ii, (out$fitted[j]) := as.numeric(stats::fitted(fit))]
+        DT[ii_j, (out$fitted[j]) := as.numeric(stats::fitted(fit))]
       }
     }
   }
