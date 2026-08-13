@@ -3160,7 +3160,7 @@ add_running_fe_rank <- function(DT,
 
   ## Running count of unique observed FE values within each by-cell.
   ## Assumes DT is already sorted in the desired cutoff order.
-  rank_cols <- character(length(fe_vars))
+  rank_cols <- character(0)
 
   for (ff in fe_vars) {
     cc <- paste0(".__rank_seen__", make.names(ff), "__")
@@ -3292,8 +3292,8 @@ forest_test <- function(
       screen = screen,
       alpha = alpha,
       fe_expr = fe_expr,
-      fe_rank_adj = !is.null(fe_expr),
-      fe_rank_conservative = TRUE
+      fe_rank_adj = fe_rank_adj,
+      fe_rank_conservative = fe_rank_conservative
     )
   }
 
@@ -3618,6 +3618,10 @@ forest_test_core <- function(
     seq_len(n)
   }
 
+  fe_vars_needed <- if (!is.null(fe_expr)) unique(all.vars(fe_expr)) else character(0)
+  fe_vars_needed <- fe_vars_needed[fe_vars_needed %in% names(data)]
+  fe_dt_full <- if (length(fe_vars_needed)) data[, ..fe_vars_needed] else NULL
+
   crv1_mean <- function(score,
                         w = NULL,
                         cl = NULL,
@@ -3827,6 +3831,10 @@ forest_test_core <- function(
       cl     = cl,
       rid    = seq_along(idx)
     )
+
+    if (!is.null(fe_dt_full)) {
+      dt[, (fe_vars_needed) := fe_dt_full[idx]]
+    }
 
     data.table::setorder(dt, sample, pred)
 
