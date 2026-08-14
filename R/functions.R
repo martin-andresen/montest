@@ -552,7 +552,7 @@ CART_test <- function(
           idx = rowid,
           fe_expr = fe_expr,
           weight_col = weight_col,
-          cluster_vals = cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
+          cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
         )$rank
       } else {
         0L
