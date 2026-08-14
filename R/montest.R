@@ -745,7 +745,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   if (has_FE) {
     data[, z_use_linear_score := TRUE]
   }
-
   ## ------------------------------------------------------------
   ## AIPW vs FWL score selection
   ##
@@ -753,56 +752,75 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ##     TRUE) always use FWL (target_linear = "overlap"): such a row, by
   ##     definition, "contains Z" as linear, so it always falls into the
   ##     "Otherwise, use FWL" branch below, regardless of parametric/FE/
-  ##     whether `target` was specified.
+  ##     whether `target` was specified. That formula doesn't use Z.hat as
+  ##     an inverse-propensity weight at all, so it isn't numerically
+  ##     fragile the way the binary-Z AIPW formula is (see below) -- forcing
+  ##     it away from AIPW is a warning, not an error.
   ##   - For rows NOT on the linear-Z path (binary Z rows), target_binary is
   ##     "all" (AIPW) iff parametric = FALSE AND there are no FE -- whether
   ##     target was left unspecified or explicitly "all" makes no
-  ##     difference to this formula; it only affects whether a warning
-  ##     fires (see below).
+  ##     difference to this formula when it's allowed to resolve normally.
+  ##   - Explicitly forcing target = "all" onto binary-Z rows when
+  ##     parametric = TRUE or FE are present is a hard error, not a warning:
+  ##     AIPW's 1/e, 1/(1-e) terms rely on Z.hat as a propensity, and
+  ##     parametric = TRUE estimates that propensity via a linear
+  ##     probability model, which can produce fitted values outside [0,1]
+  ##     even with no FE at all (a standard LPM problem) -- FE just makes it
+  ##     worse (small/unbalanced groups). The semiparametric/forest path
+  ##     doesn't have this issue (a regression forest predicting a 0/1
+  ##     outcome can't extrapolate past [0,1]), so this only bites
+  ##     parametric = TRUE.
   ##       * If `target` was explicitly set to "overlap", honor it as-is --
-  ##         no warning (the user asked for exactly this).
-  ##   - Warning: fires ONLY when `target` was explicitly "all", whenever it
-  ##     ends up using "overlap" for any of: linear Z present, FE present,
-  ##     or parametric = TRUE. Never fires when target was left unspecified
-  ##     -- only an explicit, unmet request warrants a warning.
+  ##         no warning, nothing to error on.
   ## ------------------------------------------------------------
 
-  any_linear_z <- any(data$z_is_linear_raw, na.rm = TRUE)
+  any_linear_z  <- any(data$z_is_linear_raw, na.rm = TRUE)
+  any_binary_z  <- any(!data$z_is_linear_raw, na.rm = TRUE)
 
   if (target_explicit && identical(target, "overlap")) {
-    ## Explicit request for overlap/FWL: honor as-is, nothing to warn about.
+    ## Explicit request for overlap/FWL: honor as-is, nothing to warn/error about.
 
     target_binary <- "overlap"
     target_linear <- "overlap"
 
   } else {
-    ## target is either unspecified, or explicitly "all" -- same formula
-    ## either way.
+    ## target is either unspecified, or explicitly "all".
+
+    if (target_explicit && any_binary_z && (isTRUE(parametric) || has_FE)) {
+      fragile_reasons <- character()
+      if (isTRUE(parametric)) fragile_reasons <- c(fragile_reasons, "parametric = TRUE")
+      if (has_FE)             fragile_reasons <- c(fragile_reasons, "fixed effects")
+
+      stop(
+        "target = \"all\" was requested, but ", paste(fragile_reasons, collapse = " and "),
+        if (length(fragile_reasons) > 1L) " are present" else " is present",
+        " for binary-Z rows. AIPW (\"all\") relies on Z.hat as an inverse-",
+        "propensity weight, which is numerically fragile here: with ",
+        "parametric = TRUE, Z.hat comes from a linear probability model and ",
+        "can fall outside [0,1] even without FE; FE makes this worse via ",
+        "small/unbalanced groups. Use target = \"overlap\" instead.",
+        call. = FALSE
+      )
+    }
 
     target_binary <- if (!isTRUE(parametric) && !has_FE) "all" else "overlap"
     target_linear <- "overlap"
 
-    if (target_explicit) {
-      ## explicit "all": warn whenever any of the three factors diverted
-      ## this run from pure AIPW.
+    if (target_explicit && any_linear_z) {
+      ## explicit "all", overridden for the one remaining (non-fragile)
+      ## reason: linear-Z rows always use FWL regardless of target. FE/
+      ## parametric causes are handled above via stop(), not warning.
 
-      reasons <- character()
-      if (isTRUE(parametric)) reasons <- c(reasons, "parametric = TRUE")
-      if (has_FE)             reasons <- c(reasons, "fixed effects")
-      if (any_linear_z)       reasons <- c(reasons, "linear Z terms")
-
-      if (length(reasons) > 0L) {
-        warning(
-          "target = \"all\" was requested, but ", paste(reasons, collapse = " and "),
-          if (length(reasons) > 1L) " are present" else " is present",
-          ". FWL (\"overlap\") scores will be used for the affected rows ",
-          "instead of AIPW, which targets the overlap-weighted average ",
-          "effect rather than the full-population average partial effect.",
-          call. = FALSE
-        )
-      }
+      warning(
+        "target = \"all\" was requested, but linear Z terms are present. ",
+        "FWL (\"overlap\") scores will be used for the linear-Z rows ",
+        "instead of the AIPW-style average-partial-effect formula, which ",
+        "targets the overlap-weighted average effect rather than the ",
+        "full-population average partial effect.",
+        call. = FALSE
+      )
     }
-    ## unspecified case: no warning, nothing explicitly requested.
+    ## unspecified case: no warning/error, nothing explicitly requested.
   }
 
   need_z_var_global <- identical(target_linear, "all") &&
