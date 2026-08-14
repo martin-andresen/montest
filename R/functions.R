@@ -2456,13 +2456,9 @@ make_scores_vec <- function(Y,
     m <- as.numeric(Y.hat[ii])
     e <- as.numeric(Z.hat[ii])
     t <- as.numeric(tau[ii])
-    wt <- as.numeric(weight[ii])                                 # <-- new
+    wt <- as.numeric(weight[ii])
 
     w <- as.numeric(z > 0.5)
-
-    if (any(e < 0 | e > 1, na.rm = TRUE)) {
-      e <- plogis(e)
-    }
 
     if (!is.null(clip)) {
       e <- pmin(pmax(e, clip), 1 - clip)
