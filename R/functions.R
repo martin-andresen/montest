@@ -531,9 +531,9 @@ CART_test <- function(
     list(tree = tree, leaf_all = leaf_all)
   }
 
-  global_means_one_cell <- function(df_cell, key_dt) {
+  global_means_one_cell <- function(df_cell, key_dt , idx) {
     dtg <- data.table::data.table(
-      rowid  = idx_cell,
+      rowid  = idx,
       sample = as.integer(df_cell[[sample_col]]),
       score  = as.numeric(df_cell[[scores_col]]),
       w      = if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
@@ -552,7 +552,7 @@ CART_test <- function(
           idx = rowid,
           fe_expr = fe_expr,
           weight_col = weight_col,
-          cluster_vals = cl
+          cluster_vals = cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
         )$rank
       } else {
         0L
@@ -674,7 +674,7 @@ CART_test <- function(
               idx = rowid,
               fe_expr = fe_expr,
               weight_col = weight_col,
-              cluster_vals = cl
+              cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
             )$rank
           }
 
@@ -975,7 +975,7 @@ CART_test <- function(
         idx = idx_keep_all,
         fe_expr = fe_expr,
         weight_col = weight_col,
-        cluster_vals = cl
+        cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
       )$rank
     } else {
       0L
@@ -4064,7 +4064,7 @@ forest_test_core <- function(
         by = "sample",
         out = ".fe_rank_running",
         conservative = fe_rank_conservative,
-        cluster_vals = dt$cl.
+        cluster_vals = dt$cl
       )
     } else {
       dt[, .fe_rank_running := 0L]
@@ -4445,7 +4445,7 @@ forest_test_core <- function(
         idx = dt_test$rowid,
         fe_expr = fe_expr,
         weight_col = weight_col,
-        cluster_vals = clv[dt_test$rowid]
+        cluster_vals = clv
       )$rank
     } else {
       0L
@@ -4489,7 +4489,7 @@ forest_test_core <- function(
           idx = rowid,
           fe_expr = fe_expr,
           weight_col = weight_col,
-          cluster_vals = clv[dt_test$rowid]
+          cluster_vals = clv
         )$rank
       } else {
         0L
@@ -4588,7 +4588,7 @@ forest_test_core <- function(
               idx = rowid,
               fe_expr = fe_expr,
               weight_col = weight_col,
-              cluster_vals=cl
+              cluster_vals=clv
             )$rank
           } else {
             0L
@@ -4838,7 +4838,7 @@ global_means_crv1 <- function(
     }
 
   if (length(by_cols) == 0L) {
-    rank_adj <- rank_for_rows(dt_all$rowid,dt_all$cl)
+    rank_adj <- rank_for_rows(dt_all$rowid,clv)
 
     o <- crv1_mean_fun(
       score = dt_all$score,
@@ -4863,7 +4863,7 @@ global_means_crv1 <- function(
 
   } else {
     global_dt <- dt_all[, {
-      rank_adj <- rank_for_rows(rowid,cl)
+      rank_adj <- rank_for_rows(rowid,clv)
 
       o <- crv1_mean_fun(
         score = score,
