@@ -158,7 +158,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=FALSE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target="all",
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target=NULL,
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
 ){
@@ -169,7 +169,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   ################### 1 CHECK INPUT #####################
   data <- data.table::as.data.table(data.table::copy(data))
-  target=match.arg(target,c("all","overlap"))
+  target_explicit <- !is.null(target)
+  if (target_explicit) {
+    target <- match.arg(target, c("all", "overlap"))
+  }
 
   ##Check formula and validate
   v <- validate_iv(fml, data)
@@ -743,7 +746,63 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     data[, z_use_linear_score := TRUE]
   }
 
-  need_z_var_global <- identical(target, "all") &&
+  ## ------------------------------------------------------------
+  ## AIPW vs FWL score selection
+  ##
+  ##   - Rows on the linear/continuous-Z scoring path (z_is_linear_raw ==
+  ##     TRUE) always use FWL (target_linear = "overlap"): such a row, by
+  ##     definition, "contains Z" as linear, so it always falls into the
+  ##     "Otherwise, use FWL" branch below, regardless of parametric/FE/
+  ##     whether `target` was specified.
+  ##   - For rows NOT on the linear-Z path (binary Z rows):
+  ##       * If `target` was left unspecified (NULL), the effective default
+  ##         is "all" (AIPW) only when parametric = FALSE AND there are no
+  ##         FE; otherwise it defaults to "overlap" (FWL). No warning --
+  ##         nothing was explicitly requested and then overridden.
+  ##       * If `target` was explicitly set to "overlap", honor it as-is.
+  ##       * If `target` was explicitly set to "all", parametric is ignored
+  ##         (an explicit request for "all" is honored regardless of
+  ##         parametric) -- but linear Z / FE can still force an override to
+  ##         "overlap", with a warning.
+  ## ------------------------------------------------------------
+
+  any_linear_z <- any(data$z_is_linear_raw, na.rm = TRUE)
+
+  if (!target_explicit) {
+    ## target left unspecified: derive the effective default from the
+    ## other relevant parameters (your original rule 1, verbatim).
+
+    target_binary <- if (!isTRUE(parametric) && !has_FE) "all" else "overlap"
+    target_linear <- "overlap"
+
+  } else if (identical(target, "overlap")) {
+
+    target_binary <- "overlap"
+    target_linear <- "overlap"
+
+  } else {
+    ## target explicitly "all": parametric is ignored -- only linear Z / FE
+    ## can still force an override, with a warning.
+
+    target_binary <- if (!has_FE) "all" else "overlap"
+    target_linear <- "overlap"
+
+    reasons <- character()
+    if (any_linear_z) reasons <- c(reasons, "linear Z terms")
+    if (has_FE)        reasons <- c(reasons, "fixed effects")
+
+    if (length(reasons) > 0L) {
+      warning(
+        "target = \"all\" was requested, but ", paste(reasons, collapse = " and "),
+        " are present. FWL (\"overlap\") scores will be used instead for the ",
+        "affected rows, which targets the overlap-weighted average effect ",
+        "rather than the full-population average partial effect.",
+        call. = FALSE
+      )
+    }
+  }
+
+  need_z_var_global <- identical(target_linear, "all") &&
     any(data$z_use_linear_score == TRUE, na.rm = TRUE)
 
   need_z_var_rows <- if (need_z_var_global) {
@@ -1914,7 +1973,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       shrink = (shrink > 0),
       verbose = FALSE,
 
-      target = target,
+      target_binary = target_binary,
+      target_linear = target_linear,
       z_linear_score_name = "z_use_linear_score"
     )
   }
@@ -1946,7 +2006,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       shrink = (shrink > 0),
       verbose = FALSE,
 
-      target = target,
+      target_binary = target_binary,
+      target_linear = target_linear,
       z_linear_score_name = "z_use_linear_score"
     )
   }

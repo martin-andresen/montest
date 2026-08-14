@@ -2408,12 +2408,17 @@ make_scores_vec <- function(Y,
                             Z.hat,
                             tau = NULL,
                             target = c("all", "overlap"),
+                            target_binary=NULL,
+                            target_linear=NULL,
                             z_is_linear = FALSE,
                             Z.var.hat = NULL,
                             weight = NULL,                      # <-- new
                             clip = 1e-3,
                             var_floor = 1e-6) {
   target <- match.arg(target)
+
+  target_binary <- if (is.null(target_binary)) target else match.arg(target_binary, c("all", "overlap"))
+  target_linear <- if (is.null(target_linear)) target else match.arg(target_linear, c("all", "overlap"))
 
   n <- length(Y)
 
@@ -2432,7 +2437,7 @@ make_scores_vec <- function(Y,
   idx_binary <- which(!z_is_linear)
   idx_linear <- which(z_is_linear)
 
-  tau_needed <- length(idx_binary) > 0L || (target == "all" && length(idx_linear) > 0L)
+  tau_needed <- length(idx_binary) > 0L || (target_linear == "all" && length(idx_linear) > 0L)
 
   if (tau_needed && is.null(tau)) {
     stop("`tau` is required for binary Z rows and for target = 'all' with linear Z rows.",
@@ -2466,7 +2471,7 @@ make_scores_vec <- function(Y,
     m1 <- m + (1 - e) * t
     m0 <- m - e * t
 
-    if (target == "all") {
+    if (target_binary == "all") {
       score[ii] <-
         t +
         (w / e) * (y - m1) -
@@ -2496,7 +2501,7 @@ make_scores_vec <- function(Y,
     zres <- z - e
     yres <- y - m
 
-    if (target == "all") {
+    if (target _linear== "all") {
       if (is.null(Z.var.hat)) {
         stop("`Z.var.hat` is required for target = 'all' with continuous/linear Z.",
              call. = FALSE)
@@ -2595,9 +2600,14 @@ fit_models <- function(DT,
                        shrink = FALSE,
                        verbose = FALSE,
                        target = c("all", "overlap"),
+                       target_binary=NULL,
+                       target_linear=NULL,
                        z_linear_score_name = "z_use_linear_score") {
 
   target <- match.arg(target)
+  target_binary <- if (is.null(target_binary)) target else match.arg(target_binary, c("all", "overlap"))
+  target_linear <- if (is.null(target_linear)) target else match.arg(target_linear, c("all", "overlap"))
+
   stopifnot(data.table::is.data.table(DT))
   forest_type <- match.arg(forest_type)
 
@@ -2694,11 +2704,11 @@ fit_models <- function(DT,
     NULL
   }
 
-  if (do_scores && any(z_is_linear_all[i], na.rm = TRUE)) {
+  if (do_scores && target_linear == "all" && any(z_is_linear_all[i], na.rm = TRUE)) {
 
     if (is.null(zvar_all)) {
       stop(
-        "`zvar_name` is required for continuous/linear-score Z rows.",
+        "`zvar_name` is required for continuous/linear-score Z rows when target_linear = \"all\".",
         call. = FALSE
       )
     }
