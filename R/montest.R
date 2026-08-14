@@ -754,52 +754,55 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ##     definition, "contains Z" as linear, so it always falls into the
   ##     "Otherwise, use FWL" branch below, regardless of parametric/FE/
   ##     whether `target` was specified.
-  ##   - For rows NOT on the linear-Z path (binary Z rows):
-  ##       * If `target` was left unspecified (NULL), the effective default
-  ##         is "all" (AIPW) only when parametric = FALSE AND there are no
-  ##         FE; otherwise it defaults to "overlap" (FWL). No warning --
-  ##         nothing was explicitly requested and then overridden.
-  ##       * If `target` was explicitly set to "overlap", honor it as-is.
-  ##       * If `target` was explicitly set to "all", parametric is ignored
-  ##         (an explicit request for "all" is honored regardless of
-  ##         parametric) -- but linear Z / FE can still force an override to
-  ##         "overlap", with a warning.
+  ##   - For rows NOT on the linear-Z path (binary Z rows), target_binary is
+  ##     "all" (AIPW) iff parametric = FALSE AND there are no FE -- whether
+  ##     target was left unspecified or explicitly "all" makes no
+  ##     difference to this formula; it only affects whether a warning
+  ##     fires (see below).
+  ##       * If `target` was explicitly set to "overlap", honor it as-is --
+  ##         no warning (the user asked for exactly this).
+  ##   - Warning: fires ONLY when `target` was explicitly "all", whenever it
+  ##     ends up using "overlap" for any of: linear Z present, FE present,
+  ##     or parametric = TRUE. Never fires when target was left unspecified
+  ##     -- only an explicit, unmet request warrants a warning.
   ## ------------------------------------------------------------
 
   any_linear_z <- any(data$z_is_linear_raw, na.rm = TRUE)
 
-  if (!target_explicit) {
-    ## target left unspecified: derive the effective default from the
-    ## other relevant parameters (your original rule 1, verbatim).
-
-    target_binary <- if (!isTRUE(parametric) && !has_FE) "all" else "overlap"
-    target_linear <- "overlap"
-
-  } else if (identical(target, "overlap")) {
+  if (target_explicit && identical(target, "overlap")) {
+    ## Explicit request for overlap/FWL: honor as-is, nothing to warn about.
 
     target_binary <- "overlap"
     target_linear <- "overlap"
 
   } else {
-    ## target explicitly "all": parametric is ignored -- only linear Z / FE
-    ## can still force an override, with a warning.
+    ## target is either unspecified, or explicitly "all" -- same formula
+    ## either way.
 
-    target_binary <- if (!has_FE) "all" else "overlap"
+    target_binary <- if (!isTRUE(parametric) && !has_FE) "all" else "overlap"
     target_linear <- "overlap"
 
-    reasons <- character()
-    if (any_linear_z) reasons <- c(reasons, "linear Z terms")
-    if (has_FE)        reasons <- c(reasons, "fixed effects")
+    if (target_explicit) {
+      ## explicit "all": warn whenever any of the three factors diverted
+      ## this run from pure AIPW.
 
-    if (length(reasons) > 0L) {
-      warning(
-        "target = \"all\" was requested, but ", paste(reasons, collapse = " and "),
-        " are present. FWL (\"overlap\") scores will be used instead for the ",
-        "affected rows, which targets the overlap-weighted average effect ",
-        "rather than the full-population average partial effect.",
-        call. = FALSE
-      )
+      reasons <- character()
+      if (isTRUE(parametric)) reasons <- c(reasons, "parametric = TRUE")
+      if (has_FE)             reasons <- c(reasons, "fixed effects")
+      if (any_linear_z)       reasons <- c(reasons, "linear Z terms")
+
+      if (length(reasons) > 0L) {
+        warning(
+          "target = \"all\" was requested, but ", paste(reasons, collapse = " and "),
+          if (length(reasons) > 1L) " are present" else " is present",
+          ". FWL (\"overlap\") scores will be used for the affected rows ",
+          "instead of AIPW, which targets the overlap-weighted average ",
+          "effect rather than the full-population average partial effect.",
+          call. = FALSE
+        )
+      }
     }
+    ## unspecified case: no warning, nothing explicitly requested.
   }
 
   need_z_var_global <- identical(target_linear, "all") &&
