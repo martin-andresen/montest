@@ -21,42 +21,38 @@ devtools::install_github("martin-andresen/montest")
 
 ```r
 library(montest)
-data=fct_datasim(setup="A",dgp=2,n=3000)
+data <- fct_datasim(setup = "A", n = 3000, J = 1, K = 1)
+
+# fml is a fixest-style formula: Y ~ X | FE | D ~ Z
+# (the FE part is optional and can be omitted)
+fml <- Y ~ Xvar1 + Xvar2 + Xvar3 | D ~ Z
 
 # Simple monotonicity test
 out <- montest(
+   fml = fml,
    data = data,
-   D = "D",
-   Z = "Z",
-   X = c("Xvar1", "Xvar2", "Xvar3"),
-   test = "simple")
-   
-# Test multiple conditions, pooling evidence
- out2 <- montest(
-   data = data,
-   D = "D",
-   Z = "Z",
-   Y="Y",
-   X = c("Xvar1", "Xvar2", "Xvar3"),
-   test = c("simple","BP","MW"))
- }
+   condition = "simple")
 
-montestplot(out)
+# Test multiple conditions, pooling evidence
+out2 <- montest(
+   fml = fml,
+   data = data,
+   condition = c("simple", "KR", "MW"))
 ```
 
 ## Main functions
 
-- `montest()` ??? detects violations of monotonicity / LATE assumptions
-- `montestplot()` ??? visualizes results
+- `montest()` — detects violations of monotonicity / LATE assumptions
+- `montestplot()` — visualizes results (under active development, not yet finished)
 
 ## Status
 
 This is a research package under active development. Beware that with large data,
 estimation may be computationally heavy. Reduce computation time by reducing Dsubsets,
-Zsubsets, Ysubsets, using conditions that are simpler to test (e.g. test="simple" or 
-test="MW" rather than test="BP"), or reduce the number of inner folds.
+Zsubsets, Ysubsets, using conditions that are simpler to test (e.g. condition="simple" or 
+condition="MW" rather than condition="KR"), or reduce the number of inner folds.
 
-The package is developed as part of the paper "Testing the Monotonicity Assumption in Instrumental Variable Models", joint with Tymon S??oczy??ski and Martn Huber
+The package is developed as part of the paper "Testing the Monotonicity Assumption in Instrumental Variable Models", joint with Tymon Słoczyński and Martin Huber
 
 ## Author
 Martin Eckhoff Andresen, Department of Economics, University of Oslo

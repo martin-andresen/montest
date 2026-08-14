@@ -21,22 +21,29 @@ devtools::install_github("martin-andresen/montest")
 
 ```r
 library(montest)
+data <- fct_datasim(setup = "A", n = 3000, J = 1, K = 1)
 
+# fml is a fixest-style formula: Y ~ X | FE | D ~ Z
+# (the FE part is optional and can be omitted)
+fml <- Y ~ Xvar1 + Xvar2 + Xvar3 | D ~ Z
+
+# Simple monotonicity test
 out <- montest(
-  data = mydata,
-  D = "D",
-  Z = "Z",
-  X = c("x1", "x2"),
-  test = "simple"
-)
+   fml = fml,
+   data = data,
+   condition = "simple")
 
-montestplot(out$forest)
+# Test multiple conditions, pooling evidence
+out2 <- montest(
+   fml = fml,
+   data = data,
+   condition = c("simple", "KR", "MW"))
 ```
 
 ## Main functions
 
 - `montest()` — detects violations of monotonicity / LATE assumptions
-- `montestplot()` — visualizes results
+- `montestplot()` — visualizes results (under active development, not yet finished)
 
 ## Methodology
 
