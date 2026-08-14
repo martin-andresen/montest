@@ -2501,7 +2501,7 @@ make_scores_vec <- function(Y,
     zres <- z - e
     yres <- y - m
 
-    if (target _linear== "all") {
+    if (target_linear== "all") {
       if (is.null(Z.var.hat)) {
         stop("`Z.var.hat` is required for target = 'all' with continuous/linear Z.",
              call. = FALSE)
@@ -2708,7 +2708,7 @@ fit_models <- function(DT,
 
     if (is.null(zvar_all)) {
       stop(
-        "`zvar_name` is required for continuous/linear-score Z rows when target_linear = \"all\".",
+        "`zvar_name` is required for continuous/linear-score Z rows w hen target_linear = \"all\".",
         call. = FALSE
       )
     }
@@ -2989,6 +2989,8 @@ fit_models <- function(DT,
         Z.hat = what_all[idx1],
         tau = p1,
         target = target,
+        target_binary = target_binary,
+        target_linear = target_linear,
         z_is_linear = z_is_linear_all[idx1],
         Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx1] else NULL,
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],   # <-- new
@@ -3004,6 +3006,8 @@ fit_models <- function(DT,
         Z.hat = what_all[idx2],
         tau = p2,
         target = target,
+        target_binary = target_binary,
+        target_linear = target_linear,
         z_is_linear = z_is_linear_all[idx2],
         Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx2] else NULL,
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],   # <-- new
