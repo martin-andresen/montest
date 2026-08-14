@@ -742,7 +742,22 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   data[, z_is_linear_raw := z_is_linear]
   data[, z_use_linear_score := z_is_linear]
 
-  if (has_FE) {
+  ## Binary-Z rows are routed onto the linear/FWL scoring path (instead of
+  ## AIPW) whenever the propensity model behind Z.hat can't be trusted to
+  ## stay in [0,1]:
+  ##   - has_FE: small/unbalanced FE cells destabilize any propensity model.
+  ##   - parametric = TRUE: Z.hat comes from a linear probability model
+  ##     (feols_partial_out), which can produce fitted values outside [0,1]
+  ##     on its own, with no FE involved at all -- a standard LPM problem.
+  ##     Y.hat is also estimated via that same linear family in this case,
+  ##     so AIPW's usual "only one nuisance needs to be right" protection is
+  ##     weaker here too: a misspecification that breaks one nuisance is
+  ##     likely to break the other, since both share the same functional-
+  ##     form assumption.
+  ## FWL doesn't have either problem: it only uses Z.hat to residualize Z
+  ## (Z - Z.hat), never as a probability/weight, so an out-of-range value is
+  ## harmless there.
+  if (has_FE || isTRUE(parametric)) {
     data[, z_use_linear_score := TRUE]
   }
   ## ------------------------------------------------------------
@@ -756,20 +771,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ##     an inverse-propensity weight at all, so it isn't numerically
   ##     fragile the way the binary-Z AIPW formula is (see below) -- forcing
   ##     it away from AIPW is a warning, not an error.
-  ##   - For rows NOT on the linear-Z path (binary Z rows), target_binary is
-  ##     "all" (AIPW) iff parametric = FALSE AND there are no FE -- whether
-  ##     target was left unspecified or explicitly "all" makes no
-  ##     difference to this formula when it's allowed to resolve normally.
+  ##   - For rows NOT on the linear-Z path (binary Z rows): thanks to the
+  ##     z_use_linear_score override above, such a row can only still reach
+  ##     the AIPW branch when parametric = FALSE AND there are no FE -- in
+  ##     every other case it's already been routed onto FWL before
+  ##     target_binary is even consulted. target_binary is therefore always
+  ##     "all" whenever it actually matters (i.e. whenever any binary-Z rows
+  ##     remain unrouted); it's hardcoded below rather than re-deriving the
+  ##     same parametric/has_FE check a second time.
   ##   - Explicitly forcing target = "all" onto binary-Z rows when
-  ##     parametric = TRUE or FE are present is a hard error, not a warning:
-  ##     AIPW's 1/e, 1/(1-e) terms rely on Z.hat as a propensity, and
-  ##     parametric = TRUE estimates that propensity via a linear
-  ##     probability model, which can produce fitted values outside [0,1]
-  ##     even with no FE at all (a standard LPM problem) -- FE just makes it
-  ##     worse (small/unbalanced groups). The semiparametric/forest path
-  ##     doesn't have this issue (a regression forest predicting a 0/1
-  ##     outcome can't extrapolate past [0,1]), so this only bites
-  ##     parametric = TRUE.
+  ##     parametric = TRUE or FE are present is still a hard error, not a
+  ##     warning, even though the override above already prevents it from
+  ##     doing anything unsafe: an explicit, unmet request should fail
+  ##     loudly rather than silently substitute a different estimand.
   ##       * If `target` was explicitly set to "overlap", honor it as-is --
   ##         no warning, nothing to error on.
   ## ------------------------------------------------------------
@@ -803,7 +817,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       )
     }
 
-    target_binary <- if (!isTRUE(parametric) && !has_FE) "all" else "overlap"
+    ## Reachable only when parametric = FALSE and has_FE = FALSE -- see the
+    ## z_use_linear_score override above, which already routes binary-Z
+    ## rows onto FWL in every other case.
+    target_binary <- "all"
     target_linear <- "overlap"
 
     if (target_explicit && any_linear_z) {
