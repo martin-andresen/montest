@@ -1844,65 +1844,6 @@ validate_iv <- function(fml, data) {
   )
 }
 
-semiparametric_hat_stage <- function(DT,
-                                     y_tilde,
-                                     x_names,
-                                     out_sp_hat,
-                                     has_fe = FALSE,
-                                     by_nuis = NULL,
-                                     weight = NULL,
-                                     cluster = NULL,
-                                     folds = NULL,
-                                     crossfit_mode = "within",
-                                     forest_opts = list()) {
-  stopifnot(data.table::is.data.table(DT))
-  stopifnot(y_tilde %in% names(DT))
-
-  by_nuis <- unique(as.character(by_nuis %||% character()))
-  by_nuis <- by_nuis[by_nuis %in% names(DT)]
-
-  has_x <- !is.null(x_names) && length(x_names) > 0L
-
-  if (has_x) {
-    crossfit_hat(
-      DT,
-      i = i,
-      y_name = y_for_rf,
-      x_names = x_names,
-      folds = foldname,
-      sample_name = sample_var,
-      margins = by_nuis,
-      weight_name = weight,
-      mode = ifelse(
-        (!is.null(crossfit_label) &&
-           crossfit_label %in% crossfit &&
-           is.null(foldname)),
-        "across",
-        "within"
-      ),
-      forest_opts = forest_opts,
-      hat_suffix = ".sp_hat"
-    )
-
-    DT[, (out_sp_hat) := get(paste0(y_tilde, ".sp_hat"))]
-  } else if (has_fe) {
-    DT[, (out_sp_hat) := 0]
-  } else {
-    oos_mean_hat_by(
-      DT = DT,
-      y_name = y_tilde,
-      out_name = out_sp_hat,
-      by = by_nuis,
-      weight = weight,
-      cluster = cluster,
-      folds = folds
-    )
-  }
-
-  invisible(DT)
-}
-
-
 feols_partial_out <- function(DT,
                               y,
                               rhs_expr = quote(1),
@@ -2628,14 +2569,6 @@ fit_models <- function(DT,
       "before calling `fit_models()`.",
       call. = FALSE
     )
-  }
-
-  y_all <- as.numeric(DT[[y_name]])
-
-  if (forest_type == "causal") {
-    w_all    <- as.numeric(DT[[w_name]])
-    yhat_all <- as.numeric(DT[[y_hat]])
-    what_all <- as.numeric(DT[[w_hat]])
   }
 
   build_forest_idx <- function(type, idx, compute.oob.predictions = FALSE) {
@@ -3928,8 +3861,11 @@ forest_test_core <- function(
 
   cutoff_index <- function(pred_local, cutoff) {
     if (!is.finite(cutoff) || length(pred_local) == 0L) return(NA_integer_)
-    j <- which(pred_local >= cutoff)[1L]
-    if (length(j) == 0L) length(pred_local) else j
+    ## Check length() on the raw which() result, not which(...)[1L] --
+    ## indexing an empty match with [1L] turns integer(0) into NA_integer_
+    ## (length 1), which would make the length(j)==0L fallback unreachable.
+    j <- which(pred_local >= cutoff)
+    if (length(j) == 0L) length(pred_local) else j[1L]
   }
 
   if (length(cell_cols) == 0L) {

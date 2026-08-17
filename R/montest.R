@@ -26,15 +26,17 @@
 #'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted from the formula, only \code{"simple"} is allowed.
 #' @param target a scalar equal to either "all" (default) or "overlap" to determine whether the function should target the average treatment effect (all) in the relevant subsample, or the overlap-adjusted / weighted ATE ("overlap").
-#'   Applies uniformly to every condition, both instrument representations (binary or continuous), and both \code{doubly.robust} settings: it does not change the score formula itself, only the weight used when
-#'   aggregating scores into the final test statistic. These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X,
-#'   so \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. Under \code{doubly.robust=FALSE}, \code{"overlap"} coincides
-#'   exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient.
+#'   Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"} (not \code{"MW"}, whose own moment is untouched by \code{target} -- see \code{doubly.robust}), across both instrument representations (binary or
+#'   continuous). These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X, so
+#'   \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. When \code{doubly.robust=TRUE}, \code{target} changes only the
+#'   weight used when aggregating scores into the final test statistic, not the per-row score formula itself. When \code{doubly.robust=FALSE}, \code{target} additionally selects which conditional-variance
+#'   estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus a pooled/group-level estimate for \code{"overlap"}), so the per-row scores themselves differ between the two
+#'   settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient.
 #' @param doubly.robust Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
 #'   If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
 #'   \code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
 #'   but, unlike AIPW, offers no protection in the other direction. AIPW (\code{doubly.robust=TRUE}) is robust to
-#'   misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric} and \code{target}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
+#'   misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric}; see \code{target} for how the two interact when \code{doubly.robust=FALSE}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
 #'   \code{"MW"}, which does not use this scoring machinery.
 #' @param linearD Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 #'   instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
@@ -196,7 +198,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=TRUE,
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
-                 Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
+                 Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
 ){
 
   time=rbind(start=proc.time())
@@ -290,6 +292,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
+  if (testtype=="CART" && !is.null(gridpoints)) {
+    warning(
+      "`gridpoints` only applies to testtype = \"forest\"; it has no effect ",
+      "with testtype = \"CART\" and will be ignored.",
+      call. = FALSE
+    )
+  }
 
   if (!is.null(aipw.clip)) {
     stopifnot(
@@ -439,6 +448,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   J <- data.table::uniqueN(data[[D]])
   K <- data.table::uniqueN(data[[Z]])
+
+  ## J/K get reassigned below to post-binning bin counts (length(Dsup)/
+  ## length(Zsup)) once binarize_var() runs -- keep the TRUE support-point
+  ## counts around under different names for checks that must reflect the
+  ## original data, not how coarsely it happens to have been binned (e.g.
+  ## the MW binary-instrument/treatment guards further down).
+  J_true <- J
+  K_true <- K
 
   if (isTRUE(linearZ) && K <= 2L) {
     warning(
@@ -660,11 +677,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   n=nrow(data)
 
-  if (J>2&("MW" %in% condition)) stop("Multivalued treatment not supported with condition MW.")
-  if (K>2&("MW" %in% condition)) {
+  ## Use the TRUE support-point counts (J_true/K_true, captured before
+  ## binarize_var() overwrote J/K with post-binning bin counts) -- checking
+  ## the post-binning counts here would let e.g. Zsubsets=2 mask a genuinely
+  ## multivalued Z and defeat this guard entirely.
+  if (J_true>2&("MW" %in% condition)) stop("Multivalued treatment not supported with condition MW.")
+  if (K_true>2&("MW" %in% condition)) {
     stop(
       "condition = \"MW\" requires a genuinely binary instrument Z (K <= 2 ",
-      "support points in the data); Z has ", K, " here. Mourifie and Wan's ",
+      "support points in the data); Z has ", K_true, " here. Mourifie and Wan's ",
       "(2017) conditions are derived for a true binary instrument -- testing ",
       "them against an arbitrary margin/threshold cut of a multivalued Z ",
       "would not correspond to their theory. Use \"simple\", \"KR\", or ",
@@ -1086,9 +1107,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
     osmargins <- margins
 
+    ## Only KR is legitimately exempt here: it builds its margins from a
+    ## different, finer table (os_res$exact) that can still have non-trivial
+    ## rows even when os_res$threshold is entirely one-sided. MW builds its
+    ## margins directly from this same os_res$threshold table (see the MW
+    ## block below), so if this stop is skipped for MW and every threshold
+    ## cell is one-sided, MW's own idx_blocks ends up empty and the run
+    ## fails later with a confusing, unrelated error instead of this one.
     if (
       nrow(os_res$threshold[one_sided == FALSE]) == 0 &&
-      !any(condition %in% c("KR", "MW"))
+      !("KR" %in% condition)
     ) {
       stop(
         "One-sided noncompliance for all margins of Z and D - ",
@@ -1353,6 +1381,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   # MW
   if ("MW" %in% condition) {
+    ## MW+FE is disallowed by the has_FE/"MW" %in% condition guard earlier
+    ## in this function, so os_res is guaranteed to have been computed by
+    ## the time this code runs -- check explicitly rather than relying on
+    ## that guard staying in sync with this code across future edits (unlike
+    ## simple/AHS/KR, MW has no has_FE fallback of its own, since it can
+    ## never legitimately reach this point with has_FE = TRUE).
+    if (has_FE || !exists("os_res")) {
+      stop(
+        "Internal error: MW margin rows require `os_res`, but it was not ",
+        "computed (has_FE should have been disallowed for condition = \"MW\" ",
+        "earlier).",
+        call. = FALSE
+      )
+    }
+
     tmp <- os_res$threshold[one_sided == FALSE]
 
     keep <- intersect(c("zmargin", "dmargin", "direction"), names(tmp))
@@ -1394,6 +1437,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
     if ("direction" %in% names(tmp)) {
       tmp[, direction := NULL]
+    }
+
+    ## os_res$threshold[one_sided==FALSE] can be empty when every margin
+    ## exhibits one-sided noncompliance, even though the top-level "all
+    ## conditions trivially satisfied" stop above is skipped whenever KR is
+    ## also requested (KR has its own, finer-grained escape hatch via
+    ## os_res$exact that MW doesn't share). Catch that case explicitly here
+    ## instead of silently producing a 0-row MW block that turns into
+    ## NA-filled `condition` rows downstream via the margin_index join.
+    if (nrow(tmp) == 0L) {
+      stop(
+        "One-sided noncompliance for all margins of Z and D - ",
+        "condition = \"MW\" is trivially satisfied and there is nothing to test.",
+        call. = FALSE
+      )
     }
 
     idx_blocks[["MW"]] <- tmp

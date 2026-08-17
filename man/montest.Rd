@@ -49,7 +49,6 @@ montest(
   Zparameters = list(),
   Yparameters = list(),
   Qparameters = list(),
-  Dparameters = list(),
   Cparameters = list()
 )
 }
@@ -144,16 +143,18 @@ multivalued Z rather than cut-and-stack. Only meaningful for \code{"simple"} and
 with them. Downgraded to FALSE with a warning if Z is binary in the data.}
 
 \item{target}{a scalar equal to either "all" (default) or "overlap" to determine whether the function should target the average treatment effect (all) in the relevant subsample, or the overlap-adjusted / weighted ATE ("overlap").
-Applies uniformly to every condition, both instrument representations (binary or continuous), and both \code{doubly.robust} settings: it does not change the score formula itself, only the weight used when
-aggregating scores into the final test statistic. These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X,
-so \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. Under \code{doubly.robust=FALSE}, \code{"overlap"} coincides
-exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient.}
+Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"} (not \code{"MW"}, whose own moment is untouched by \code{target} -- see \code{doubly.robust}), across both instrument representations (binary or
+continuous). These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X, so
+\code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. When \code{doubly.robust=TRUE}, \code{target} changes only the
+weight used when aggregating scores into the final test statistic, not the per-row score formula itself. When \code{doubly.robust=FALSE}, \code{target} additionally selects which conditional-variance
+estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus a pooled/group-level estimate for \code{"overlap"}), so the per-row scores themselves differ between the two
+settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient.}
 
 \item{doubly.robust}{Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
 If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
 \code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
 but, unlike AIPW, offers no protection in the other direction. AIPW (\code{doubly.robust=TRUE}) is robust to
-misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric} and \code{target}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
+misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric}; see \code{target} for how the two interact when \code{doubly.robust=FALSE}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
 \code{"MW"}, which does not use this scoring machinery.}
 
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
@@ -211,8 +212,7 @@ The rough steps of the montest algorithm is as follows
   \item Continuous or multivalued instruments, treatments and outcomes discretized into bins.
   \item The data is stacked across instrument margins, treatment margins, outcomes,
   equations, and test conditions. The outcome variable Q is defined, depending on condition and margins.
-  \item Nuisance functions for as \code{Z.hat}, and the outcome \code{Q.hat} are estimated and outcomes are residualized
-  using regression forests within margins.
+  \item Nuisance functions for as \code{Z.hat}, and the outcome \code{Q.hat} are estimated
   \item Separate causal forests of the outcome \code{Q}, on
   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
   treatment effects are predicted in and out of sample and scores constructed
@@ -221,11 +221,11 @@ The rough steps of the montest algorithm is as follows
   in predicted treatment effects. Select the cutoff with the smallest t-statistic on the mean of scores
   Alternatively, subset selection can be done using a CART algorithm.
   \item Depending on the choices in \code{select}, promising subsets (using selection rules in \code{screen}) are evaluated  in the opposite sample half. If performing multiple tests,
-  depending on the option \code{pool}, p-values are adjusted for multiple testing.
+  depending on the option \code{pool} and \code{select}, p-values are adjusted for multiple testing.
 }
 
-\code{montest} supports weights and clustering, and allow for multivalued treatments and instruments
-by binarizing instruments and treatments into quantile or equisized bins. The command also tests for
+\code{montest} supports weights, clustering, and fixed effects and allow for multivalued treatments and instruments
+by binarizing instruments and treatments into quantile or equisized bins or treating them continuously. The command also tests for
 one-sided monotonicity (within margins of the treatment and instrument) and if found, warns the user
 and skips testing any trivially satisfied conditions.
 
