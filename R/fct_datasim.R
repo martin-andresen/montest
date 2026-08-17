@@ -3,7 +3,7 @@
 ##
 ## Convention:
 ##   J = number of treatment thresholds, so D in {0, ..., J}
-##   K = number of instrument margins, so Z in {0, ..., K}
+##   K = number of instrument margins, so Z in {0, ..., Kop}
 ##   mono_bad has columns:
 ##     j = treatment margin D >= j
 ##     k = instrument margin Z: k - 1 -> k

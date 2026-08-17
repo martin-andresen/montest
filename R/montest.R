@@ -19,18 +19,42 @@
 #' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
 #' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or (the default) using semiparametric methods. In the latter case,
 #' all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
+#' \code{parametric} governs nuisance estimation only: it no longer influences whether the instrument is scored on its binary or continuous representation (see \code{linearZ}), which is fully decoupled from it.
+#' Nuisance fragility that can arise under \code{parametric=TRUE} (e.g. a linear-probability-model propensity falling outside \eqn{[0,1]}) is caught at score-construction time by the validity checks
+#' described under \code{aipw.clip}, rather than by rerouting the representation.
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
 #'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted, only \code{"simple"} is allowed.
-#' @param target a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). Only applies to binary Z; linear Z (see \code{linearZ}) always targets the overlap-weighted / residualized-slope estimand.
-#' @param linearD Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale for
-#'   condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized.
-#'   Has no effect on \code{"KR"}/\code{"MW"}, which always use the binarized representation. Downgraded to FALSE
-#'   with a warning if D is binary in the data.
-#' @param linearZ Logical, default FALSE. If TRUE, the instrument Z is scored on its raw/linear scale for
-#'   condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized,
-#'   and always uses FWL-style scores regardless of \code{target}. Has no effect on \code{"KR"}/\code{"MW"}, which
-#'   always use the binarized representation. Downgraded to FALSE with a warning if Z is binary in the data.
+#' @param target a scalar equal to either "all" or "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap").
+#'   Applies uniformly to every condition, both instrument representations (binary or continuous), and both \code{doubly.robust} settings: it does not change the score formula itself, only the weight used when
+#'   aggregating scores into the final test statistic (\code{"overlap"} reweights by the per-observation conditional variance of the instrument; \code{"all"} does not). These are genuinely different
+#'   estimands whenever the underlying effect is heterogeneous in X (which is exactly what this package searches for): each row's score has conditional expectation equal to the *local* effect at that row's X,
+#'   so \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. Under \code{doubly.robust=FALSE}, \code{"overlap"} coincides
+#'   exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient (covariance over variance of the residualized instrument and pseudo-outcome, pooled across observations); \code{"all"} does
+#'   not, and only agrees with it when the local effect is constant across X.
+#' @param doubly.robust Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moment, augmenting the residual term with the causal forest's predicted CATE.
+#'   If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment, with no CATE augmentation. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
+#'   \code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
+#'   but, unlike AIPW, offers no protection in the other direction: a misspecified \code{Z.hat} biases the estimate even when \code{Q.hat} is exactly right. AIPW (\code{doubly.robust=TRUE}) is robust to
+#'   misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric} and \code{target}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
+#'   \code{"MW"}, which does not use this scoring machinery.
+#' @param linearD Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
+#'   instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
+#'   multivalued D rather than cut-and-stack. Only meaningful for \code{"simple"}/\code{"AHS"}, whose moment
+#'   conditions support a slope-based representation; \code{"KR"}/\code{"MW"} are always indicator-based and
+#'   always use the binarized representation, so \code{linearD = TRUE} is disallowed in combination with them
+#'   (an error, not a silent no-op) -- drop \code{"KR"}/\code{"MW"} from \code{condition} instead. Downgraded to
+#'   FALSE with a warning if D is binary in the data (no meaningful linear scoring in that case).
+#' @param linearZ Logical, default FALSE. If TRUE, the instrument Z is scored on its raw/linear scale
+#'   instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
+#'   multivalued Z rather than cut-and-stack. Only meaningful for \code{"simple"}/\code{"AHS"}; \code{"KR"}/
+#'   \code{"MW"} always use the binarized representation, so \code{linearZ = TRUE} is disallowed in combination
+#'   with them (an error, not a silent no-op) -- drop \code{"KR"}/\code{"MW"} from \code{condition} instead.
+#'   Downgraded to FALSE with a warning if Z is binary in the data. Together with the presence of fixed effects
+#'   in \code{fml}, this determines the instrument's representation (binary vs. continuous) for scoring; see
+#'   \code{doubly.robust} for the independent choice of score family. \code{condition = "MW"} separately requires
+#'   Z to be genuinely binary in the data and requires \code{fml} to have no fixed effects, regardless of
+#'   \code{linearZ} -- see Details.
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
@@ -39,6 +63,10 @@
 #'   normalized after estimation.
 #' @param aipw.clip Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
+#'   Also used, for continuous-instrument rows, to floor the fitted conditional-variance nuisance \eqn{v(X)} at
+#'   \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
+#'   outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
+#'   that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing cannot be combined with cluster.
@@ -112,8 +140,13 @@
 #'   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
 #'   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
 #'   There are a total of (J-1)(K-1) such conditions.
-#'   \item \code{condition = "MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
-#'   and exclusion conditional on instrument validity. This is only allowed for a binary treatment. There are a total of 2K such conditions.
+#'   \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
+#'   and exclusion conditional on instrument validity. This is only allowed for a binary treatment and a genuinely
+#'   binary instrument (Z with at most 2 support points in the data -- an arbitrary margin/threshold cut of a
+#'   multivalued Z does not correspond to their theory), and \code{fml} may not include fixed effects (MW's Q
+#'   statistic uses Z.hat directly as a propensity weight with no AIPW/FWL orthogonalization protecting it).
+#'   \code{linearZ}/\code{linearD} are disallowed in combination with \code{"MW"} for the same reason: its moment
+#'   conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
 #' }
 #'
 #'
@@ -167,6 +200,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=FALSE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
+                 doubly.robust=TRUE,
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
 ){
@@ -177,10 +211,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   ################### 1 CHECK INPUT #####################
   data <- data.table::as.data.table(data.table::copy(data))
-  target_explicit <- !is.null(target)
-  if (target_explicit) {
-    target <- match.arg(target, c("all", "overlap"))
-  }
+  target <- if (is.null(target)) "all" else match.arg(target, c("all", "overlap"))
 
   ##Check formula and validate
   v <- validate_iv(fml, data)
@@ -248,7 +279,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     "linearD must be a single non-missing logical" =
       is.logical(linearD) && length(linearD) == 1L && !is.na(linearD),
     "linearZ must be a single non-missing logical" =
-      is.logical(linearZ) && length(linearZ) == 1L && !is.na(linearZ)
+      is.logical(linearZ) && length(linearZ) == 1L && !is.na(linearZ),
+    "doubly.robust must be a single non-missing logical" =
+      is.logical(doubly.robust) && length(doubly.robust) == 1L && !is.na(doubly.robust)
   )
   screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
@@ -296,6 +329,29 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     }
   }
 
+  ## linearD/linearZ have no meaning for KR/MW -- their moment conditions are
+  ## indicator-based, not slope-based, so they always use the margin/
+  ## binarized representation regardless. Rather than silently ignoring an
+  ## explicit linearD/linearZ = TRUE request for those conditions, fail
+  ## loudly: an unmet explicit request should error, not be a no-op.
+  if (isTRUE(linearD) && any(c("KR", "MW") %in% condition)) {
+    stop(
+      "linearD = TRUE has no effect for condition \"KR\"/\"MW\" (they always ",
+      "use the binarized representation of D) and is disallowed in ",
+      "combination with them. Drop \"KR\"/\"MW\" from `condition`, or set ",
+      "linearD = FALSE.",
+      call. = FALSE
+    )
+  }
+  if (isTRUE(linearZ) && any(c("KR", "MW") %in% condition)) {
+    stop(
+      "linearZ = TRUE has no effect for condition \"KR\"/\"MW\" (they always ",
+      "use the binarized representation of Z) and is disallowed in ",
+      "combination with them. Drop \"KR\"/\"MW\" from `condition`, or set ",
+      "linearZ = FALSE.",
+      call. = FALSE
+    )
+  }
 
   check_integer_gt1 <- function(x, name) {
     if (!is.numeric(x) ||
@@ -611,6 +667,28 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   n=nrow(data)
 
   if (J>2&("MW" %in% condition)) stop("Multivalued treatment not supported with condition MW.")
+  if (K>2&("MW" %in% condition)) {
+    stop(
+      "condition = \"MW\" requires a genuinely binary instrument Z (K <= 2 ",
+      "support points in the data); Z has ", K, " here. Mourifie and Wan's ",
+      "(2017) conditions are derived for a true binary instrument -- testing ",
+      "them against an arbitrary margin/threshold cut of a multivalued Z ",
+      "would not correspond to their theory. Use \"simple\", \"KR\", or ",
+      "\"AHS\" for a multivalued instrument.",
+      call. = FALSE
+    )
+  }
+  if (has_FE&("MW" %in% condition)) {
+    stop(
+      "condition = \"MW\" does not support fixed effects in `fml`. MW's Q ",
+      "statistic uses Z.hat directly as a propensity weight with no AIPW/FWL ",
+      "orthogonalization; with FE present, Z.hat is unreliable in exactly ",
+      "the way that machinery exists to protect against for the other ",
+      "conditions. Drop the FE term from `fml`, or use \"simple\", \"KR\", ",
+      "or \"AHS\" instead.",
+      call. = FALSE
+    )
+  }
   if (J==2&K==2&is.null(X)==TRUE&!any(condition %in% c("AHS","MW","KR"))) {
     stop("Nothing to test with a binary treatment, a binary instrument, the simple first stage condition and no variables in X.")
   }
@@ -760,82 +838,20 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   data[, z_is_linear_raw := z_is_linear]
   data[, z_use_linear_score := z_is_linear]
 
-  ## Binary-Z rows are routed onto the linear/FWL scoring path (instead of
-  ## AIPW) whenever the propensity model behind Z.hat can't be trusted to
-  ## stay in [0,1]:
-  ##   - has_FE: small/unbalanced FE cells destabilize any propensity model.
-  ##   - parametric = TRUE: Z.hat comes from a linear probability model
-  ##     (feols_partial_out), which can produce fitted values outside [0,1]
-  ##     on its own, with no FE involved at all -- a standard LPM problem.
-  ##     Y.hat is also estimated via that same linear family in this case,
-  ##     so AIPW's usual "only one nuisance needs to be right" protection is
-  ##     weaker here too: a misspecification that breaks one nuisance is
-  ##     likely to break the other, since both share the same functional-
-  ##     form assumption.
-  ## FWL doesn't have either problem: it only uses Z.hat to residualize Z
-  ## (Z - Z.hat), never as a probability/weight, so an out-of-range value is
-  ## harmless there.
-  if (has_FE || isTRUE(parametric)) {
+  ## Continuous-Z rows (FWL, or AIPW with a fitted variance nuisance) are
+  ## chosen whenever:
+  ##   - has_FE: small/unbalanced FE cells make the closed-form binary
+  ##     representation (v = e*(1-e)) less trustworthy, or
+  ##   - linearZ = TRUE: the user explicitly asked for Z on its raw/linear
+  ##     scale (see `linearZ` docs).
+  ## `parametric` is deliberately NOT a trigger here: nuisance fragility
+  ## (e.g. an LPM-based Z.hat falling outside [0,1]) is instead caught by
+  ## `validate_and_clip()` at score-construction time, fully decoupling the
+  ## parametric/semiparametric choice from the binary/continuous
+  ## representation choice. `doubly.robust` (AIPW vs. FWL) is likewise an
+  ## independent choice -- see the `fit_models()` calls below.
+  if (has_FE || isTRUE(linearZ)) {
     data[, z_use_linear_score := TRUE]
-  }
-  ## ------------------------------------------------------------
-  ## AIPW vs FWL score selection
-  ##
-  ##   - Rows on the linear/continuous-Z scoring path (z_is_linear_raw ==
-  ##     TRUE) always use FWL: `target` has no effect on Z-scoring for
-  ##     linear-Z rows at all (see `linearZ` docs). That formula doesn't use
-  ##     Z.hat as an inverse-propensity weight, so it isn't numerically
-  ##     fragile the way the binary-Z AIPW formula is (see below).
-  ##   - For rows NOT on the linear-Z path (binary Z rows): thanks to the
-  ##     z_use_linear_score override above, such a row can only still reach
-  ##     the AIPW branch when parametric = FALSE AND there are no FE -- in
-  ##     every other case it's already been routed onto FWL before
-  ##     target_binary is even consulted. target_binary is therefore always
-  ##     "all" whenever it actually matters (i.e. whenever any binary-Z rows
-  ##     remain unrouted); it's hardcoded below rather than re-deriving the
-  ##     same parametric/has_FE check a second time.
-  ##   - Explicitly forcing target = "all" onto binary-Z rows when
-  ##     parametric = TRUE or FE are present is still a hard error, not a
-  ##     warning, even though the override above already prevents it from
-  ##     doing anything unsafe: an explicit, unmet request should fail
-  ##     loudly rather than silently substitute a different estimand.
-  ##       * If `target` was explicitly set to "overlap", honor it as-is --
-  ##         no warning, nothing to error on.
-  ## ------------------------------------------------------------
-
-  any_binary_z  <- any(!data$z_is_linear_raw, na.rm = TRUE)
-
-  if (target_explicit && identical(target, "overlap")) {
-    ## Explicit request for overlap/FWL: honor as-is, nothing to warn/error about.
-
-    target_binary <- "overlap"
-
-  } else {
-    ## target is either unspecified, or explicitly "all".
-
-    if (target_explicit && any_binary_z && (isTRUE(parametric) || has_FE)) {
-      fragile_reasons <- character()
-      if (isTRUE(parametric)) fragile_reasons <- c(fragile_reasons, "parametric = TRUE")
-      if (has_FE)             fragile_reasons <- c(fragile_reasons, "fixed effects")
-
-      stop(
-        "target = \"all\" was requested, but ", paste(fragile_reasons, collapse = " and "),
-        if (length(fragile_reasons) > 1L) " are present" else " is present",
-        " for binary-Z rows. AIPW (\"all\") relies on Z.hat as an inverse-",
-        "propensity weight, which is numerically fragile here: with ",
-        "parametric = TRUE, Z.hat comes from a linear probability model and ",
-        "can fall outside [0,1] even without FE; FE makes this worse via ",
-        "small/unbalanced groups. Use target = \"overlap\" instead.",
-        call. = FALSE
-      )
-    }
-
-    ## Reachable only when parametric = FALSE and has_FE = FALSE -- see the
-    ## z_use_linear_score override above, which already routes binary-Z
-    ## rows onto FWL in every other case.
-    target_binary <- "all"
-    ## unspecified case, or explicit "all" with no fragile binary-Z rows:
-    ## no warning/error, nothing explicitly requested (or nothing unsafe).
   }
 
   ## ----------------------
@@ -927,6 +943,80 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       z_is_linear_raw != TRUE,
       (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
     ]
+  }
+
+  ## ---------------------------------------------------------------------
+  ## Conditional-variance nuisance v(X) = Var(Z|X), needed by continuous-Z
+  ## rows. Binary-Z rows never need this: v = Z.hat*(1-Z.hat) is available
+  ## in closed form inside make_scores_vec(). A genuine per-observation fit
+  ## is needed only when doubly.robust = TRUE (the AIPW orthogonality
+  ## argument requires a genuinely local v(X)) or target == "all" (a
+  ## constant v would silently collapse "all" and "overlap" into the same
+  ## estimand, since dividing every row by the same number doesn't change
+  ## relative weighting). Otherwise (doubly.robust = FALSE & target ==
+  ## "overlap") fall back to the pooled empirical variance of (Z - Z.hat)
+  ## per group -- exactly what classical FWL/OLS already uses, no new model
+  ## needed, and more faithful to that classical estimand than a smoothed
+  ## model would be.
+  ## ---------------------------------------------------------------------
+
+  zvarhat <- paste0(Z, ".var.hat")
+  z_use_lin_any <- any(data$z_use_linear_score, na.rm = TRUE)
+  need_v_hat <- z_use_lin_any &&
+    (isTRUE(doubly.robust) || identical(target, "all"))
+
+  if (z_use_lin_any) {
+    ## `data[[Z]]`/`data[[zhat]]` (plain `[[`, evaluated here, not inside a
+    ## `data[i, j]` call) sidestep data.table's column-name masking of `j` --
+    ## masking would otherwise silently resolve the bare symbol `Z` to the
+    ## *column* named "Z" instead of the R variable holding that name,
+    ## whenever the instrument column happens to literally be called "Z".
+    z_resid_sq <- paste0(Z, "__resid_sq__")
+    z_vals <- data[[Z]]
+    zhat_vals <- data[[zhat]]
+    data[, (z_resid_sq) := (z_vals - zhat_vals)^2]
+  }
+
+  if (need_v_hat) {
+    estimate_conditional_mean(
+      DT = data,
+      y_name = z_resid_sq,
+      x_expr = X_expr_Z,
+      fe_expr = FE_expr,
+      out_hat = zvarhat,
+      by = margins,
+      sample_var = "sample",
+      weight = weight,
+      cluster = cluster,
+      parametric = parametric,
+      foldname = foldname,
+      crossfit = crossfit,
+      crossfit_label = "Z",
+      forest_opts = Zparameters,
+      fixest_opts = Zparameters,
+      x_names = Z_hat_info$x_names,
+      x_prefix = "__xzv",
+      keep_x = FALSE,
+      return_residual = FALSE,
+      partial_out_y_fe = TRUE
+    )
+
+    data[, (z_resid_sq) := NULL]
+
+  } else if (z_use_lin_any) {
+    by_pool <- unique(c("sample", margins))
+    wt_vals <- if (is.null(weight)) rep(1, nrow(data)) else data[[weight]]
+    wtmp_col <- ".__wtmp__"
+    data[, (wtmp_col) := wt_vals]
+
+    data[
+      z_use_linear_score == TRUE,
+      (zvarhat) := stats::weighted.mean(get(z_resid_sq), w = get(wtmp_col), na.rm = TRUE),
+      by = by_pool
+    ]
+
+    data[, (z_resid_sq) := NULL]
+    data[, (wtmp_col) := NULL]
   }
 
   ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
@@ -1617,6 +1707,20 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     stopifnot(zhat %in% names(data))
     stopifnot("equation" %in% names(data))
 
+    ## MW's Q statistic uses Z.hat directly as a propensity weight, with no
+    ## other route through make_scores_vec()'s AIPW-branch clip/validation
+    ## (simple/KR/AHS get that protection; MW previously had none at all).
+    ## Apply the same hard-stop/clip-and-warn helper here.
+    data[
+      condition == "MW",
+      (zhat) := validate_and_clip(
+        get(zhat),
+        hard_lower = 0, hard_upper = 1,
+        floor = aipw.clip, ceiling = 1 - aipw.clip,
+        label = "propensity e(X) for MW rows"
+      )
+    ]
+
     data[
       condition == "MW",
       Q := equation * (
@@ -1920,7 +2024,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       shrink = (shrink > 0),
       verbose = FALSE,
 
-      target_binary = target_binary,
+      doubly.robust = doubly.robust,
       z_linear_score_name = "z_use_linear_score"
     )
   }
@@ -1951,7 +2055,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       shrink = (shrink > 0),
       verbose = FALSE,
 
-      target_binary = target_binary,
+      doubly.robust = doubly.robust,
       z_linear_score_name = "z_use_linear_score"
     )
   }
@@ -1980,6 +2084,26 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     }
   }
 
+  ## ------------------------------------------------------------
+  ## Target-weighting: `target` no longer changes the score formula (see
+  ## make_scores_vec()) -- it only changes the weight fed into the final
+  ## forest_test()/CART_test() moment. target == "overlap" reweights by the
+  ## per-row conditional variance `scores_v` (attached by fit_models() for
+  ## simple/KR/AHS); target == "all" leaves the weight untouched. MW is
+  ## deliberately excluded -- it was never touched by `target` even before
+  ## this refactor (its own plug-in moment doesn't go through
+  ## make_scores_vec() at all).
+  ## ------------------------------------------------------------
+
+  data[, w_eff := if (is.null(weight)) 1 else get(weight)]
+
+  if (identical(target, "overlap") && "scores_v" %in% names(data)) {
+    data[
+      condition %in% c("simple", "KR", "AHS"),
+      w_eff := w_eff * scores_v
+    ]
+  }
+
 
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
@@ -2004,8 +2128,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight=weight,minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight=weight,cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative)
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())

@@ -2355,21 +2355,67 @@ make_X_residualized_from_FE <- function(DT,
   )
 }
 
+## Validate a nuisance quantity used as a denominator/probability, then clip.
+## Hard-stops on structurally invalid values (propensity outside [0,1],
+## variance below 0) since these indicate nuisance misspecification that
+## should fail loudly rather than be silently patched; clips the rest to
+## [floor, ceiling] and warns if clipping occurred.
+validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
+                              hard_lower = NULL, hard_upper = NULL,
+                              label = "value") {
+  if (!is.null(hard_lower)) {
+    bad <- is.finite(x) & x < hard_lower
+    if (any(bad, na.rm = TRUE)) {
+      stop(sprintf(
+        "%s: %d value(s) below %g -- likely a nuisance misspecification.",
+        label, sum(bad, na.rm = TRUE), hard_lower
+      ), call. = FALSE)
+    }
+  }
+  if (!is.null(hard_upper)) {
+    bad <- is.finite(x) & x > hard_upper
+    if (any(bad, na.rm = TRUE)) {
+      stop(sprintf(
+        "%s: %d value(s) above %g -- likely a nuisance misspecification.",
+        label, sum(bad, na.rm = TRUE), hard_upper
+      ), call. = FALSE)
+    }
+  }
+
+  out <- x
+  if (!is.null(floor))   out <- pmax(out, floor)
+  if (!is.null(ceiling)) out <- pmin(out, ceiling)
+
+  if (any(out != x, na.rm = TRUE)) {
+    warning(sprintf(
+      "%s: clipped %d value(s).", label, sum(out != x, na.rm = TRUE)
+    ), call. = FALSE)
+  }
+
+  out
+}
+
 ##SCORES computation
-## Linear-Z rows always use the FWL/"overlap" score (no target-driven
-## choice) -- see `linearZ` in montest()'s docs. `target_binary` still
-## selects between the AIPW ("all") and overlap-weighted binary-Z formulas.
+## Unified doubly-robust/FWL score:
+##   score_i = t_i + (W_i-e_i)/v_i * [Y_i - m_i - t_i*(W_i-e_i)]
+## `doubly.robust = FALSE` sets t_i := 0, which algebraically collapses this
+## to the FWL/partialling-out score (W_i-e_i)(Y_i-m_i)/v_i. Binary-Z rows use
+## the closed-form v_i = e_i*(1-e_i); continuous-Z rows require a supplied
+## `Z.var.hat` (which may itself be a fitted per-row nuisance, or a group-
+## pooled scalar broadcast across rows -- montest() decides which; this
+## function doesn't need to know). `target` no longer changes this formula
+## at all -- see `montest()`'s `w_eff` construction, which instead reweights
+## by the returned `v` when `target == "overlap"`.
 make_scores_vec <- function(Y,
                             Z,
                             Y.hat,
                             Z.hat,
+                            Z.var.hat = NULL,
                             tau = NULL,
-                            target_binary = c("all", "overlap"),
+                            doubly.robust = TRUE,
                             z_is_linear = FALSE,
                             weight = NULL,
                             clip = 1e-3) {
-  target_binary <- match.arg(target_binary)
-
   n <- length(Y)
 
   if (length(z_is_linear) == 1L) {
@@ -2382,77 +2428,61 @@ make_scores_vec <- function(Y,
     stop("`weight` must have length equal to `Y`.", call. = FALSE)
   }
 
-  score <- rep(NA_real_, n)
-
   idx_binary <- which(!z_is_linear)
   idx_linear <- which(z_is_linear)
 
-  if (length(idx_binary) > 0L && is.null(tau)) {
-    stop("`tau` is required for binary Z rows.", call. = FALSE)
+  if (isTRUE(doubly.robust) && is.null(tau)) {
+    stop("`tau` is required when `doubly.robust = TRUE`.", call. = FALSE)
   }
-
   if (!is.null(tau) && length(tau) != n) {
     stop("`tau` must have length equal to `Y`.", call. = FALSE)
   }
+  if (length(idx_linear) > 0L && is.null(Z.var.hat)) {
+    stop("`Z.var.hat` is required when continuous-Z (linear) rows are present.",
+         call. = FALSE)
+  }
+
+  y  <- as.numeric(Y)
+  z  <- as.numeric(Z)
+  m  <- as.numeric(Y.hat)
+  e  <- as.numeric(Z.hat)
+  wt <- as.numeric(weight)
+  t  <- if (isTRUE(doubly.robust)) as.numeric(tau) else rep(0, n)
+
+  w_use <- z
+  v <- rep(NA_real_, n)
 
   if (length(idx_binary)) {
     ii <- idx_binary
+    w_use[ii] <- as.numeric(z[ii] > 0.5)
 
-    y <- as.numeric(Y[ii])
-    z <- as.numeric(Z[ii])
-    m <- as.numeric(Y.hat[ii])
-    e <- as.numeric(Z.hat[ii])
-    t <- as.numeric(tau[ii])
-    wt <- as.numeric(weight[ii])
-
-    w <- as.numeric(z > 0.5)
-
-    if (!is.null(clip)) {
-      e <- pmin(pmax(e, clip), 1 - clip)
-    }
-
-    m1 <- m + (1 - e) * t
-    m0 <- m - e * t
-
-    if (target_binary == "all") {
-      score[ii] <-
-        t +
-        (w / e) * (y - m1) -
-        ((1 - w) / (1 - e)) * (y - m0)
-    } else {
-      h <- e * (1 - e)
-      hbar <- stats::weighted.mean(h, w = wt, na.rm = TRUE)
-
-      score[ii] <-
-        (
-          h * t +
-            (1 - e) * w * (y - m1) -
-            e * (1 - w) * (y - m0)
-        ) / hbar
-    }
+    e[ii] <- validate_and_clip(
+      e[ii],
+      hard_lower = 0, hard_upper = 1,
+      floor = clip, ceiling = if (!is.null(clip)) 1 - clip else NULL,
+      label = "propensity e(X) for binary-Z rows"
+    )
+    v[ii] <- e[ii] * (1 - e[ii])
   }
 
   if (length(idx_linear)) {
     ii <- idx_linear
 
-    y <- as.numeric(Y[ii])
-    z <- as.numeric(Z[ii])
-    m <- as.numeric(Y.hat[ii])
-    e <- as.numeric(Z.hat[ii])
-    wt <- as.numeric(weight[ii])
+    zres <- z[ii] - e[ii]
+    zres_c <- zres - stats::weighted.mean(zres, w = wt[ii], na.rm = TRUE)
+    v_scale <- stats::weighted.mean(zres_c^2, w = wt[ii], na.rm = TRUE)
 
-    zres <- z - e
-    yres <- y - m
-
-    zres_c <- zres - stats::weighted.mean(zres, w = wt, na.rm = TRUE)
-    yres_c <- yres - stats::weighted.mean(yres, w = wt, na.rm = TRUE)
-
-    den <- stats::weighted.mean(zres_c^2, w = wt, na.rm = TRUE)
-
-    score[ii] <- zres_c * yres_c / den
+    v[ii] <- validate_and_clip(
+      as.numeric(Z.var.hat)[ii],
+      hard_lower = 0,
+      floor = if (!is.null(clip)) clip * v_scale else NULL,
+      label = "conditional variance v(X) for continuous-Z rows"
+    )
   }
 
-  score
+  score <- t + (w_use - e) / v * (y - m - t * (w_use - e))
+
+  list(score = score, v = v)
 }
 
 # ========= Helper: Estimate causal/regression/instrumental forests =========
@@ -2470,10 +2500,10 @@ fit_models <- function(DT,
                        aipw.clip = 1e-3,
                        shrink = FALSE,
                        verbose = FALSE,
-                       target_binary = c("all", "overlap"),
+                       doubly.robust = TRUE,
                        z_linear_score_name = "z_use_linear_score") {
 
-  target_binary <- match.arg(target_binary)
+  stopifnot(is.logical(doubly.robust), length(doubly.robust) == 1L, !is.na(doubly.robust))
 
   stopifnot(data.table::is.data.table(DT))
   forest_type <- match.arg(forest_type)
@@ -2515,6 +2545,9 @@ fit_models <- function(DT,
   if (do_scores && !("scores" %in% names(DT))) {
     DT[, scores := NA_real_]
   }
+  if (do_scores && !("scores_v" %in% names(DT))) {
+    DT[, scores_v := NA_real_]
+  }
 
   if (shrink) {
     if (!("pred_var"   %in% names(DT))) DT[, pred_var   := NA_real_]
@@ -2523,6 +2556,7 @@ fit_models <- function(DT,
 
   y_hat <- paste0(y_name, ".hat")
   w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
+  w_var_hat <- if (!is.null(w_name)) paste0(w_name, ".var.hat") else NULL
 
   if (forest_type == "causal") {
     stopifnot(!is.null(w_name), w_name %in% names(DT))
@@ -2579,6 +2613,21 @@ fit_models <- function(DT,
         call. = FALSE
       )
     }
+  }
+
+  wvarhat_all <- if (!is.null(w_var_hat) && w_var_hat %in% names(DT)) {
+    as.numeric(DT[[w_var_hat]])
+  } else {
+    NULL
+  }
+
+  if (do_scores && any(z_is_linear_all[i], na.rm = TRUE) && is.null(wvarhat_all)) {
+    stop(
+      "Continuous-Z (linear) rows are present but `", w_var_hat,
+      "` was not found in `DT`. `montest()` should have populated it ",
+      "before calling `fit_models()`.",
+      call. = FALSE
+    )
   }
 
   y_all <- as.numeric(DT[[y_name]])
@@ -2737,6 +2786,7 @@ fit_models <- function(DT,
   pred_buf   <- rep(NA_real_, n_i)
   pred_o_buf <- rep(NA_real_, n_i)
   score_buf  <- if (do_scores) rep(NA_real_, n_i) else NULL
+  score_v_buf <- if (do_scores) rep(NA_real_, n_i) else NULL
 
   if (shrink) {
     pred_var_buf   <- rep(NA_real_, n_i)
@@ -2822,31 +2872,37 @@ fit_models <- function(DT,
     }
 
     if (do_scores && length(idx1)) {
-      sc1 <- make_scores_vec(
+      res_sc1 <- make_scores_vec(
         Y = y_all[idx1],
         Z = w_all[idx1],
         Y.hat = yhat_all[idx1],
         Z.hat = what_all[idx1],
+        Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx1],
         tau = p1,
-        target_binary = target_binary,
+        doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx1],
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],
         clip = aipw.clip
       )
+      sc1 <- res_sc1$score
+      scv1 <- res_sc1$v
     }
 
     if (do_scores && length(idx2)) {
-      sc2 <- make_scores_vec(
+      res_sc2 <- make_scores_vec(
         Y = y_all[idx2],
         Z = w_all[idx2],
         Y.hat = yhat_all[idx2],
         Z.hat = what_all[idx2],
+        Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx2],
         tau = p2,
-        target_binary = target_binary,
+        doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx2],
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],
         clip = aipw.clip
       )
+      sc2 <- res_sc2$score
+      scv2 <- res_sc2$v
     }
 
     if (length(idx1)) {
@@ -2856,6 +2912,7 @@ fit_models <- function(DT,
 
       if (do_scores) {
         score_buf[r1] <- sc1
+        score_v_buf[r1] <- scv1
       }
 
       if (shrink) {
@@ -2871,6 +2928,7 @@ fit_models <- function(DT,
 
       if (do_scores) {
         score_buf[r2] <- sc2
+        score_v_buf[r2] <- scv2
       }
 
       if (shrink) {
@@ -2891,7 +2949,8 @@ fit_models <- function(DT,
         pred_var = pred_var_buf,
         pred_o = pred_o_buf,
         pred_o_var = pred_o_var_buf,
-        scores = score_buf
+        scores = score_buf,
+        scores_v = score_v_buf
       )]
     } else {
       DT[i, `:=`(
@@ -2906,7 +2965,8 @@ fit_models <- function(DT,
       DT[i, `:=`(
         pred = pred_buf,
         pred_o = pred_o_buf,
-        scores = score_buf
+        scores = score_buf,
+        scores_v = score_v_buf
       )]
     } else {
       DT[i, `:=`(

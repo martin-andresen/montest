@@ -38,6 +38,7 @@ montest(
   linearD = FALSE,
   linearZ = FALSE,
   target = NULL,
+  doubly.robust = TRUE,
   cp = 0,
   maxrankcp = 10L,
   Rparameters = list(),
@@ -77,7 +78,11 @@ cross-fitting nuisance functions and, optionally, forest predictions. Set to
 normalized after estimation.}
 
 \item{aipw.clip}{Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
-scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.}
+scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
+Also used, for continuous-instrument rows, to floor the fitted conditional-variance nuisance \eqn{v(X)} at
+\code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
+outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
+that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.}
 
 \item{weight}{Optional character scalar naming a nonnegative weight variable.}
 
@@ -122,17 +127,39 @@ testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
-\item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale for
-condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized.
-Has no effect on \code{"KR"}/\code{"MW"}, which always use the binarized representation. Downgraded to FALSE
-with a warning if D is binary in the data.}
+\item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
+instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
+multivalued D rather than cut-and-stack. Only meaningful for \code{"simple"}/\code{"AHS"}, whose moment
+conditions support a slope-based representation; \code{"KR"}/\code{"MW"} are always indicator-based and
+always use the binarized representation, so \code{linearD = TRUE} is disallowed in combination with them
+(an error, not a silent no-op) -- drop \code{"KR"}/\code{"MW"} from \code{condition} instead. Downgraded to
+FALSE with a warning if D is binary in the data (no meaningful linear scoring in that case).}
 
-\item{linearZ}{Logical, default FALSE. If TRUE, the instrument Z is scored on its raw/linear scale for
-condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized,
-and always uses FWL-style scores regardless of \code{target}. Has no effect on \code{"KR"}/\code{"MW"}, which
-always use the binarized representation. Downgraded to FALSE with a warning if Z is binary in the data.}
+\item{linearZ}{Logical, default FALSE. If TRUE, the instrument Z is scored on its raw/linear scale
+instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
+multivalued Z rather than cut-and-stack. Only meaningful for \code{"simple"}/\code{"AHS"}; \code{"KR"}/
+\code{"MW"} always use the binarized representation, so \code{linearZ = TRUE} is disallowed in combination
+with them (an error, not a silent no-op) -- drop \code{"KR"}/\code{"MW"} from \code{condition} instead.
+Downgraded to FALSE with a warning if Z is binary in the data. Together with the presence of fixed effects
+in \code{fml}, this determines the instrument's representation (binary vs. continuous) for scoring; see
+\code{doubly.robust} for the independent choice of score family. \code{condition = "MW"} separately requires
+Z to be genuinely binary in the data and requires \code{fml} to have no fixed effects, regardless of
+\code{linearZ} -- see Details.}
 
-\item{target}{a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). Only applies to binary Z; linear Z (see \code{linearZ}) always targets the overlap-weighted / residualized-slope estimand.}
+\item{target}{a scalar equal to either "all" or "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap").
+Applies uniformly to every condition, both instrument representations (binary or continuous), and both \code{doubly.robust} settings: it does not change the score formula itself, only the weight used when
+aggregating scores into the final test statistic (\code{"overlap"} reweights by the per-observation conditional variance of the instrument; \code{"all"} does not). These are genuinely different
+estimands whenever the underlying effect is heterogeneous in X (which is exactly what this package searches for): each row's score has conditional expectation equal to the *local* effect at that row's X,
+so \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. Under \code{doubly.robust=FALSE}, \code{"overlap"} coincides
+exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient (covariance over variance of the residualized instrument and pseudo-outcome, pooled across observations); \code{"all"} does
+not, and only agrees with it when the local effect is constant across X.}
+
+\item{doubly.robust}{Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moment, augmenting the residual term with the causal forest's predicted CATE.
+If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment, with no CATE augmentation. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
+\code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
+but, unlike AIPW, offers no protection in the other direction: a misspecified \code{Z.hat} biases the estimate even when \code{Q.hat} is exactly right. AIPW (\code{doubly.robust=TRUE}) is robust to
+misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric} and \code{target}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
+\code{"MW"}, which does not use this scoring machinery.}
 
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}
@@ -140,7 +167,10 @@ routine. See Details.}
 \item{screen}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.}
 
 \item{parametric}{A boolean indicating whether nuisances should be estimated using the parametric functional form specified or (the default) using semiparametric methods. In the latter case,
-all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.}
+all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
+\code{parametric} governs nuisance estimation only: it no longer influences whether the instrument is scored on its binary or continuous representation (see \code{linearZ}), which is fully decoupled from it.
+Nuisance fragility that can arise under \code{parametric=TRUE} (e.g. a linear-probability-model propensity falling outside \eqn{[0,1]}) is caught at score-construction time by the validity checks
+described under \code{aipw.clip}, rather than by rerouting the representation.}
 
 \item{Zparameters, Yparameters, Qparameters, Cparameters, Rparameters}{Named lists of
 additional arguments passed to the underlying estimation routines for different
@@ -215,8 +245,13 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
   There are a total of (J-1)(K-1) such conditions.
-  \item \code{condition = "MW} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
-  and exclusion conditional on instrument validity. This is only allowed for a binary treatment. There are a total of 2K such conditions.
+  \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
+  and exclusion conditional on instrument validity. This is only allowed for a binary treatment and a genuinely
+  binary instrument (Z with at most 2 support points in the data -- an arbitrary margin/threshold cut of a
+  multivalued Z does not correspond to their theory), and \code{fml} may not include fixed effects (MW's Q
+  statistic uses Z.hat directly as a propensity weight with no AIPW/FWL orthogonalization protecting it).
+  \code{linearZ}/\code{linearD} are disallowed in combination with \code{"MW"} for the same reason: its moment
+  conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
 }
 }
 \examples{
