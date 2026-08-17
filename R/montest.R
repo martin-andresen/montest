@@ -1041,6 +1041,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     )
   }
 
+  zsandwich <- paste0(Z, ".sandwich.w")
+  data[, (zsandwich) := NA_real_]
+
   if (need_pooled_v) {
     ## Applies to every row (binary and continuous representations alike).
     ## Same reasoning as by_norm above: under parametric = TRUE there is no
@@ -1058,6 +1061,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       (zvarhat) := stats::weighted.mean(get(z_resid_sq), w = get(wtmp_col), na.rm = TRUE),
       by = by_pool
     ]
+
+    ## Pooling v across a group and broadcasting it back as a *constant*
+    ## weight is what makes the coefficient exactly reproduce classical
+    ## FWL/OLS -- but fed unchanged into crv1_mean()'s cluster sandwich, that
+    ## same constant erases each cluster's own (Z-Z.hat)^2 heterogeneity and
+    ## inflates the reported SE. Keep the row-level value around (as a
+    ## weight, weight_i * (Z_i-Z.hat_i)^2, mirroring w_eff's own weight * v
+    ## convention) so the sandwich can use it instead -- see crv1_mean()'s
+    ## `w_sandwich` argument and the `w_sandwich` column built below.
+    data[, (zsandwich) := get(wtmp_col) * get(z_resid_sq)]
 
     data[, (wtmp_col) := NULL]
   }
@@ -2223,6 +2236,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     ]
   }
 
+  ## crv1_mean()'s cluster sandwich needs the row-level weight * (Z-Z.hat)^2
+  ## from the need_pooled_v path (see `zsandwich` above), not the pooled/
+  ## broadcast v folded into w_eff -- using the pooled constant there erases
+  ## real per-cluster heterogeneity and inflates the reported SE. Defaults to
+  ## w_eff everywhere else, so this is a no-op unless need_pooled_v applied.
+  data[, w_sandwich := w_eff]
+  if (need_pooled_v) {
+    data[
+      condition %in% c("simple", "KR", "AHS"),
+      w_sandwich := get(zsandwich)
+    ]
+  }
+
 
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
@@ -2247,8 +2273,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,sandwich="w_sandwich")
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,sandwich="w_sandwich")
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())

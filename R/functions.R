@@ -200,7 +200,8 @@ CART_test <- function(
     rpart_options = NULL,
     fe_expr = NULL,
     fe_rank_adj = TRUE,
-    x_rank_vars = character(0)
+    x_rank_vars = character(0),
+    sandwich = NULL
 ) {
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
@@ -221,6 +222,9 @@ CART_test <- function(
 
   weight_col <- if (is.null(weight)) NULL else as.character(weight)
   if (!is.null(weight_col)) stopifnot(length(weight_col) == 1L, weight_col %in% names(data))
+
+  sandwich_col <- if (is.null(sandwich)) NULL else as.character(sandwich)
+  if (!is.null(sandwich_col)) stopifnot(length(sandwich_col) == 1L, sandwich_col %in% names(data))
 
   cluster_col <- if (is.null(cluster)) NULL else as.character(cluster)
   if (!is.null(cluster_col)) stopifnot(length(cluster_col) == 1L, cluster_col %in% names(data))
@@ -537,7 +541,8 @@ CART_test <- function(
       rowid  = idx,
       sample = as.integer(df_cell[[sample_col]]),
       score  = as.numeric(df_cell[[scores_col]]),
-      w      = if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell))
+      w      = if (!is.null(weight_col)) as.numeric(df_cell[[weight_col]]) else rep(1.0, nrow(df_cell)),
+      w_sandwich = if (!is.null(sandwich_col)) as.numeric(df_cell[[sandwich_col]]) else NA_real_
     )
     dtg$w[!is.finite(dtg$w)] <- 0
     if (!is.null(cluster_col)) {
@@ -557,7 +562,7 @@ CART_test <- function(
         fe_rank_adj = fe_rank_adj
       )
 
-      o <- crv1_mean(score, w, cl, rank_adj = rank_adj)
+      o <- crv1_mean(score, w, cl, rank_adj = rank_adj, w_sandwich = if (!is.null(sandwich_col)) w_sandwich else NULL)
 
       data.table::data.table(
         train = FALSE,
@@ -966,6 +971,7 @@ CART_test <- function(
     y <- as.numeric(data[[scores_col]])[idx_keep_all]
     w <- if (!is.null(weight_col)) as.numeric(data[[weight_col]])[idx_keep_all] else rep(1.0, length(idx_keep_all))
     w[!is.finite(w)] <- 0
+    w_sandwich <- if (!is.null(sandwich_col)) as.numeric(data[[sandwich_col]])[idx_keep_all] else NULL
     cl <- if (!is.null(cluster_col)) data[[cluster_col]][idx_keep_all] else NULL
 
     rank_adj <- rank_adj_total(
@@ -978,7 +984,7 @@ CART_test <- function(
       fe_rank_adj = fe_rank_adj
     )
 
-    o <- crv1_mean(y, w, cl, rank_adj = rank_adj)
+    o <- crv1_mean(y, w, cl, rank_adj = rank_adj, w_sandwich = w_sandwich)
 
     sample_here <- unique(jobs_here$est_s)
     leaf_here   <- unique(jobs_here$leaf)
@@ -3357,7 +3363,8 @@ forest_test <- function(
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
     fe_rank_conservative = TRUE,
-    x_rank_vars = character(0)
+    x_rank_vars = character(0),
+    sandwich = NULL
 ) {
   screen <- match.arg(screen)
 
@@ -3419,7 +3426,8 @@ forest_test <- function(
       fe_expr = fe_expr,
       fe_rank_adj = fe_rank_adj,
       fe_rank_conservative = fe_rank_conservative,
-      x_rank_vars = x_rank_vars
+      x_rank_vars = x_rank_vars,
+      sandwich = sandwich
     )
   }
 
@@ -3567,7 +3575,8 @@ forest_test <- function(
 crv1_mean <- function(score,
                       w = NULL,
                       cl = NULL,
-                      rank_adj = 0) {
+                      rank_adj = 0,
+                      w_sandwich = NULL) {
   score <- as.numeric(score)
   n0 <- length(score)
 
@@ -3588,6 +3597,24 @@ crv1_mean <- function(score,
     stop("`w` must be NULL or have the same length as `score`.", call. = FALSE)
   }
 
+  ## `w_sandwich` lets the caller use a different (typically row-level, not
+  ## pooled/broadcast) weight inside the cluster sandwich than the one used
+  ## to compute `theta` itself. This matters when `w` has been pooled to a
+  ## constant within some group (e.g. montest.R's need_pooled_v path, which
+  ## deliberately broadcasts a single variance estimate so `theta` reproduces
+  ## the classical FWL/OLS coefficient exactly): using that same constant
+  ## inside the sandwich erases real per-cluster heterogeneity in the
+  ## underlying (Z-Z.hat)^2 and inflates the reported SE. Defaults to `w`,
+  ## reproducing the original single-weight formula exactly.
+  if (is.null(w_sandwich)) {
+    w_sandwich <- w
+  } else {
+    w_sandwich <- as.numeric(w_sandwich)
+    if (length(w_sandwich) != n0) {
+      stop("`w_sandwich` must be NULL or have the same length as `score`.", call. = FALSE)
+    }
+  }
+
   if (is.null(cl)) {
     cl <- seq_len(n0)
   } else {
@@ -3596,7 +3623,8 @@ crv1_mean <- function(score,
     }
   }
 
-  ok <- is.finite(score) & is.finite(w) & w >= 0 & !is.na(cl)
+  ok <- is.finite(score) & is.finite(w) & w >= 0 &
+    is.finite(w_sandwich) & w_sandwich >= 0 & !is.na(cl)
 
   if (!any(ok)) {
     return(list(
@@ -3607,6 +3635,7 @@ crv1_mean <- function(score,
 
   score <- score[ok]
   w <- w[ok]
+  w_sandwich <- w_sandwich[ok]
   cl <- cl[ok]
 
   cl <- as.integer(factor(cl, exclude = NULL))
@@ -3616,11 +3645,12 @@ crv1_mean <- function(score,
     stop("`rank_adj` must be a single nonnegative finite number.", call. = FALSE)
   }
 
-  dt0 <- data.table::data.table(score = score, w = w, cl = cl)
+  dt0 <- data.table::data.table(score = score, w = w, w_sandwich = w_sandwich, cl = cl)
 
   gb <- dt0[, .(
     U = sum(w * score),
-    W = sum(w)
+    W = sum(w),
+    Wsand = sum(w_sandwich)
   ), by = cl]
 
   G <- nrow(gb)
@@ -3635,7 +3665,7 @@ crv1_mean <- function(score,
   }
 
   theta <- U / W
-  ug <- gb$U - theta * gb$W
+  ug <- gb$U - theta * gb$Wsand
 
   df <- G - 1 - rank_adj
 
@@ -3679,7 +3709,8 @@ forest_test_core <- function(
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
     fe_rank_conservative = TRUE,
-    x_rank_vars = character(0)
+    x_rank_vars = character(0),
+    sandwich = NULL
 ) {
 
   select_keep_ids <- function(cand, choose_by, id_by, alpha) {
@@ -3730,6 +3761,7 @@ forest_test_core <- function(
   pred_o_col <- as.character(pred_o)
   scores_col <- as.character(scores)
   weight_col <- if (is.null(weight)) NULL else as.character(weight)
+  sandwich_col <- if (is.null(sandwich)) NULL else as.character(sandwich)
 
   stopifnot(length(sample_col) == 1L, sample_col %in% names(data))
   stopifnot(length(pred_col)   == 1L, pred_col   %in% names(data))
@@ -3738,6 +3770,7 @@ forest_test_core <- function(
   stopifnot(is.numeric(minsize), length(minsize) == 1L, is.finite(minsize), minsize >= 1L)
 
   if (!is.null(weight_col)) stopifnot(weight_col %in% names(data))
+  if (!is.null(sandwich_col)) stopifnot(sandwich_col %in% names(data))
 
   if (!is.null(cluster)) {
     cluster_col <- as.character(cluster)
@@ -3832,6 +3865,8 @@ forest_test_core <- function(
 
   wv <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
   wv[!is.finite(wv)] <- 0
+
+  wv_sandwich <- if (!is.null(sandwich_col)) as.numeric(data[[sandwich_col]]) else NULL
 
   clv <- if (!is.null(cluster_col)) {
     as.integer(factor(data[[cluster_col]], exclude = NULL))
@@ -4340,6 +4375,7 @@ forest_test_core <- function(
     rowid = seq_len(n),
     score = scorev,
     w = wv,
+    w_sandwich = if (!is.null(wv_sandwich)) wv_sandwich else NA_real_,
     cl = clv
   )
 
@@ -4366,7 +4402,8 @@ forest_test_core <- function(
       score = dt_test$score,
       w = dt_test$w,
       cl = dt_test$cl,
-      rank_adj = rank_adj
+      rank_adj = rank_adj,
+      w_sandwich = if (!is.null(wv_sandwich)) dt_test$w_sandwich else NULL
     )
 
     test_out <- data.table::data.table(
@@ -4408,7 +4445,8 @@ forest_test_core <- function(
         score = score,
         w = w,
         cl = cl,
-        rank_adj = rank_adj
+        rank_adj = rank_adj,
+        w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
       )
 
       data.table::data.table(
@@ -4505,7 +4543,8 @@ forest_test_core <- function(
             score = score,
             w = w,
             cl = cl,
-            rank_adj = rank_adj
+            rank_adj = rank_adj,
+            w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
           )
 
           data.table::data.table(
@@ -4563,7 +4602,8 @@ forest_test_core <- function(
     fe_expr = fe_expr,
     fe_rank_adj = fe_rank_adj,
     x_rank_vars = x_rank_vars,
-    weight_col = weight_col
+    weight_col = weight_col,
+    wv_sandwich = wv_sandwich
   )
 
   Xmeans <- Xmeans_all <- XSD <- NULL
@@ -4695,7 +4735,8 @@ global_means_crv1 <- function(
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
     x_rank_vars = character(0),
-    weight_col = NULL
+    weight_col = NULL,
+    wv_sandwich = NULL
 ) {
   stopifnot(data.table::is.data.table(data))
   stopifnot(
@@ -4731,6 +4772,7 @@ global_means_crv1 <- function(
     rowid = seq_len(nrow(data)),
     score = scorev,
     w = wv,
+    w_sandwich = if (!is.null(wv_sandwich)) as.numeric(wv_sandwich) else NA_real_,
     cl = clv
   )
 
@@ -4752,7 +4794,8 @@ global_means_crv1 <- function(
       score = dt_all$score,
       w = dt_all$w,
       cl = dt_all$cl,
-      rank_adj = rank_adj
+      rank_adj = rank_adj,
+      w_sandwich = if (!is.null(wv_sandwich)) dt_all$w_sandwich else NULL
     )
 
     global_dt <- data.table::data.table(
@@ -4777,7 +4820,8 @@ global_means_crv1 <- function(
         score = score,
         w = w,
         cl = cl,
-        rank_adj = rank_adj
+        rank_adj = rank_adj,
+        w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
       )
 
       data.table::data.table(
