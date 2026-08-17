@@ -2355,70 +2355,20 @@ make_X_residualized_from_FE <- function(DT,
   )
 }
 
-##Downgrade linear specs
-normalize_linear <- function(linear, J, K) {
-  linear <- unique(linear)
-
-  out <- character()
-
-  for (ll in linear) {
-    if (ll == "none") {
-      out <- c(out, "none")
-
-    } else if (ll == "Z") {
-      if (K > 2L) {
-        out <- c(out, "Z")
-      } else {
-        out <- c(out, "none")
-      }
-
-    } else if (ll == "D") {
-      if (J > 2L) {
-        out <- c(out, "D")
-      } else {
-        out <- c(out, "none")
-      }
-
-    } else if (ll == "DZ") {
-      z_lin <- K > 2L
-      d_lin <- J > 2L
-
-      if (z_lin && d_lin) {
-        out <- c(out, "DZ")
-      } else if (z_lin && !d_lin) {
-        out <- c(out, "Z")
-      } else if (!z_lin && d_lin) {
-        out <- c(out, "D")
-      } else {
-        out <- c(out, "none")
-      }
-
-    } else {
-      stop("Unknown linear option: ", ll)
-    }
-  }
-
-  unique(out)
-}
-
 ##SCORES computation
+## Linear-Z rows always use the FWL/"overlap" score (no target-driven
+## choice) -- see `linearZ` in montest()'s docs. `target_binary` still
+## selects between the AIPW ("all") and overlap-weighted binary-Z formulas.
 make_scores_vec <- function(Y,
                             Z,
                             Y.hat,
                             Z.hat,
                             tau = NULL,
-                            target = c("all", "overlap"),
-                            target_binary=NULL,
-                            target_linear=NULL,
+                            target_binary = c("all", "overlap"),
                             z_is_linear = FALSE,
-                            Z.var.hat = NULL,
-                            weight = NULL,                      # <-- new
-                            clip = 1e-3,
-                            var_floor = 1e-6) {
-  target <- match.arg(target)
-
-  target_binary <- if (is.null(target_binary)) target else match.arg(target_binary, c("all", "overlap"))
-  target_linear <- if (is.null(target_linear)) target else match.arg(target_linear, c("all", "overlap"))
+                            weight = NULL,
+                            clip = 1e-3) {
+  target_binary <- match.arg(target_binary)
 
   n <- length(Y)
 
@@ -2426,22 +2376,19 @@ make_scores_vec <- function(Y,
     z_is_linear <- rep(z_is_linear, n)
   }
 
-  if (is.null(weight)) {                                        # <-- new
-    weight <- rep(1, n)                                         # <-- new
-  } else if (length(weight) != n) {                              # <-- new
-    stop("`weight` must have length equal to `Y`.", call. = FALSE)  # <-- new
-  }                                                               # <-- new
+  if (is.null(weight)) {
+    weight <- rep(1, n)
+  } else if (length(weight) != n) {
+    stop("`weight` must have length equal to `Y`.", call. = FALSE)
+  }
 
   score <- rep(NA_real_, n)
 
   idx_binary <- which(!z_is_linear)
   idx_linear <- which(z_is_linear)
 
-  tau_needed <- length(idx_binary) > 0L || (target_linear == "all" && length(idx_linear) > 0L)
-
-  if (tau_needed && is.null(tau)) {
-    stop("`tau` is required for binary Z rows and for target = 'all' with linear Z rows.",
-         call. = FALSE)
+  if (length(idx_binary) > 0L && is.null(tau)) {
+    stop("`tau` is required for binary Z rows.", call. = FALSE)
   }
 
   if (!is.null(tau) && length(tau) != n) {
@@ -2474,7 +2421,7 @@ make_scores_vec <- function(Y,
         ((1 - w) / (1 - e)) * (y - m0)
     } else {
       h <- e * (1 - e)
-      hbar <- stats::weighted.mean(h, w = wt, na.rm = TRUE)       # <-- changed
+      hbar <- stats::weighted.mean(h, w = wt, na.rm = TRUE)
 
       score[ii] <-
         (
@@ -2492,91 +2439,20 @@ make_scores_vec <- function(Y,
     z <- as.numeric(Z[ii])
     m <- as.numeric(Y.hat[ii])
     e <- as.numeric(Z.hat[ii])
-    wt <- as.numeric(weight[ii])                                 # <-- new
+    wt <- as.numeric(weight[ii])
 
     zres <- z - e
     yres <- y - m
 
-    if (target_linear== "all") {
-      if (is.null(Z.var.hat)) {
-        stop("`Z.var.hat` is required for target = 'all' with continuous/linear Z.",
-             call. = FALSE)
-      }
+    zres_c <- zres - stats::weighted.mean(zres, w = wt, na.rm = TRUE)
+    yres_c <- yres - stats::weighted.mean(yres, w = wt, na.rm = TRUE)
 
-      t <- as.numeric(tau[ii])
-      v <- as.numeric(Z.var.hat[ii])
-      v <- pmax(v, var_floor)
+    den <- stats::weighted.mean(zres_c^2, w = wt, na.rm = TRUE)
 
-      score[ii] <- t + (zres / v) * (yres - t * zres)
-
-    } else {
-      zres_c <- zres - stats::weighted.mean(zres, w = wt, na.rm = TRUE)  # <-- changed
-      yres_c <- yres - stats::weighted.mean(yres, w = wt, na.rm = TRUE)  # <-- changed
-
-      den <- stats::weighted.mean(zres_c^2, w = wt, na.rm = TRUE)        # <-- changed
-
-      score[ii] <- zres_c * yres_c / den
-    }
+    score[ii] <- zres_c * yres_c / den
   }
 
   score
-}
-
-make_scores <- function(DT,
-                        y_name,
-                        z_name,
-                        y_hat_name,
-                        z_hat_name,
-                        tau_name,
-                        target = c("all", "overlap"),
-                        zvar_name = NULL,
-                        weight_name = NULL,                       # <-- new
-                        score_name = "scores",
-                        i = NULL,
-                        z_is_linear_name = "z_is_linear",
-                        clip = 1e-3,
-                        var_floor = 1e-6) {
-  target <- match.arg(target)
-
-  if (is.null(i)) i <- seq_len(nrow(DT))
-  i <- as.integer(i)
-
-  z_is_linear <- if (!is.null(z_is_linear_name) &&
-                     z_is_linear_name %in% names(DT)) {
-    as.logical(DT[[z_is_linear_name]][i])
-  } else {
-    rep(FALSE, length(i))
-  }
-
-  Z.var.hat <- if (!is.null(zvar_name)) {
-    DT[[zvar_name]][i]
-  } else {
-    NULL
-  }
-
-  weight <- if (!is.null(weight_name)) DT[[weight_name]][i] else NULL   # <-- new
-
-  score <- make_scores_vec(
-    Y = DT[[y_name]][i],
-    Z = DT[[z_name]][i],
-    Y.hat = DT[[y_hat_name]][i],
-    Z.hat = DT[[z_hat_name]][i],
-    tau <- if (!is.null(tau_name)) DT[[tau_name]][i] else NULL,
-    target = target,
-    z_is_linear = z_is_linear,
-    Z.var.hat = Z.var.hat,
-    weight = weight,                                                    # <-- new
-    clip = clip,
-    var_floor = var_floor
-  )
-
-  if (!(score_name %in% names(DT))) {
-    DT[, (score_name) := NA_real_]
-  }
-
-  DT[i, (score_name) := score]
-
-  invisible(DT)
 }
 
 # ========= Helper: Estimate causal/regression/instrumental forests =========
@@ -2587,7 +2463,6 @@ fit_models <- function(DT,
                        x_names,
                        margins = NULL,
                        w_name = NULL,
-                       zvar_name = NULL,
                        folds = NULL,
                        weight_name = NULL,
                        cluster_name = NULL,
@@ -2595,14 +2470,10 @@ fit_models <- function(DT,
                        aipw.clip = 1e-3,
                        shrink = FALSE,
                        verbose = FALSE,
-                       target = c("all", "overlap"),
-                       target_binary=NULL,
-                       target_linear=NULL,
+                       target_binary = c("all", "overlap"),
                        z_linear_score_name = "z_use_linear_score") {
 
-  target <- match.arg(target)
-  target_binary <- if (is.null(target_binary)) target else match.arg(target_binary, c("all", "overlap"))
-  target_linear <- if (is.null(target_linear)) target else match.arg(target_linear, c("all", "overlap"))
+  target_binary <- match.arg(target_binary)
 
   stopifnot(data.table::is.data.table(DT))
   forest_type <- match.arg(forest_type)
@@ -2691,33 +2562,6 @@ fit_models <- function(DT,
     as.logical(DT[["z_is_linear"]])
   } else {
     rep(FALSE, nrow(DT))
-  }
-
-  zvar_all <- if (!is.null(zvar_name)) {
-    stopifnot(zvar_name %in% names(DT))
-    as.numeric(DT[[zvar_name]])
-  } else {
-    NULL
-  }
-
-  if (do_scores && target_linear == "all" && any(z_is_linear_all[i], na.rm = TRUE)) {
-
-    if (is.null(zvar_all)) {
-      stop(
-        "`zvar_name` is required for continuous/linear-score Z rows w hen target_linear = \"all\".",
-        call. = FALSE
-      )
-    }
-
-    bad_zvar <- z_is_linear_all[i] & !is.finite(zvar_all[i])
-
-    if (any(bad_zvar, na.rm = TRUE)) {
-      stop(
-        "Non-finite values found in `", zvar_name,
-        "` for rows that use the linear-score Z path.",
-        call. = FALSE
-      )
-    }
   }
 
   y_all <- as.numeric(DT[[y_name]])
@@ -2984,12 +2828,9 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx1],
         Z.hat = what_all[idx1],
         tau = p1,
-        target = target,
         target_binary = target_binary,
-        target_linear = target_linear,
         z_is_linear = z_is_linear_all[idx1],
-        Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx1] else NULL,
-        weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],   # <-- new
+        weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],
         clip = aipw.clip
       )
     }
@@ -3001,12 +2842,9 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx2],
         Z.hat = what_all[idx2],
         tau = p2,
-        target = target,
         target_binary = target_binary,
-        target_linear = target_linear,
         z_is_linear = z_is_linear_all[idx2],
-        Z.var.hat = if (!is.null(zvar_all)) zvar_all[idx2] else NULL,
-        weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],   # <-- new
+        weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],
         clip = aipw.clip
       )
     }

@@ -5,8 +5,10 @@
 \title{Monotonicity and LATE assumptions tests using sample splitting and machine learning}
 \usage{
 montest(
-  data,
   fml,
+  data,
+  fml.Z = NULL,
+  fml.Q = NULL,
   condition = NULL,
   inner.folds = NULL,
   crossfit = NULL,
@@ -26,14 +28,16 @@ montest(
   Zsubsets = 4L,
   Y.res = TRUE,
   testtype = "forest",
+  fe_rank_conservative = FALSE,
+  fe_rank_adj = TRUE,
   gridpoints = NULL,
   min_n = 1L,
   pool = NULL,
   select = NULL,
   shrink = 0,
-  linear = "none",
-  target = "all",
-  one.hot = TRUE,
+  linearD = FALSE,
+  linearZ = FALSE,
+  target = NULL,
   cp = 0,
   maxrankcp = 10L,
   Rparameters = list(),
@@ -49,16 +53,19 @@ montest(
 )
 }
 \arguments{
+\item{fml}{A fixest-style formula on the form Y~X|fe|D~Z that specifies the IV call to be tested. Importantly, the instrument Z should be coded so that higher values of Z imply weakly higher values of D for everyone - positive monotonicity. By default, the X part of the formula is used for both nuisance estimation and heterogeneous effects. X may contain the same variables as FE, indicating that some FE variables should also be used for heterogeneity.}
+
 \item{data}{A \code{data.frame} or \code{data.table} containing the analysis sample.
 Observations with missing values in any variables used by the call are dropped.}
 
-\item{fml}{A fixest-style formula on the form Y~X|fe|D~Z that specified the IV call to be tested. Importantly, the instrument Z should be coded so that higher values of Z imply weakly higher values of D for everyone - positive monotonicity.
+\item{fml.Z}{Optional: A one-sided formula for the nuisance of the instrument. Defaults to the same as the the general formula in fml}
+
+\item{fml.Q}{Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.}
 
 \item{condition}{Character vector selecting which tests to run. Allowed values are any combination of
- \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
- If \code{Y} is omitted, only \code{"simple"} is allowed.
-@param target a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). For linear Z versions, overlap targets the residualized slope, while all targets the average partial effect.}
+\code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
+If \code{Y} is omitted, only \code{"simple"} is allowed.}
 
 \item{inner.folds}{Optional integer giving the number of within-sample folds used for
 cross-fitting nuisance functions and, optionally, forest predictions. Set to
@@ -85,6 +92,8 @@ for subset search and testing. Default 50.}
 \item{gridtypeY, gridtypeD, gridtypeZ}{Character strings controlling how continuous
 variables are discretized before stacking. Must be one of \code{"equisized"} or
 \code{"equidistant"}.}
+
+\item{joint}{specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.}
 
 \item{Ysubsets, Dsubsets, Zsubsets}{Integers giving the number of bins used when
 discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Integer >1 required.}
@@ -113,7 +122,17 @@ testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
-\item{one.hot}{boolean indicating whether fixed effects should be one-hot encoded or added as a continuous variable. Default is TRUE.}
+\item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale for
+condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized.
+Has no effect on \code{"KR"}/\code{"MW"}, which always use the binarized representation. Downgraded to FALSE
+with a warning if D is binary in the data.}
+
+\item{linearZ}{Logical, default FALSE. If TRUE, the instrument Z is scored on its raw/linear scale for
+condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized,
+and always uses FWL-style scores regardless of \code{target}. Has no effect on \code{"KR"}/\code{"MW"}, which
+always use the binarized representation. Downgraded to FALSE with a warning if Z is binary in the data.}
+
+\item{target}{a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). Only applies to binary Z; linear Z (see \code{linearZ}) always targets the overlap-weighted / residualized-slope estimand.}
 
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}
@@ -125,8 +144,7 @@ all fixed effects are one-hot encoded, while the functional form in the main par
 
 \item{Zparameters, Yparameters, Qparameters, Cparameters, Rparameters}{Named lists of
 additional arguments passed to the underlying estimation routines for different
-nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
-@param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.}
+nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.}
 }
 \value{
 A named list:

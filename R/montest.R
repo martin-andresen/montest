@@ -22,7 +22,15 @@
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
 #'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted, only \code{"simple"} is allowed.
-#'  @param target a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). For linear Z versions, overlap targets the residualized slope, while all targets the average partial effect.
+#' @param target a scalar equal to either "all" or  "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap"). Only applies to binary Z; linear Z (see \code{linearZ}) always targets the overlap-weighted / residualized-slope estimand.
+#' @param linearD Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale for
+#'   condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized.
+#'   Has no effect on \code{"KR"}/\code{"MW"}, which always use the binarized representation. Downgraded to FALSE
+#'   with a warning if D is binary in the data.
+#' @param linearZ Logical, default FALSE. If TRUE, the instrument Z is scored on its raw/linear scale for
+#'   condition types that support it (\code{"simple"}/\code{"AHS"}) instead of being margin-stacked and binarized,
+#'   and always uses FWL-style scores regardless of \code{target}. Has no effect on \code{"KR"}/\code{"MW"}, which
+#'   always use the binarized representation. Downgraded to FALSE with a warning if Z is binary in the data.
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
@@ -65,7 +73,7 @@
 #' @param Zparameters,Yparameters,Qparameters,Cparameters,Rparameters Named lists of
 #'   additional arguments passed to the underlying estimation routines for different
 #'   nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
-#'   @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
+#' @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
 #'
 #' @details
 #' The rough steps of the montest algorithm is as follows
@@ -158,7 +166,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=FALSE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linear="none",target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Dparameters=list(),Cparameters=list()
 ){
@@ -236,10 +244,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     inner.folds <- as.integer(inner.folds)
   }
 
-  linear=match.arg(linear,c("none","Z","D","DZ","all"),several.ok=TRUE)
-  if ("all" %in% linear) {
-    linear <- c("none", "Z", "D", "DZ")
-  }
+  stopifnot(
+    "linearD must be a single non-missing logical" =
+      is.logical(linearD) && length(linearD) == 1L && !is.na(linearD),
+    "linearZ must be a single non-missing logical" =
+      is.logical(linearZ) && length(linearZ) == 1L && !is.na(linearZ)
+  )
   screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
@@ -305,19 +315,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   ##VALIDATE POOL/SELECT
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
-  else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample","linear")
+  else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample")
   else if (sum(pool=="none")==1) pool=c()
   else if (is.null(pool)==FALSE) pool <- match.arg(
     pool,
-    c("zmargin", "dval", "yval", "condition", "equation", "sample", "linear"),
+    c("zmargin", "dval", "yval", "condition", "equation", "sample"),
     several.ok = TRUE
   )
-  else pool=c("zmargin","dval","yval","sample","linear")
+  else pool=c("zmargin","dval","yval","sample")
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
-  else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample","linear")
+  else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample")
   else if (sum(select=="none")==1) select=c()
-  else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample","linear"),several.ok=TRUE)
+  else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample"),several.ok=TRUE)
   else select="condition"
 
   if ("sample" %in% intersect(pool,select)) {
@@ -372,7 +382,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     Y <- NULL
   }
 
-  ##Downgrade linear options if D or Z is binary:
+  ## Downgrade linearD/linearZ if D or Z is binary in the data.
   ## Number of support points in original D and Z
   Zname=Z
   Dname=D
@@ -380,76 +390,63 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   J <- data.table::uniqueN(data[[D]])
   K <- data.table::uniqueN(data[[Z]])
 
-  linear <- normalize_linear(linear, J = J, K = K)
+  if (isTRUE(linearZ) && K <= 2L) {
+    warning(
+      "linearZ = TRUE requested, but Z has only ", K, " support point(s) in ",
+      "the data; using linearZ = FALSE (a binary/near-constant instrument ",
+      "has no meaningful linear scoring).",
+      call. = FALSE
+    )
+    linearZ <- FALSE
+  }
+  if (isTRUE(linearD) && J <= 2L) {
+    warning(
+      "linearD = TRUE requested, but D has only ", J, " support point(s) in ",
+      "the data; using linearD = FALSE (a binary/near-constant treatment ",
+      "has no meaningful linear scoring).",
+      call. = FALSE
+    )
+    linearD <- FALSE
+  }
 
-  ## Conditions for which linear has an effect
+  ## Conditions for which linearD/linearZ have an effect. KR/MW always use
+  ## the margin/binarized representation of D and Z regardless of these
+  ## flags -- their moment conditions are indicator-based, not slope-based.
   linear_conditions <- c("simple", "AHS")
 
   has_linear_conditions <- any(condition %in% linear_conditions)
-  has_other_conditions  <- any(!condition %in% linear_conditions)
-
-  ## If any non-linear-aware condition is requested, ordinary margins must also be present.
-  ## Otherwise KR/MW/etc. would have no valid non-linear block to use.
-  if (has_other_conditions && !"none" %in% linear) {
-    stop(
-      "When condition includes conditions other than ",
-      paste(linear_conditions, collapse = " or "),
-      ", linear must include 'none'. ",
-      "The non-linear-aware conditions ignore linearized variants and require ordinary margin rows. ",
-      "Use e.g. linear = c('none', ",
-      paste(sprintf("'%s'", setdiff(linear, "none")), collapse = ", "),
-      ")."
-    )
-  }
-
-  ## Inform the user that linear variants only apply to simple/AHS.
-  if (has_other_conditions && any(linear != "none")) {
-    msg_other <- paste(setdiff(condition, linear_conditions), collapse = ", ")
-    msg_linear <- paste(setdiff(linear, "none"), collapse = ", ")
-
-    message(
-      "Note: linear option(s) ",
-      msg_linear,
-      " only apply to condition(s) ",
-      paste(linear_conditions, collapse = ", "),
-      ". For the other requested condition(s) ",
-      msg_other,
-      ", only linear = 'none' will be used."
-    )
-  }
 
   ## Conditions that always need margin/binary versions
   nonlinear_conditions <- setdiff(condition, linear_conditions)
 
   ## Need binarized Z if:
-  ## - any non-linear-aware condition is requested, or
-  ## - simple/AHS are requested with linear = none or D
+  ## - any non-linear-aware condition (KR/MW) is requested, or
+  ## - simple/AHS are requested with linearZ = FALSE
   need_binarized_Z <-
     length(nonlinear_conditions) > 0L ||
-    any(condition %in% linear_conditions) && any(linear %in% c("none", "D"))
+    (has_linear_conditions && !linearZ)
 
-  ## Need original/linear Z if:
-  ## - simple/AHS are requested with linear = Z or DZ
-  need_linear_Z <-
-    any(condition %in% linear_conditions) && any(linear %in% c("Z", "DZ"))
+  ## Need original/linear Z if simple/AHS are requested with linearZ = TRUE
+  need_linear_Z <- has_linear_conditions && linearZ
+
 
   ## Need margin conditions if:
-  ## - ordinary simple/AHS rows are requested, linear = "none"
-  ## - linear-D simple/AHS rows are requested, linear = "D"
-  ## - KR/MW are requested
+  ## - simple/AHS are requested with linearZ = FALSE (i.e. margin-Z rows exist)
+  ## - KR/MW are requested (always margin-Z)
   ##
-  ## These rows require the one-sided monotonicity pre-check, which itself
+  ## These rows require the one-sided monotonicity pre-check (run on
+  ## margin-Z rows only, i.e. data[z_is_linear == FALSE]), which itself
   ## needs the binarized treatment margin variable D.bin.
   has_margin_conditions <-
-    any(c("none", "D") %in% linear) ||
+    (has_linear_conditions && !linearZ) ||
     any(c("KR", "MW") %in% condition)
 
   ## Need binarized D for Q construction if:
-  ## - any non-linear-aware condition is requested, or
-  ## - simple/AHS are requested with linear = none or Z
+  ## - any non-linear-aware condition (KR/MW) is requested, or
+  ## - simple/AHS are requested with linearD = FALSE
   need_binarized_D_for_Q <-
     length(nonlinear_conditions) > 0L ||
-    (any(condition %in% linear_conditions) && any(linear %in% c("none", "Z")))
+    (has_linear_conditions && !linearD)
 
   ## Need binarized D for the one-sided monotonicity screen.
   need_binarized_D_for_os <- has_margin_conditions
@@ -457,9 +454,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ## Actually create D.bin if either Q construction or the one-sided screen needs it.
   need_binarized_D <- need_binarized_D_for_Q || need_binarized_D_for_os
 
-  ## Need original/linear D if:
-  ## - simple/AHS are requested with linear = D or DZ
-  need_linear_D <- any(condition %in% linear_conditions) && any(linear %in% c("D", "DZ"))
+  ## Need original/linear D if simple/AHS are requested with linearD = TRUE
+  need_linear_D <- has_linear_conditions && linearD
 
   ##Validate select/pool choices for CART
   if (identical(testtype, "CART")) {
@@ -475,12 +471,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       )
     }
 
-    allowed_select <- c("zmargin","dval","yval","condition","equation","sample","linear")
+    allowed_select <- c("zmargin","dval","yval","condition","equation","sample")
     bad_select <- setdiff(select, allowed_select)
     if (length(bad_select) > 0L) {
       stop(
         "Invalid `select` for testtype = \"CART\". ",
-        "For CART, `select` may only contain \"zmargin\",\"dval\",\"yval\",\"condition\",\"equation\",\"sample\",\"linear\". ",
+        "For CART, `select` may only contain \"zmargin\",\"dval\",\"yval\",\"condition\",\"equation\",\"sample\". ",
         "Invalid entries: ",
         paste(bad_select, collapse = ", "),
         call. = FALSE
@@ -704,6 +700,30 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       data[, (Zbincol) := NULL]
     }
 
+  } else if (need_linear_Z && need_binarized_Z) {
+
+    ## K <= 2L here (the K > 2L branch above would otherwise have fired),
+    ## but a linear-eligible condition (linearZ = TRUE) and a margin-only
+    ## condition (KR/MW) are both present in this call -- Z needs both a
+    ## single binarized representation (no margin thresholds; with K <= 2
+    ## there's only one meaningful cutpoint) and its original/linear form.
+    zmap_list <- list(
+      margin = data[, .(rowid = .I, zmargin = NA_real_, z_is_linear = FALSE), by = id_],
+      linear = data[, .(rowid = .I, zmargin = NA_real_, z_is_linear = TRUE),  by = id_]
+    )
+    zmap <- data.table::rbindlist(zmap_list, use.names = TRUE)
+
+    data <- data[zmap$rowid]
+    data[, zmargin := zmap$zmargin]
+    data[, z_is_linear := zmap$z_is_linear]
+
+    data[z_is_linear == FALSE, (Z) := get(Zbincol)]
+    data[z_is_linear == TRUE,  (Z) := get(Zname)]
+
+    if (!is.null(Zbincol) && Zbincol %in% names(data)) {
+      data[, (Zbincol) := NULL]
+    }
+
   } else if (need_linear_Z) {
 
     ## No Z-margin stacking needed, but linear-Z designs need original Z.
@@ -737,8 +757,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     data[, z_is_linear := FALSE]
   }
 
-  ## Conditional variance of Z is only needed for continuous/linear-Z rows
-  ## when the global target is "all".
   data[, z_is_linear_raw := z_is_linear]
   data[, z_use_linear_score := z_is_linear]
 
@@ -764,13 +782,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ## AIPW vs FWL score selection
   ##
   ##   - Rows on the linear/continuous-Z scoring path (z_is_linear_raw ==
-  ##     TRUE) always use FWL (target_linear = "overlap"): such a row, by
-  ##     definition, "contains Z" as linear, so it always falls into the
-  ##     "Otherwise, use FWL" branch below, regardless of parametric/FE/
-  ##     whether `target` was specified. That formula doesn't use Z.hat as
-  ##     an inverse-propensity weight at all, so it isn't numerically
-  ##     fragile the way the binary-Z AIPW formula is (see below) -- forcing
-  ##     it away from AIPW is a warning, not an error.
+  ##     TRUE) always use FWL: `target` has no effect on Z-scoring for
+  ##     linear-Z rows at all (see `linearZ` docs). That formula doesn't use
+  ##     Z.hat as an inverse-propensity weight, so it isn't numerically
+  ##     fragile the way the binary-Z AIPW formula is (see below).
   ##   - For rows NOT on the linear-Z path (binary Z rows): thanks to the
   ##     z_use_linear_score override above, such a row can only still reach
   ##     the AIPW branch when parametric = FALSE AND there are no FE -- in
@@ -788,14 +803,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ##         no warning, nothing to error on.
   ## ------------------------------------------------------------
 
-  any_linear_z  <- any(data$z_is_linear_raw, na.rm = TRUE)
   any_binary_z  <- any(!data$z_is_linear_raw, na.rm = TRUE)
 
   if (target_explicit && identical(target, "overlap")) {
     ## Explicit request for overlap/FWL: honor as-is, nothing to warn/error about.
 
     target_binary <- "overlap"
-    target_linear <- "overlap"
 
   } else {
     ## target is either unspecified, or explicitly "all".
@@ -821,32 +834,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     ## z_use_linear_score override above, which already routes binary-Z
     ## rows onto FWL in every other case.
     target_binary <- "all"
-    target_linear <- "overlap"
-
-    if (target_explicit && any_linear_z) {
-      ## explicit "all", overridden for the one remaining (non-fragile)
-      ## reason: linear-Z rows always use FWL regardless of target. FE/
-      ## parametric causes are handled above via stop(), not warning.
-
-      warning(
-        "target = \"all\" was requested, but linear Z terms are present. ",
-        "FWL (\"overlap\") scores will be used for the linear-Z rows ",
-        "instead of the AIPW-style average-partial-effect formula, which ",
-        "targets the overlap-weighted average effect rather than the ",
-        "full-population average partial effect.",
-        call. = FALSE
-      )
-    }
-    ## unspecified case: no warning/error, nothing explicitly requested.
-  }
-
-  need_z_var_global <- identical(target_linear, "all") &&
-    any(data$z_use_linear_score == TRUE, na.rm = TRUE)
-
-  need_z_var_rows <- if (need_z_var_global) {
-    which(data$z_use_linear_score == TRUE)
-  } else {
-    integer()
+    ## unspecified case, or explicit "all" with no fragile binary-Z rows:
+    ## no warning/error, nothing explicitly requested (or nothing unsafe).
   }
 
   ## ----------------------
@@ -937,54 +926,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     data[
       z_is_linear_raw != TRUE,
       (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
-    ]
-  }
-
-  ## ---------------------------------------------------------------------
-  ## Estimate conditional variance of Z innovation, analogous to Z.hat
-  ## ---------------------------------------------------------------------
-  Zvarhat <- NULL
-
-  if (need_z_var_global) {
-    i_zvar <- need_z_var_rows
-
-    Zvar <- "Zvar"
-    Zvarhat <- "Zvar.hat"
-
-    data[
-      i_zvar,
-      (Zvar) := (.SD[[Z]] - .SD[[zhat]])^2,
-      .SDcols = c(Z, zhat)
-    ]
-
-    Zvar_hat_info <- estimate_conditional_mean(
-      DT = data,
-      y_name = Zvar,
-      x_expr = X_expr_Z,
-      fe_expr = FE_expr,
-      out_hat = Zvarhat,
-      by = margins,
-      sample_var = "sample",
-      weight = weight,
-      cluster = cluster,
-      parametric = parametric,
-      foldname = foldname,
-      crossfit = crossfit,
-      crossfit_label = "Z",
-      forest_opts = Zparameters,
-      fixest_opts = Zparameters,
-      x_names = NULL,
-      x_prefix = "__xzv",
-      keep_x = TRUE,
-      return_residual = FALSE,
-      partial_out_y_fe = FALSE,
-      i = i_zvar
-    )
-
-    data[
-      i_zvar,
-      (Zvarhat) := pmax(.SD[[Zvarhat]], 1e-6),
-      .SDcols = Zvarhat
     ]
   }
 
@@ -1217,12 +1158,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   idx_blocks <- list()
 
-  ## helper for simple / AHS
+  ## helper for simple / AHS: builds exactly one representation of D/Z,
+  ## selected by linearD/linearZ (no more mixing multiple representations
+  ## of the same condition-type within one call).
   make_linear_blocks <- function(cond_name) {
-    blocks <- list()
-
-    ## ordinary margins: binarized Z and binarized D
-    if ("none" %in% linear) {
+    if (!linearD && !linearZ) {
+      ## ordinary margins: binarized Z and binarized D
       if (!exists("os_res")) {
         stop("Internal error: ordinary margin rows require `os_res`, but it was not computed.",
              call. = FALSE)
@@ -1251,48 +1192,37 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       tmp[, condition := cond_name]
       tmp[, linear := "none"]
 
-      blocks[["none"]] <- tmp
-    }
-
-    ## linear in D, margin in Z
-    if ("D" %in% linear) {
-      if (K > 2L) {
-        tmp <- data.table::data.table(zmargin = Zsup[-1L])
+    } else if (linearD && !linearZ) {
+      ## linear in D, margin in Z
+      tmp <- if (K > 2L) {
+        data.table::data.table(zmargin = Zsup[-1L])
       } else {
-        tmp <- data.table::data.table()
+        data.table::data.table()
       }
 
       tmp[, condition := cond_name]
       tmp[, linear := "D"]
 
-      blocks[["D"]] <- tmp
-    }
-
-    ## linear in Z, margin in D
-    if ("Z" %in% linear) {
-      if (J > 2L) {
-        tmp <- data.table::data.table(dval = Dsup[-1L])
+    } else if (!linearD && linearZ) {
+      ## linear in Z, margin in D
+      tmp <- if (J > 2L) {
+        data.table::data.table(dval = Dsup[-1L])
       } else {
-        tmp <- data.table::data.table()
+        data.table::data.table()
       }
 
       tmp[, condition := cond_name]
       tmp[, linear := "Z"]
 
-      blocks[["Z"]] <- tmp
-    }
-
-    ## linear in both Z and D
-    if ("DZ" %in% linear) {
+    } else {
+      ## linear in both Z and D
       tmp <- data.table::data.table()
 
       tmp[, condition := cond_name]
       tmp[, linear := "DZ"]
-
-      blocks[["DZ"]] <- tmp
     }
 
-    data.table::rbindlist(blocks, use.names = TRUE, fill = TRUE)
+    tmp
   }
 
   # simple
@@ -1604,13 +1534,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   is_MW <- data[["condition"]] == "MW"
   is_KR <- data[["condition"]] == "KR"
 
-  has_linear_col <- "linear" %in% names(data)
-
-  linear_requested__ <- unique(as.character(linear))
-  if (is.null(linear_requested__) || length(linear_requested__) == 0L) {
-    linear_requested__ <- "none"
-  }
-
   if (!is.null(Dcol) && Dcol %in% names(data)) {
     Dvals__ <- sort(unique(stats::na.omit(data[[Dcol]])))
     D_is_binary__ <- length(Dvals__) <= 2L && all(Dvals__ %in% c(0, 1))
@@ -1620,14 +1543,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
 
   # ---------------- simple / AHS: linear-D Q ----------------
-  # If there is a linear column, only rows with linear D/DZ get raw D.
-  # If there is no linear column, the whole simple/AHS block follows the requested linear argument.
+  # Rows from a linear-eligible condition get raw D iff linearD = TRUE
+  # (a single global choice -- no more per-row reconciliation needed).
 
-  linear_D_rows <- if (has_linear_col) {
-    is_linear_condition & data[["linear"]] %in% c("D", "DZ")
-  } else {
-    is_linear_condition & any(linear_requested__ %in% c("D", "DZ"))
-  }
+  linear_D_rows <- is_linear_condition & linearD
 
   if (any(linear_D_rows)) {
     stopifnot(!is.null(Dname), Dname %in% names(data))
@@ -1641,13 +1560,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   # ---------------- simple / AHS: binarized-D Q ----------------
   # These are rows where Q should be 1(D >= dval).
-  # If there is no linear column and linear = "D", this is FALSE, as desired.
 
-  binarized_rows <- if (has_linear_col) {
-    is_linear_condition & data[["linear"]] %in% c("none", "Z")
-  } else {
-    is_linear_condition & any(linear_requested__ %in% c("none", "Z"))
-  }
+  binarized_rows <- is_linear_condition & !linearD
 
   if (any(binarized_rows)) {
     stopifnot(!is.null(Dcol), Dcol %in% names(data))
@@ -1682,7 +1596,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       stop(
         "dval is missing in rows that need binarized Q. ",
         "Because D is not binary, the margin index must provide dval for ",
-        "ordinary simple/AHS rows or linear='none'/'Z' rows.",
+        "ordinary simple/AHS rows with linearD = FALSE.",
         call. = FALSE
       )
     }
@@ -1851,11 +1765,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   # family/type flags
   data[, Q_continuous :=
          condition == "MW" |
-         (
-           condition %in% c("simple", "AHS") &
-             "linear" %in% names(data) &
-             linear %in% c("D", "DZ")
-         )]
+         (condition %in% c("simple", "AHS") & linearD)]
   data[, Q_needs_resid :=
          condition != "MW"]
 
@@ -2000,7 +1910,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       margins = margins,
 
       w_name = Z,
-      zvar_name = Zvarhat,
 
       folds = foldname,
       weight_name = weight,
@@ -2012,7 +1921,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       verbose = FALSE,
 
       target_binary = target_binary,
-      target_linear = target_linear,
       z_linear_score_name = "z_use_linear_score"
     )
   }
@@ -2033,7 +1941,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       margins = margins,
 
       w_name = Z,
-      zvar_name = Zvarhat,
 
       folds = foldname,
       weight_name = weight,
@@ -2045,7 +1952,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       verbose = FALSE,
 
       target_binary = target_binary,
-      target_linear = target_linear,
       z_linear_score_name = "z_use_linear_score"
     )
   }
