@@ -84,7 +84,10 @@ scores when augmented inverse-probability weighted scores are constructed and wh
 Also used, for continuous instrument case, to floor the fitted conditional-variance nuisance \eqn{v(X)} at
 \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
 outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
-that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.}
+that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
+Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
+additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
+the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.}
 
 \item{weight}{Optional character scalar naming a nonnegative weight variable.}
 

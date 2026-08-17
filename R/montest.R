@@ -64,6 +64,9 @@
 #'   \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
 #'   outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
 #'   that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
+#'   Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
+#'   additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
+#'   the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing cannot be combined with cluster.
@@ -279,6 +282,17 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     "doubly.robust must be a single non-missing logical" =
       is.logical(doubly.robust) && length(doubly.robust) == 1L && !is.na(doubly.robust)
   )
+
+  ## Computed early (needs only doubly.robust/target, both already resolved)
+  ## because it also gates the propensity clip in the normalize.Z block
+  ## below, in addition to the v(X) block further down: whenever
+  ## doubly.robust = FALSE & target == "overlap", binary-Z rows use the
+  ## pooled empirical variance of (Z-Z.hat) instead of the closed-form
+  ## e*(1-e), and that path needs an UNCLIPPED Z.hat to actually reproduce
+  ## the classical FWL/OLS coefficient it's meant to match -- see
+  ## make_scores_vec().
+  need_pooled_v <- !isTRUE(doubly.robust) && identical(target, "overlap")
+
   screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
@@ -949,9 +963,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ## corrects finite-sample/cross-fitting bias in a conditional-mean estimate
   ## (mean(Z-Z.hat)=0 within group), which is equally meaningful for binary
   ## and continuous Z.hat. The [0,1] probability clip only makes sense for
-  ## the binary/closed-form-variance representation, so it stays restricted
-  ## to !has_FE (binary representation can only occur when has_FE = FALSE --
-  ## see the representation rule above) and to z_is_linear_raw != TRUE rows.
+  ## the binary/closed-form-variance representation, so it's restricted to
+  ## z_is_linear_raw != TRUE rows, and further gated on:
+  ##   - !has_FE: under has_FE, binary representation is handled instead by
+  ##     validate_and_clip() inside make_scores_vec(), conditional on
+  ##     doubly.robust/target (see the v(X) block below).
+  ##   - !need_pooled_v: whenever doubly.robust = FALSE & target == "overlap",
+  ##     binary rows use the pooled empirical variance of (Z-Z.hat) instead
+  ##     of e*(1-e) (again, see the v(X) block below), which needs Z.hat
+  ##     UNCLIPPED to actually reproduce the classical FWL/OLS coefficient
+  ##     it's meant to match -- clipping it here, before make_scores_vec()
+  ##     even runs, would silently defeat that regardless of what
+  ##     make_scores_vec() itself does.
   ## ---------------------------------------------------------------------
 
   if (isTRUE(normalize.Z)) {
@@ -972,7 +995,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       by = by_norm
     ]
 
-    if (!has_FE) {
+    if (!has_FE && !need_pooled_v) {
       data[
         z_is_linear_raw != TRUE,
         (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
@@ -981,26 +1004,40 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   }
 
   ## ---------------------------------------------------------------------
-  ## Conditional-variance nuisance v(X) = Var(Z|X), needed by continuous-Z
-  ## rows. Binary-Z rows never need this: v = Z.hat*(1-Z.hat) is available
-  ## in closed form inside make_scores_vec(). A genuine per-observation fit
-  ## is needed only when doubly.robust = TRUE (the AIPW orthogonality
-  ## argument requires a genuinely local v(X)) or target == "all" (a
-  ## constant v would silently collapse "all" and "overlap" into the same
-  ## estimand, since dividing every row by the same number doesn't change
-  ## relative weighting). Otherwise (doubly.robust = FALSE & target ==
-  ## "overlap") fall back to the pooled empirical variance of (Z - Z.hat)
-  ## per group -- exactly what classical FWL/OLS already uses, no new model
-  ## needed, and more faithful to that classical estimand than a smoothed
-  ## model would be.
+  ## Conditional-variance nuisance v(X) = Var(Z|X). Continuous-Z rows always
+  ## need this from an external source (there is no closed form). Binary-Z
+  ## rows have a closed form (v = Z.hat*(1-Z.hat)) available for free, but
+  ## whether that closed form is actually USED depends on the same
+  ## doubly.robust/target logic as the continuous case -- see below.
+  ##
+  ## A genuine per-observation fit (`need_v_hat`, continuous rows only) is
+  ## needed when doubly.robust = TRUE (the AIPW orthogonality argument
+  ## requires a genuinely local v(X)) or target == "all" (a constant v
+  ## would silently collapse "all" and "overlap" into the same estimand,
+  ## since dividing every row by the same number doesn't change relative
+  ## weighting). Binary rows never need a fitted model for this case: the
+  ## closed form e*(1-e) already varies by X for free.
+  ##
+  ## Otherwise (doubly.robust = FALSE & target == "overlap", `need_pooled_v`)
+  ## every row -- binary and continuous alike -- gets the pooled empirical
+  ## variance of (Z - Z.hat) instead. For continuous rows this is exactly
+  ## what classical FWL/OLS already uses, no new model needed. For binary
+  ## rows it replaces the closed form e*(1-e): unlike e*(1-e), the pooled
+  ## empirical variance never requires Z.hat to represent a valid
+  ## probability, so it is robust to Z.hat straying outside [0,1] (e.g. an
+  ## LPM fit on a rare/near-degenerate binary Z) in exactly the situation
+  ## where the classical FWL/OLS coefficient this is meant to reproduce
+  ## would also be robust to it -- see `make_scores_vec()`.
   ## ---------------------------------------------------------------------
 
   zvarhat <- paste0(Z, ".var.hat")
   z_use_lin_any <- any(data$z_use_linear_score, na.rm = TRUE)
   need_v_hat <- z_use_lin_any &&
     (isTRUE(doubly.robust) || identical(target, "all"))
+  ## need_pooled_v was already computed early (before the normalize.Z
+  ## block), since it also gates the propensity clip there.
 
-  if (z_use_lin_any) {
+  if (need_v_hat || need_pooled_v) {
     ## `data[[Z]]`/`data[[zhat]]` (plain `[[`, evaluated here, not inside a
     ## `data[i, j]` call) sidestep data.table's column-name masking of `j` --
     ## masking would otherwise silently resolve the bare symbol `Z` to the
@@ -1013,6 +1050,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   }
 
   if (need_v_hat) {
+    ## Restricted to continuous-representation rows: binary rows never need
+    ## a fitted model here (see comment block above).
     estimate_conditional_mean(
       DT = data,
       y_name = z_resid_sq,
@@ -1033,25 +1072,29 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       x_prefix = "__xzv",
       keep_x = FALSE,
       return_residual = FALSE,
-      partial_out_y_fe = TRUE
+      partial_out_y_fe = TRUE,
+      i = which(data$z_use_linear_score)
     )
+  }
 
-    data[, (z_resid_sq) := NULL]
-
-  } else if (z_use_lin_any) {
+  if (need_pooled_v) {
+    ## Applies to every row (binary and continuous representations alike).
     by_pool <- unique(c("sample", margins))
     wt_vals <- if (is.null(weight)) rep(1, nrow(data)) else data[[weight]]
     wtmp_col <- ".__wtmp__"
     data[, (wtmp_col) := wt_vals]
 
     data[
-      z_use_linear_score == TRUE,
+      ,
       (zvarhat) := stats::weighted.mean(get(z_resid_sq), w = get(wtmp_col), na.rm = TRUE),
       by = by_pool
     ]
 
-    data[, (z_resid_sq) := NULL]
     data[, (wtmp_col) := NULL]
+  }
+
+  if (need_v_hat || need_pooled_v) {
+    data[, (z_resid_sq) := NULL]
   }
 
   ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE

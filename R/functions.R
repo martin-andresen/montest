@@ -2340,13 +2340,23 @@ validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
 ## Unified doubly-robust/FWL score:
 ##   score_i = t_i + (W_i-e_i)/v_i * [Y_i - m_i - t_i*(W_i-e_i)]
 ## `doubly.robust = FALSE` sets t_i := 0, which algebraically collapses this
-## to the FWL/partialling-out score (W_i-e_i)(Y_i-m_i)/v_i. Binary-Z rows use
-## the closed-form v_i = e_i*(1-e_i); continuous-Z rows require a supplied
-## `Z.var.hat` (which may itself be a fitted per-row nuisance, or a group-
-## pooled scalar broadcast across rows -- montest() decides which; this
-## function doesn't need to know). `target` no longer changes this formula
-## at all -- see `montest()`'s `w_eff` construction, which instead reweights
-## by the returned `v` when `target == "overlap"`.
+## to the FWL/partialling-out score (W_i-e_i)(Y_i-m_i)/v_i. `target` no
+## longer changes this formula at all -- see `montest()`'s `w_eff`
+## construction, which instead reweights by the returned `v` when
+## `target == "overlap"`.
+##
+## v_i's source: continuous-Z rows always require a supplied `Z.var.hat`
+## (fitted per-row, or a group-pooled scalar -- montest() decides which).
+## Binary-Z rows normally use the closed-form v_i = e_i*(1-e_i), with e_i
+## validated/clipped to [0,1] (needed for e_i*(1-e_i) to be a valid,
+## nonnegative variance at all). BUT if a (non-NA) pooled `Z.var.hat` is
+## supplied for binary rows too -- montest() does this whenever
+## doubly.robust=FALSE & target=="overlap" -- that pooled value is used
+## instead, and e_i is left UNCLIPPED in the (W_i-e_i) numerator: e_i is
+## only ever used additively there, so clipping it would introduce a real
+## divergence from the classical FWL/OLS coefficient this combination is
+## meant to reproduce (which never bounds its residualized-W term either),
+## whereas the closed form genuinely needs e_i in [0,1] to be well-defined.
 make_scores_vec <- function(Y,
                             Z,
                             Y.hat,
@@ -2397,13 +2407,21 @@ make_scores_vec <- function(Y,
     ii <- idx_binary
     w_use[ii] <- as.numeric(z[ii] > 0.5)
 
-    e[ii] <- validate_and_clip(
-      e[ii],
-      hard_lower = 0, hard_upper = 1,
-      floor = clip, ceiling = if (!is.null(clip)) 1 - clip else NULL,
-      label = "propensity e(X) for binary-Z rows"
-    )
-    v[ii] <- e[ii] * (1 - e[ii])
+    has_pooled_v <- !is.null(Z.var.hat) && !all(is.na(as.numeric(Z.var.hat)[ii]))
+
+    if (has_pooled_v) {
+      ## Pooled empirical variance supplied -- e is used only additively in
+      ## the score (w_use - e), never as a divisor, so it is left unclipped.
+      v[ii] <- as.numeric(Z.var.hat)[ii]
+    } else {
+      e[ii] <- validate_and_clip(
+        e[ii],
+        hard_lower = 0, hard_upper = 1,
+        floor = clip, ceiling = if (!is.null(clip)) 1 - clip else NULL,
+        label = "propensity e(X) for binary-Z rows"
+      )
+      v[ii] <- e[ii] * (1 - e[ii])
+    }
   }
 
   if (length(idx_linear)) {
