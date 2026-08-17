@@ -9,7 +9,7 @@
 #' the first stage is negative \code{"simple"}, the Kwan and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrument and treatment),
 #' the Mourifie and Wan (2017) conditions  \code{"MW"}, and the first stage conditional on Y-test from
 #' Andresen, Huber and Sloczynski (2026) \code{"AHS"}. Multivalued instruments, treatments and outcomes
-#' are expanded across margins and discretized into bins before estimation. See Details.
+#' are expanded across margins and discretized into bins before estimation or treated continuously, depending on options. See Details.
 #'
 #' @param data A \code{data.frame} or \code{data.table} containing the analysis sample.
 #'   Observations with missing values in any variables used by the call are dropped.
@@ -17,53 +17,48 @@
 #' @param fml.Z Optional: A one-sided formula for the nuisance of the instrument. Defaults to the same as the the general formula in fml
 #' @param fml.Q Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 #' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
-#' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or (the default) using semiparametric methods. In the latter case,
-#' all fixed effects are one-hot encoded, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
-#' \code{parametric} governs nuisance estimation only: it no longer influences whether the instrument is scored on its binary or continuous representation (see \code{linearZ}), which is fully decoupled from it.
+#' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or using semiparametric methods (the default). In the latter case,
+#' all fixed effects are residualized as specified in the FE part of the formula, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
+#' \code{parametric} governs nuisance estimation only.
 #' Nuisance fragility that can arise under \code{parametric=TRUE} (e.g. a linear-probability-model propensity falling outside \eqn{[0,1]}) is caught at score-construction time by the validity checks
-#' described under \code{aipw.clip}, rather than by rerouting the representation.
+#' described under \code{aipw.clip}.
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
-#'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan conditions), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
-#'   If \code{Y} is omitted, only \code{"simple"} is allowed.
-#' @param target a scalar equal to either "all" or "overlap" to determine whether the function should target the average treatment effect (all) in the testing subsample, or the overlap-adjusted / weighted ATE ("overlap").
+#'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
+#'   If \code{Y} is omitted from the formula, only \code{"simple"} is allowed.
+#' @param target a scalar equal to either "all" (default) or "overlap" to determine whether the function should target the average treatment effect (all) in the relevant subsample, or the overlap-adjusted / weighted ATE ("overlap").
 #'   Applies uniformly to every condition, both instrument representations (binary or continuous), and both \code{doubly.robust} settings: it does not change the score formula itself, only the weight used when
-#'   aggregating scores into the final test statistic (\code{"overlap"} reweights by the per-observation conditional variance of the instrument; \code{"all"} does not). These are genuinely different
-#'   estimands whenever the underlying effect is heterogeneous in X (which is exactly what this package searches for): each row's score has conditional expectation equal to the *local* effect at that row's X,
+#'   aggregating scores into the final test statistic. These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X,
 #'   so \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. Under \code{doubly.robust=FALSE}, \code{"overlap"} coincides
-#'   exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient (covariance over variance of the residualized instrument and pseudo-outcome, pooled across observations); \code{"all"} does
-#'   not, and only agrees with it when the local effect is constant across X.
-#' @param doubly.robust Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moment, augmenting the residual term with the causal forest's predicted CATE.
-#'   If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment, with no CATE augmentation. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
+#'   exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient.
+#' @param doubly.robust Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
+#'   If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
 #'   \code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
-#'   but, unlike AIPW, offers no protection in the other direction: a misspecified \code{Z.hat} biases the estimate even when \code{Q.hat} is exactly right. AIPW (\code{doubly.robust=TRUE}) is robust to
+#'   but, unlike AIPW, offers no protection in the other direction. AIPW (\code{doubly.robust=TRUE}) is robust to
 #'   misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric} and \code{target}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
 #'   \code{"MW"}, which does not use this scoring machinery.
 #' @param linearD Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 #'   instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
-#'   multivalued D rather than cut-and-stack. Only meaningful for \code{"simple"}/\code{"AHS"}, whose moment
-#'   conditions support a slope-based representation; \code{"KR"}/\code{"MW"} are always indicator-based and
-#'   always use the binarized representation, so \code{linearD = TRUE} is disallowed in combination with them
-#'   (an error, not a silent no-op) -- drop \code{"KR"}/\code{"MW"} from \code{condition} instead. Downgraded to
+#'   multivalued D rather than cut-and-stack. Only meaningful for \code{"simple"} and \code{"AHS"}, whose moment
+#'   conditions support a slope-based representation; \code{"KR"} and \code{"MW"} are always indicator-based and
+#'   always use the binarized representation, so \code{linearD = TRUE} is disallowed in combination with them. Downgraded to
 #'   FALSE with a warning if D is binary in the data (no meaningful linear scoring in that case).
 #' @param linearZ Logical, default FALSE. If TRUE, the instrument Z is scored on its raw/linear scale
 #'   instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
-#'   multivalued Z rather than cut-and-stack. Only meaningful for \code{"simple"}/\code{"AHS"}; \code{"KR"}/
+#'   multivalued Z rather than cut-and-stack. Only meaningful for \code{"simple"} and \code{"AHS"}; \code{"KR"}/
 #'   \code{"MW"} always use the binarized representation, so \code{linearZ = TRUE} is disallowed in combination
-#'   with them (an error, not a silent no-op) -- drop \code{"KR"}/\code{"MW"} from \code{condition} instead.
-#'   Downgraded to FALSE with a warning if Z is binary in the data. Together with the presence of fixed effects
-#'   in \code{fml}, this determines the instrument's representation (binary vs. continuous) for scoring; see
-#'   \code{doubly.robust} for the independent choice of score family. \code{condition = "MW"} separately requires
-#'   Z to be genuinely binary in the data and requires \code{fml} to have no fixed effects, regardless of
-#'   \code{linearZ} -- see Details.
+#'   with them. Downgraded to FALSE with a warning if Z is binary in the data.
 #' @param inner.folds Optional integer giving the number of within-sample folds used for
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
-#' @param normalize.Z Logical, default TRUE; if \code{TRUE}, estimated instrument propensity scores are
-#'   normalized after estimation.
+#' @param normalize.Z Logical, default TRUE; if \code{TRUE}, the estimated conditional mean of the instrument
+#'   (\code{Z.hat}) is mean-shifted within each sample/margin group so its group-average residual is exactly
+#'   zero, correcting finite-sample/cross-fitting bias. Applies regardless of representation (binary or
+#'   continuous) or fixed effects. Additionally, for the binary representation only (which requires \code{Z.hat}
+#'   to behave as a valid probability), \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]}.
 #' @param aipw.clip Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
-#'   Also used, for continuous-instrument rows, to floor the fitted conditional-variance nuisance \eqn{v(X)} at
+#'   Also used, for continuous instrument case, to floor the fitted conditional-variance nuisance \eqn{v(X)} at
 #'   \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
 #'   outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
 #'   that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
@@ -90,11 +85,11 @@
 #' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select, but "sample" can, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. No margin can appear in both pool and select, but "sample" can, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
@@ -918,10 +913,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
 
   ## ---------------------------------------------------------------------
-  ## Normalize only when there are no FE and Z is binary
+  ## Mean-shift correction applies regardless of FE/representation -- it just
+  ## corrects finite-sample/cross-fitting bias in a conditional-mean estimate
+  ## (mean(Z-Z.hat)=0 within group), which is equally meaningful for binary
+  ## and continuous Z.hat. The [0,1] probability clip only makes sense for
+  ## the binary/closed-form-variance representation, so it stays restricted
+  ## to !has_FE (binary representation can only occur when has_FE = FALSE --
+  ## see the representation rule above) and to z_is_linear_raw != TRUE rows.
   ## ---------------------------------------------------------------------
 
-  if (isTRUE(normalize.Z) && !has_FE) {
+  if (isTRUE(normalize.Z)) {
     z_col <- as.character(Z)[1L]
     zhat_col <- paste0(z_col, ".hat")
     by_norm <- unique(c("sample", margins))
@@ -939,10 +940,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       by = by_norm
     ]
 
-    data[
-      z_is_linear_raw != TRUE,
-      (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
-    ]
+    if (!has_FE) {
+      data[
+        z_is_linear_raw != TRUE,
+        (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
+      ]
+    }
   }
 
   ## ---------------------------------------------------------------------
