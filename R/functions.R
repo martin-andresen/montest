@@ -199,7 +199,8 @@ CART_test <- function(
     xval = 10,
     rpart_options = NULL,
     fe_expr = NULL,
-    fe_rank_adj = TRUE
+    fe_rank_adj = TRUE,
+    x_rank_vars = character(0)
 ) {
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
@@ -546,17 +547,15 @@ CART_test <- function(
     }
 
     out <- dtg[, {
-      rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-        fe_rank(
-          data = data,
-          idx = rowid,
-          fe_expr = fe_expr,
-          weight_col = weight_col,
-          cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
-        )$rank
-      } else {
-        0L
-      }
+      rank_adj <- rank_adj_total(
+        data = data,
+        idx = rowid,
+        fe_expr = fe_expr,
+        x_vars = x_rank_vars,
+        weight_col = weight_col,
+        cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL,
+        fe_rank_adj = fe_rank_adj
+      )
 
       o <- crv1_mean(score, w, cl, rank_adj = rank_adj)
 
@@ -969,17 +968,15 @@ CART_test <- function(
     w[!is.finite(w)] <- 0
     cl <- if (!is.null(cluster_col)) data[[cluster_col]][idx_keep_all] else NULL
 
-    rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-      fe_rank(
-        data = data,
-        idx = idx_keep_all,
-        fe_expr = fe_expr,
-        weight_col = weight_col,
-        cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
-      )$rank
-    } else {
-      0L
-    }
+    rank_adj <- rank_adj_total(
+      data = data,
+      idx = idx_keep_all,
+      fe_expr = fe_expr,
+      x_vars = x_rank_vars,
+      weight_col = weight_col,
+      cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL,
+      fe_rank_adj = fe_rank_adj
+    )
 
     o <- crv1_mean(y, w, cl, rank_adj = rank_adj)
 
@@ -3287,6 +3284,57 @@ add_running_fe_rank <- function(DT,
   invisible(DT)
 }
 
+## ===== 3. x_rank() ========================================================
+## Rank of the design matrix implied by the parametric-nuisance covariates
+## (the union of X_expr_Z's and X_expr_Q's variables, passed in as
+## `x_vars` -- empty whenever `parametric = FALSE`, since X is genuinely
+## cross-fit in that case and no penalty applies). Recomputed within the
+## given row subset, mirroring fe_rank()'s per-idx recomputation: a small
+## test cell can have a lower local rank than the full sample (near-constant
+## covariates, collinearity). The intercept is included only when there is
+## no FE to absorb it, matching the RHS formula feols_partial_out() actually
+## fits (`y ~ x_expr | fe_expr` vs. plain `y ~ x_expr`).
+x_rank <- function(data, idx = NULL, x_vars = NULL, has_FE = FALSE) {
+  x_vars <- x_vars[x_vars %in% names(data)]
+  if (!length(x_vars)) return(0L)
+
+  dsub <- if (!is.null(idx)) {
+    if (!length(idx)) return(0L)
+    data[idx]
+  } else {
+    data
+  }
+  if (!nrow(dsub)) return(0L)
+
+  fml <- stats::reformulate(x_vars, intercept = !has_FE)
+  mm <- tryCatch(stats::model.matrix(fml, data = dsub), error = function(e) NULL)
+  if (is.null(mm) || !ncol(mm)) return(0L)
+
+  as.integer(qr(mm)$rank)
+}
+
+## ===== 4. rank_adj_total() =================================================
+## Combines fe_rank() and x_rank() into the single `rank_adj` value consumed
+## by crv1_mean(), gated by the shared `fe_rank_adj` switch. `x_vars` is
+## already empty whenever `parametric = FALSE`, so this is a no-op then.
+rank_adj_total <- function(data, idx, fe_expr, x_vars = NULL, weight_col = NULL,
+                            cluster_vals = NULL, fe_rank_adj = TRUE) {
+  if (!isTRUE(fe_rank_adj)) return(0L)
+
+  fe_r <- if (!is.null(fe_expr)) {
+    fe_rank(
+      data = data, idx = idx, fe_expr = fe_expr,
+      weight_col = weight_col, cluster_vals = cluster_vals
+    )$rank
+  } else {
+    0L
+  }
+
+  x_r <- x_rank(data = data, idx = idx, x_vars = x_vars, has_FE = !is.null(fe_expr))
+
+  as.integer(fe_r + x_r)
+}
+
 ####### FIND OPTIMAL CUTOFF AND TEST #############
 forest_test <- function(
     data,
@@ -3308,7 +3356,8 @@ forest_test <- function(
     alpha = 0.05,
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
-    fe_rank_conservative = TRUE
+    fe_rank_conservative = TRUE,
+    x_rank_vars = character(0)
 ) {
   screen <- match.arg(screen)
 
@@ -3369,7 +3418,8 @@ forest_test <- function(
       alpha = alpha,
       fe_expr = fe_expr,
       fe_rank_adj = fe_rank_adj,
-      fe_rank_conservative = fe_rank_conservative
+      fe_rank_conservative = fe_rank_conservative,
+      x_rank_vars = x_rank_vars
     )
   }
 
@@ -3628,7 +3678,8 @@ forest_test_core <- function(
     alpha = 0.05,
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
-    fe_rank_conservative = TRUE
+    fe_rank_conservative = TRUE,
+    x_rank_vars = character(0)
 ) {
 
   select_keep_ids <- function(cand, choose_by, id_by, alpha) {
@@ -4301,17 +4352,15 @@ forest_test_core <- function(
   ## First build the valid final tests.
   ## In sample_pool_after_margin_select mode this is intentionally sample-specific.
   if (length(test_by) == 0L) {
-    rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-      fe_rank(
-        data = data,
-        idx = dt_test$rowid,
-        fe_expr = fe_expr,
-        weight_col = weight_col,
-        cluster_vals = clv
-      )$rank
-    } else {
-      0L
-    }
+    rank_adj <- rank_adj_total(
+      data = data,
+      idx = dt_test$rowid,
+      fe_expr = fe_expr,
+      x_vars = x_rank_vars,
+      weight_col = weight_col,
+      cluster_vals = clv,
+      fe_rank_adj = fe_rank_adj
+    )
 
     o <- crv1_mean(
       score = dt_test$score,
@@ -4345,17 +4394,15 @@ forest_test_core <- function(
 
   } else {
     test_out <- dt_test[, {
-      rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-        fe_rank(
-          data = data,
-          idx = rowid,
-          fe_expr = fe_expr,
-          weight_col = weight_col,
-          cluster_vals = clv
-        )$rank
-      } else {
-        0L
-      }
+      rank_adj <- rank_adj_total(
+        data = data,
+        idx = rowid,
+        fe_expr = fe_expr,
+        x_vars = x_rank_vars,
+        weight_col = weight_col,
+        cluster_vals = clv,
+        fe_rank_adj = fe_rank_adj
+      )
 
       o <- crv1_mean(
         score = score,
@@ -4444,17 +4491,15 @@ forest_test_core <- function(
         )
 
         test_out_pool <- dt_common[, {
-          rank_adj <- if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-            fe_rank(
-              data = data,
-              idx = rowid,
-              fe_expr = fe_expr,
-              weight_col = weight_col,
-              cluster_vals=clv
-            )$rank
-          } else {
-            0L
-          }
+          rank_adj <- rank_adj_total(
+            data = data,
+            idx = rowid,
+            fe_expr = fe_expr,
+            x_vars = x_rank_vars,
+            weight_col = weight_col,
+            cluster_vals = clv,
+            fe_rank_adj = fe_rank_adj
+          )
 
           o <- crv1_mean(
             score = score,
@@ -4517,6 +4562,7 @@ forest_test_core <- function(
     crv1_mean_fun = crv1_mean,
     fe_expr = fe_expr,
     fe_rank_adj = fe_rank_adj,
+    x_rank_vars = x_rank_vars,
     weight_col = weight_col
   )
 
@@ -4648,6 +4694,7 @@ global_means_crv1 <- function(
     crv1_mean_fun,
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
+    x_rank_vars = character(0),
     weight_col = NULL
 ) {
   stopifnot(data.table::is.data.table(data))
@@ -4692,11 +4739,10 @@ global_means_crv1 <- function(
   }
 
     rank_for_rows <- function(rowid,cl_vals) {
-      if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-        fe_rank(data = data, idx = rowid, fe_expr = fe_expr, weight_col = weight_col,cluster_vals=cl_vals)$rank
-      } else {
-        0L
-      }
+      rank_adj_total(
+        data = data, idx = rowid, fe_expr = fe_expr, x_vars = x_rank_vars,
+        weight_col = weight_col, cluster_vals = cl_vals, fe_rank_adj = fe_rank_adj
+      )
     }
 
   if (length(by_cols) == 0L) {

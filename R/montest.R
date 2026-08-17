@@ -263,6 +263,17 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   if (is.null(X_expr_Z)) X_expr_Z <- X_expr_forest
   if (is.null(X_expr_Q)) X_expr_Q <- X_expr_forest
 
+  ## Under parametric = TRUE, Z.hat/Q.hat's linear nuisance models are fit
+  ## on the same rows used for testing (no cross-fitting), so the degrees-
+  ## of-freedom correction must also account for X's rank, alongside the
+  ## existing FE-rank correction (fe_rank_adj). Under parametric = FALSE,
+  ## X is genuinely cross-fit, so no such penalty applies.
+  x_rank_vars <- if (isTRUE(parametric)) {
+    unique(c(all.vars(X_expr_Z), all.vars(X_expr_Q)))
+  } else {
+    character(0)
+  }
+
   if (!is.null(inner.folds)) {
     if (!is.numeric(inner.folds) ||
         length(inner.folds) != 1L ||
@@ -2220,8 +2231,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars)
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())
