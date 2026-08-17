@@ -106,8 +106,7 @@
 #'   \item Continuous or multivalued instruments, treatments and outcomes discretized into bins.
 #'   \item The data is stacked across instrument margins, treatment margins, outcomes,
 #'   equations, and test conditions. The outcome variable Q is defined, depending on condition and margins.
-#'   \item Nuisance functions for as \code{Z.hat}, and the outcome \code{Q.hat} are estimated and outcomes are residualized
-#'   using regression forests within margins.
+#'   \item Nuisance functions for as \code{Z.hat}, and the outcome \code{Q.hat} are estimated
 #'   \item Separate causal forests of the outcome \code{Q}, on
 #'   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
 #'   treatment effects are predicted in and out of sample and scores constructed
@@ -116,11 +115,11 @@
 #'   in predicted treatment effects. Select the cutoff with the smallest t-statistic on the mean of scores
 #'   Alternatively, subset selection can be done using a CART algorithm.
 #'   \item Depending on the choices in \code{select}, promising subsets (using selection rules in \code{screen}) are evaluated  in the opposite sample half. If performing multiple tests,
-#'   depending on the option \code{pool}, p-values are adjusted for multiple testing.
+#'   depending on the option \code{pool} and \code{select}, p-values are adjusted for multiple testing.
 #' }
 #'
-#' \code{montest} supports weights and clustering, and allow for multivalued treatments and instruments
-#' by binarizing instruments and treatments into quantile or equisized bins. The command also tests for
+#' \code{montest} supports weights, clustering, and fixed effects and allow for multivalued treatments and instruments
+#' by binarizing instruments and treatments into quantile or equisized bins or treating them continuously. The command also tests for
 #' one-sided monotonicity (within margins of the treatment and instrument) and if found, warns the user
 #' and skips testing any trivially satisfied conditions.
 #'
