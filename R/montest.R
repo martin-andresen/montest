@@ -933,7 +933,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   if (isTRUE(normalize.Z)) {
     z_col <- as.character(Z)[1L]
     zhat_col <- paste0(z_col, ".hat")
-    by_norm <- unique(c("sample", margins))
+
+    ## Must match the grouping Z.hat was actually fit on (estimate_conditional_mean()'s
+    ## `by_fe` under parametric = TRUE, `by_sp` under parametric = FALSE), or this
+    ## over-corrects: under parametric = TRUE, Z.hat is fit in-sample, pooled across
+    ## "sample" halves (feols_partial_out(..., by = margins), no cross-fitting), so its
+    ## residuals already have exactly zero mean within each margin group by construction
+    ## -- forcing a *separate* zero within each "sample" half on top of that just adds
+    ## sampling-noise perturbation, with no real cross-fit bias to correct. Under
+    ## parametric = FALSE, Z.hat genuinely is a held-out (cross-fit) prediction structured
+    ## around the "sample" split (crossfit_hat(..., margins = by_sp)), where the within-
+    ## half shift is the correction it's meant for.
+    by_norm <- if (isTRUE(parametric)) unique(margins) else unique(c("sample", margins))
 
     stopifnot(z_col %in% names(data))
     stopifnot(zhat_col %in% names(data))
@@ -1032,7 +1043,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   if (need_pooled_v) {
     ## Applies to every row (binary and continuous representations alike).
-    by_pool <- unique(c("sample", margins))
+    ## Same reasoning as by_norm above: under parametric = TRUE there is no
+    ## cross-fitting to justify splitting this pooled variance by "sample" --
+    ## it just makes the per-cluster sandwich contributions (crv1_mean()'s
+    ## ug_g = U_g - theta*W_g) depend on which sample half a cluster's rows
+    ## fall in, inflating the reported SE for no real reason.
+    by_pool <- if (isTRUE(parametric)) unique(margins) else unique(c("sample", margins))
     wt_vals <- if (is.null(weight)) rep(1, nrow(data)) else data[[weight]]
     wtmp_col <- ".__wtmp__"
     data[, (wtmp_col) := wt_vals]
