@@ -855,17 +855,29 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   ## Continuous-Z rows (FWL, or AIPW with a fitted variance nuisance) are
   ## chosen whenever:
-  ##   - has_FE: small/unbalanced FE cells make the closed-form binary
-  ##     representation (v = e*(1-e)) less trustworthy, or
+  ##   - has_FE AND Z is genuinely non-binary (K_true > 2): with a
+  ##     multivalued Z, has_FE makes e(X) more FE-flexible (hence more
+  ##     variable), and there is no closed-form alternative to a fitted
+  ##     v(X) model for a non-Bernoulli variable. But when Z is genuinely
+  ##     binary (K_true <= 2), Var(Z|X) = e(X)*(1-e(X)) is exact regardless
+  ##     of how e(X) was estimated (with or without FE) -- FE only changes
+  ##     the ESTIMATION METHOD for e(X), never what e(X) is an estimate of,
+  ##     so forcing a separately-fit variance model in that case only adds
+  ##     a second, noisier source of estimation error on top of e(X)'s own,
+  ##     with none of the closed form's built-in [0, 0.25] guarantee. (A
+  ##     noisy e(X) still biases e(X)*(1-e(X)) downward -- see the `target`
+  ##     docs -- but it can never make it negative or otherwise invalid the
+  ##     way an unconstrained fitted variance model can.)
   ##   - linearZ = TRUE: the user explicitly asked for Z on its raw/linear
-  ##     scale (see `linearZ` docs).
+  ##     scale (see `linearZ` docs); already implies K_true > 2, since
+  ##     linearZ is downgraded to FALSE above whenever Z is binary.
   ## `parametric` is deliberately NOT a trigger here: nuisance fragility
   ## (e.g. an LPM-based Z.hat falling outside [0,1]) is instead caught by
   ## `validate_and_clip()` at score-construction time, fully decoupling the
   ## parametric/semiparametric choice from the binary/continuous
   ## representation choice. `doubly.robust` (AIPW vs. FWL) is likewise an
   ## independent choice -- see the `fit_models()` calls below.
-  if (has_FE || isTRUE(linearZ)) {
+  if ((has_FE && K_true > 2L) || isTRUE(linearZ)) {
     data[, z_use_linear_score := TRUE]
   }
 
