@@ -727,113 +727,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ######################## 6a STACK DATA AND ESTIMATE Z.HAT / D.HAT / Q.HAT as early as possible #####
   margins=c()
 
-  if (K > 2L && (need_binarized_Z || need_linear_Z)) {
+  ## Z's representation is a single global choice for the whole call, not a
+  ## per-row one: need_binarized_Z == !linearZ and need_linear_Z == linearZ
+  ## always hold here (linearZ = TRUE is disallowed together with "KR"/"MW"
+  ## earlier in this function, which is exactly what would otherwise let
+  ## the two representations coexist in one stacked dataset). So there are
+  ## only three cases -- linear, margin-stacked, or plain binary -- never a
+  ## mix, and z_is_linear ends up the same value for every row.
+  if (linearZ) {
 
-    zmap_list <- list()
-
-    ## Margin-specific expansion.
-    ##
-    ## - lowest Z gets second-lowest margin, so Zbin >= zmargin gives 0
-    ## - highest Z gets highest margin, so Zbin >= zmargin gives 1
-    ## - intermediate Z gets current and next-higher margins, giving one 1 and one 0
-    if (need_binarized_Z) {
-      stopifnot(!is.null(Zbincol), Zbincol %in% names(data))
-
-      zvals <- sort(unique(data[[Zbincol]]))
-      zvals <- zvals[!is.na(zvals)]
-
-      if (length(zvals) < 2L) {
-        stop("Need at least two non-missing Z values to construct zmargin.")
-      }
-
-      minZ <- zvals[1L]
-      maxZ <- zvals[length(zvals)]
-
-      zmap_list[["margin"]] <- data[, {
-        z0 <- get(Zbincol)
-        k0 <- match(z0, zvals)
-
-        if (is.na(z0) || is.na(k0)) {
-          zm <- NA_real_
-        } else if (z0 == minZ) {
-          zm <- zvals[2L]
-        } else if (z0 == maxZ) {
-          zm <- zvals[length(zvals)]
-        } else {
-          zm <- c(z0, zvals[k0 + 1L])
-        }
-
-        .(
-          rowid = .I,
-          zmargin = zm,
-          z_is_linear = FALSE
-        )
-      }, by = id_]
-    }
-
-    ## Linear-Z copy.
-    ##
-    ## One copy per original row, with zmargin = NA.
-    ## Later, these rows should only match linear %in% c("Z", "DZ")
-    ## in margin_index.
-    if (need_linear_Z) {
-      zmap_list[["linear"]] <- data[
-        ,
-        .(
-          rowid = .I,
-          zmargin = NA_real_,
-          z_is_linear = TRUE
-        ),
-        by = id_
-      ]
-    }
-
-    zmap <- data.table::rbindlist(zmap_list, use.names = TRUE)
-
-    data <- data[zmap$rowid]
-    data[, zmargin := zmap$zmargin]
-    data[, z_is_linear := zmap$z_is_linear]
-
-    margins <- unique(c(margins, "zmargin"))
-
-    ## Assign Z on the expanded rows.
-    ##
-    ## Margin rows use binarized Z at the local zmargin.
-    ## Linear rows keep the original Z.
-    data[z_is_linear == FALSE, (Z) := as.integer(get(Zbincol) >= zmargin)]
-    data[z_is_linear == TRUE,  (Z) := get(Zname)]
-
-    if (!is.null(Zbincol) && Zbincol %in% names(data)) {
-      data[, (Zbincol) := NULL]
-    }
-
-  } else if (need_linear_Z && need_binarized_Z) {
-
-    ## K <= 2L here (the K > 2L branch above would otherwise have fired),
-    ## but a linear-eligible condition (linearZ = TRUE) and a margin-only
-    ## condition (KR/MW) are both present in this call -- Z needs both a
-    ## single binarized representation (no margin thresholds; with K <= 2
-    ## there's only one meaningful cutpoint) and its original/linear form.
-    zmap_list <- list(
-      margin = data[, .(rowid = .I, zmargin = NA_real_, z_is_linear = FALSE), by = id_],
-      linear = data[, .(rowid = .I, zmargin = NA_real_, z_is_linear = TRUE),  by = id_]
-    )
-    zmap <- data.table::rbindlist(zmap_list, use.names = TRUE)
-
-    data <- data[zmap$rowid]
-    data[, zmargin := zmap$zmargin]
-    data[, z_is_linear := zmap$z_is_linear]
-
-    data[z_is_linear == FALSE, (Z) := get(Zbincol)]
-    data[z_is_linear == TRUE,  (Z) := get(Zname)]
-
-    if (!is.null(Zbincol) && Zbincol %in% names(data)) {
-      data[, (Zbincol) := NULL]
-    }
-
-  } else if (need_linear_Z) {
-
-    ## No Z-margin stacking needed, but linear-Z designs need original Z.
+    ## No margin stacking: Z used on its raw/linear scale throughout.
     data[, (Z) := get(Zname)]
     data[, zmargin := NA_real_]
     data[, z_is_linear := TRUE]
@@ -842,25 +745,64 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       data[, (Zbincol) := NULL]
     }
 
-  } else if (need_binarized_Z) {
+  } else if (K > 2L) {
 
-    ## Binary-Z case or otherwise no stacking needed.
-    ## If Zbincol exists, use it as the working binary Z.
+    ## Margin-specific expansion: one row per (original observation,
+    ## candidate zmargin threshold).
+    ##
+    ## - lowest Z gets second-lowest margin, so Zbin >= zmargin gives 0
+    ## - highest Z gets highest margin, so Zbin >= zmargin gives 1
+    ## - intermediate Z gets current and next-higher margins, giving one 1 and one 0
+    stopifnot(!is.null(Zbincol), Zbincol %in% names(data))
+
+    zvals <- sort(unique(data[[Zbincol]]))
+    zvals <- zvals[!is.na(zvals)]
+
+    if (length(zvals) < 2L) {
+      stop("Need at least two non-missing Z values to construct zmargin.")
+    }
+
+    minZ <- zvals[1L]
+    maxZ <- zvals[length(zvals)]
+
+    zmap <- data[, {
+      z0 <- get(Zbincol)
+      k0 <- match(z0, zvals)
+
+      if (is.na(z0) || is.na(k0)) {
+        zm <- NA_real_
+      } else if (z0 == minZ) {
+        zm <- zvals[2L]
+      } else if (z0 == maxZ) {
+        zm <- zvals[length(zvals)]
+      } else {
+        zm <- c(z0, zvals[k0 + 1L])
+      }
+
+      .(rowid = .I, zmargin = zm)
+    }, by = id_]
+
+    data <- data[zmap$rowid]
+    data[, zmargin := zmap$zmargin]
+    data[, z_is_linear := FALSE]
+
+    margins <- unique(c(margins, "zmargin"))
+
+    data[, (Z) := as.integer(get(Zbincol) >= zmargin)]
+
+    if (!is.null(Zbincol) && Zbincol %in% names(data)) {
+      data[, (Zbincol) := NULL]
+    }
+
+  } else {
+
+    ## Binary-Z case (K <= 2): a single cutpoint, no margin stacking needed.
     if (!is.null(Zbincol) && Zbincol %in% names(data)) {
       data[, (Z) := get(Zbincol)]
       data[, (Zbincol) := NULL]
     }
 
     data[, zmargin := NA_real_]
-    data[, z_is_linear := FALSE]
-  }
-
-  ## Safety fallback if none of the branches above ran.
-  if (!("zmargin" %in% names(data))) {
-    data[, zmargin := NA_real_]
-  }
-
-  if (!("z_is_linear" %in% names(data))) {
     data[, z_is_linear := FALSE]
   }
 
