@@ -1059,7 +1059,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   }
 
   ##Check for onesided noncompliance
-  if (has_margin_conditions) {
+  ## Skipped entirely when has_FE = TRUE: this is a pooled/unconditional
+  ## check (no FE, no X, no fitted quantities at all -- see
+  ## test_one_sided_noncompliance()), so it can't see FE-localized
+  ## noncompliance patterns and can misjudge a margin as trivially
+  ## satisfied purely from cross-FE-group composition effects (a
+  ## Simpson's-paradox-style aggregation bias), even though the surviving
+  ## margins get scored by FE-aware machinery regardless. Below, both
+  ## make_linear_blocks() and the KR block fall back to testing every
+  ## margin directly (built from Zsup/Dsup) instead of filtering by os_res.
+  if (has_margin_conditions && !has_FE) {
     if (is.null(Dbincol) || !(Dbincol %in% names(data))) {
       stop(
         "Internal error: one-sided margin conditions require `", paste0(D, ".bin"),
@@ -1256,29 +1265,44 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   make_linear_blocks <- function(cond_name) {
     if (!linearD && !linearZ) {
       ## ordinary margins: binarized Z and binarized D
-      if (!exists("os_res")) {
-        stop("Internal error: ordinary margin rows require `os_res`, but it was not computed.",
-             call. = FALSE)
-      }
+      if (has_FE) {
+        ## os_res is not computed under FE (see the one-sided-noncompliance
+        ## block above) -- test every margin directly instead of filtering.
+        tmp <- if (K > 2L && J > 2L) {
+          data.table::CJ(zmargin = Zsup[-1L], dval = Dsup[-1L])
+        } else if (K > 2L) {
+          data.table::data.table(zmargin = Zsup[-1L])
+        } else if (J > 2L) {
+          data.table::data.table(dval = Dsup[-1L])
+        } else {
+          data.table::data.table()
+        }
 
-      tmp <- os_res$threshold[one_sided == FALSE]
+      } else {
+        if (!exists("os_res")) {
+          stop("Internal error: ordinary margin rows require `os_res`, but it was not computed.",
+               call. = FALSE)
+        }
 
-      keep <- intersect(c("zmargin", "dmargin"), names(tmp))
-      tmp <- tmp[, ..keep]
+        tmp <- os_res$threshold[one_sided == FALSE]
 
-      if ("dmargin" %in% names(tmp)) {
-        data.table::setnames(tmp, "dmargin", "dval")
-      }
+        keep <- intersect(c("zmargin", "dmargin"), names(tmp))
+        tmp <- tmp[, ..keep]
 
-      ## If D is binary, dval is not a meaningful margin for simple/AHS-none.
-      ## Missing dval will later be treated as threshold 1 only inside Q construction.
-      if (J == 2L && "dval" %in% names(tmp)) {
-        tmp[, dval := NULL]
-      }
+        if ("dmargin" %in% names(tmp)) {
+          data.table::setnames(tmp, "dmargin", "dval")
+        }
 
-      ## If Z is binary, zmargin is not a meaningful margin.
-      if (K == 2L && "zmargin" %in% names(tmp)) {
-        tmp[, zmargin := NULL]
+        ## If D is binary, dval is not a meaningful margin for simple/AHS-none.
+        ## Missing dval will later be treated as threshold 1 only inside Q construction.
+        if (J == 2L && "dval" %in% names(tmp)) {
+          tmp[, dval := NULL]
+        }
+
+        ## If Z is binary, zmargin is not a meaningful margin.
+        if (K == 2L && "zmargin" %in% names(tmp)) {
+          tmp[, zmargin := NULL]
+        }
       }
 
       tmp[, condition := cond_name]
@@ -1377,18 +1401,29 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   # KR
   if ("KR" %in% condition) {
-    tmp <- os_res$exact[trivial_exact == FALSE]
+    if (has_FE) {
+      ## os_res is not computed under FE (see the one-sided-noncompliance
+      ## block above) -- test every margin directly instead of filtering.
+      tmp <- if (K > 2L) {
+        data.table::CJ(zmargin = Zsup[-1L], dval = Dsup)
+      } else {
+        data.table::data.table(dval = Dsup)
+      }
 
-    keep <- intersect(c("zmargin", "dval", "dmargin"), names(tmp))
-    tmp <- tmp[, ..keep]
+    } else {
+      tmp <- os_res$exact[trivial_exact == FALSE]
 
-    if ("dmargin" %in% names(tmp)) {
-      data.table::setnames(tmp, "dmargin", "dval")
-    }
+      keep <- intersect(c("zmargin", "dval", "dmargin"), names(tmp))
+      tmp <- tmp[, ..keep]
 
-    ## If Z is binary, zmargin is not a meaningful KR margin.
-    if (K == 2L && "zmargin" %in% names(tmp)) {
-      tmp[, zmargin := NULL]
+      if ("dmargin" %in% names(tmp)) {
+        data.table::setnames(tmp, "dmargin", "dval")
+      }
+
+      ## If Z is binary, zmargin is not a meaningful KR margin.
+      if (K == 2L && "zmargin" %in% names(tmp)) {
+        tmp[, zmargin := NULL]
+      }
     }
 
     tmp[, condition := "KR"]
