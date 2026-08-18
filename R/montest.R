@@ -166,6 +166,34 @@
 #'   conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
 #' }
 #'
+#' \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),
+#' but not every combination is equally well-justified statistically:
+#' \enumerate{
+#'   \item \code{parametric=FALSE}, \code{doubly.robust=TRUE} (the default for both): the best-justified
+#'   pairing for flexible nuisances. Cross-fit forests converge slower than \eqn{\sqrt{n}} and can be
+#'   locally misspecified; a Neyman-orthogonal (doubly-robust) score is what keeps that first-order
+#'   nuisance-estimation error out of the final estimate, letting it enter only at second order instead
+#'   of biasing the result. Recommended unless there is a specific reason to deviate.
+#'   \item \code{parametric=TRUE}, \code{doubly.robust=FALSE}: sensible when the nuisance functional form
+#'   is genuinely trusted to be (close to) linear. A correctly-specified linear model does not have the
+#'   slow-convergence problem doubly-robust scoring exists to protect against, so the AIPW correction adds
+#'   little while a doubly-robust score built on in-sample, non-cross-fit nuisances loses the finite-sample
+#'   protection cross-fitting would otherwise provide.
+#'   \item \code{parametric=FALSE}, \code{doubly.robust=FALSE}: still consistent (the FWL score only
+#'   requires \code{Z.hat} to be correctly specified, for any \code{Q.hat} -- see \code{doubly.robust}),
+#'   but gives up both the orthogonality protection and the efficiency gain from using the causal forest's
+#'   predicted CATE as a control variate, for no compensating benefit. Rarely worth choosing deliberately.
+#'   \item \code{parametric=TRUE}, \code{doubly.robust=TRUE}: the most fragile combination. Nuisances are
+#'   fit in-sample without cross-fitting, so the doubly-robust correction loses much of its usual
+#'   theoretical justification (no sample-splitting protects against the same-sample fit's own overfitting),
+#'   while keeping the fragility risk of an unconstrained parametric propensity (e.g. a linear-probability-
+#'   model prediction outside \eqn{[0,1]}). This combination is not disallowed -- the concrete failure mode
+#'   is caught by the validity checks described under \code{aipw.clip} (a hard stop on structurally invalid
+#'   nuisance values, or a clip-and-warn near the boundary) -- but it is the pairing to reach for last, and
+#'   only when the linear nuisance model is trusted to be well-specified with propensities safely bounded
+#'   away from 0 and 1.
+#' }
+#'
 #'
 #' @return
 #' A named list:
