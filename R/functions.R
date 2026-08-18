@@ -2280,7 +2280,7 @@ make_X_residualized_from_FE <- function(DT,
   }
 
   ## 3. If FE exist, residualize each model-matrix column from FE.
-  resid_names <- paste0(prefix, "_res_", seq_along(raw_names))
+  resid_names <- paste0(prefix, "_res_", make.names(colnames(mm), unique = TRUE))
 
   for (jj in seq_along(raw_names)) {
     out_j <- resid_names[jj]
@@ -4682,30 +4682,40 @@ forest_test_core <- function(
     df_all <- data[, .SD, .SDcols = cols_need]
     df_tst <- data[in_test, .SD, .SDcols = cols_need]
 
+    ## x_names carry an internal "__xf_" namespacing prefix (added by
+    ## make_X_residualized_from_FE() to avoid colliding with real data
+    ## columns) that is meaningless to a reader of the output -- strip it
+    ## for display, keeping only the raw/res tag plus the covariate name.
+    x_names_display <- sub("^__xf_", "", x_names)
+
     wmeans_dt <- function(df, w, by_cols) {
       DTtmp <- data.table::as.data.table(df)
       DTtmp[, w__ := w]
 
-      if (length(by_cols) > 0L) {
+      out <- if (length(by_cols) > 0L) {
         DTtmp[, lapply(.SD, function(x) w_mean(as.numeric(x), w__)),
               by = by_cols, .SDcols = x_names]
       } else {
         DTtmp[, lapply(.SD, function(x) w_mean(as.numeric(x), w__)),
               .SDcols = x_names]
       }
+      data.table::setnames(out, x_names, x_names_display)
+      out
     }
 
     wsds_dt <- function(df, w, by_cols) {
       DTtmp <- data.table::as.data.table(df)
       DTtmp[, w__ := w]
 
-      if (length(by_cols) > 0L) {
+      out <- if (length(by_cols) > 0L) {
         DTtmp[, lapply(.SD, function(x) w_sd(as.numeric(x), w__)),
               by = by_cols, .SDcols = x_names]
       } else {
         DTtmp[, lapply(.SD, function(x) w_sd(as.numeric(x), w__)),
               .SDcols = x_names]
       }
+      data.table::setnames(out, x_names, x_names_display)
+      out
     }
 
     Xmeans <- wmeans_dt(df_tst, wv[in_test], test_by)
