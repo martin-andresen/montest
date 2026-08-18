@@ -619,6 +619,22 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   data <- data[complete.cases(data)]
 
+  if (!is.null(weight)) {
+    bad_w <- data[[weight]] <= 0
+    n_bad_w <- sum(bad_w)
+    if (n_bad_w > 0L) {
+      message(
+        "Note: dropped ", n_bad_w,
+        " observation(s) with zero or negative `weight`. A zero weight leaves ",
+        "that row's nuisance fit unpopulated downstream; keeping it around would ",
+        "either silently drop it again later or (once a sandwich weight is added ",
+        "on top of a zero base weight) corrupt aggregate statistics instead of ",
+        "being simply excluded."
+      )
+      data <- data[!bad_w]
+    }
+  }
+
   n=nrow(data)
   if (is.null(cluster)==FALSE) {
     G <- data.table::uniqueN(data[[cluster]])
@@ -879,6 +895,28 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     }
   }
 
+  ## Under parametric = FALSE, estimate_conditional_mean() re-derives its own
+  ## FE-residualized X (one feols() fit per covariate per margin group) via
+  ## make_X_residualized_from_FE() whenever x_names is NULL. When Z.hat's/
+  ## Q.hat's covariate formula is literally the same as the main formula's
+  ## (fml.Z/fml.Q left at their default), that work exactly duplicates what
+  ## X_forest_info just computed above -- reuse its columns instead of
+  ## refitting. Gated on `fixest_opts` also matching: it doesn't affect the
+  ## residualized *values* (feols_partial_out() only ever extracts residuals/
+  ## fitted, never SEs), but there's no need to assume that here when it can
+  ## just be checked.
+  X_names_reuse_for_Z <- if (
+    !isTRUE(parametric) &&
+      identical(X_expr_Z, X_expr_forest) &&
+      identical(Rparameters, Zparameters)
+  ) X_forest_info$x_names else NULL
+
+  X_names_reuse_for_Q <- if (
+    !isTRUE(parametric) &&
+      identical(X_expr_Q, X_expr_forest) &&
+      identical(Rparameters, Qparameters)
+  ) X_forest_info$x_names else NULL
+
   ## ---------------------------------------------------------------------
   ## Estimate Z.hat for each Z margin in stacked data
   ## ---------------------------------------------------------------------
@@ -901,7 +939,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     crossfit_label = "Z",
     forest_opts = Zparameters,
     fixest_opts = Zparameters,
-    x_names = NULL,
+    x_names = X_names_reuse_for_Z,
     x_prefix = "__xz",
     keep_x = TRUE,
     return_residual = FALSE,
@@ -1885,7 +1923,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
     data[
       condition == "KR" & dval > dmin,
-      Q := as.numeric(get(Dcol)) -
+      Q := as.numeric(get(Dcol) == dval) -
         as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
       by = .(dval, yval)
     ]
@@ -1938,9 +1976,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       forest_opts = Qparameters,
       fixest_opts = Qparameters,
 
-      ## Let wrapper build residualized X_Q if parametric = FALSE.
-      ## Or pass precomputed X_Q if you have it.
-      x_names = NULL,
+      ## Reuse X_forest_info's FE-residualized columns when X_expr_Q is the
+      ## same formula (and fixest_opts) as the main one -- see
+      ## X_names_reuse_for_Q above. Otherwise let the wrapper build its own.
+      x_names = X_names_reuse_for_Q,
       x_prefix = "__xq",
 
       keep_x = TRUE,

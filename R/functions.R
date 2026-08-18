@@ -503,7 +503,14 @@ CART_test <- function(
     df_tr <- data.frame(.y = as.numeric(dtr[[scores_col]]), Xtr, check.names = FALSE)
     w_tr <- if (!is.null(weight_col)) as.numeric(dtr[[weight_col]]) else NULL
 
-    fml <- stats::as.formula(paste(".y ~", paste(colnames(Xtr), collapse = " + ")))
+    ## Forest/FE-residualized feature columns are prefixed "__..." (see
+    ## make_X_residualized_from_FE()), which isn't a syntactically valid bare
+    ## R identifier start -- data.frame(..., check.names=FALSE) above
+    ## preserves the literal name instead of sanitizing it, so the formula
+    ## must backtick-quote each term or as.formula() fails to parse it.
+    fml <- stats::as.formula(
+      paste(".y ~", paste(sprintf("`%s`", colnames(Xtr)), collapse = " + "))
+    )
 
     tree <- rpart::rpart(
       formula = fml,
@@ -638,6 +645,7 @@ CART_test <- function(
       score_group <- as.numeric(df_group[[scores_col]])
       w_group <- if (!is.null(weight_col)) as.numeric(df_group[[weight_col]]) else rep(1.0, nrow(df_group))
       w_group[!is.finite(w_group)] <- 0
+      w_sandwich_group <- if (!is.null(sandwich_col)) as.numeric(df_group[[sandwich_col]]) else NA_real_
       cl_group <- if (!is.null(cluster_col)) df_group[[cluster_col]] else NULL
 
       dt0 <- data.table::data.table(
@@ -645,7 +653,8 @@ CART_test <- function(
         leaf   = leaf_all,
         sample = s_group,
         score  = score_group,
-        w      = w_group
+        w      = w_group,
+        w_sandwich = w_sandwich_group
       )
       if (!is.null(cluster_col)) {
         dt0[, cl := as.integer(factor(cl_group, exclude = NULL))]
@@ -672,21 +681,28 @@ CART_test <- function(
         } else {
           rank_adj <- 0L
 
-          if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-            rank_adj <- fe_rank(
-              data = data,
-              idx = rowid,
-              fe_expr = fe_expr,
-              weight_col = weight_col,
-              cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
-            )$rank
+          if (isTRUE(fe_rank_adj)) {
+            if (!is.null(fe_expr)) {
+              rank_adj <- fe_rank(
+                data = data,
+                idx = rowid,
+                fe_expr = fe_expr,
+                weight_col = weight_col,
+                cluster_vals = if (!is.null(cluster_col)) data[[cluster_col]] else NULL
+              )$rank
+            }
+            ## Cheap constant stand-in for x_rank() -- see x_rank_const();
+            ## this block runs once per leaf per fit group per direction, far
+            ## too often to afford the exact per-idx qr() computation.
+            rank_adj <- rank_adj + x_rank_const(x_rank_vars, has_FE = !is.null(fe_expr))
           }
 
           o <- crv1_mean(
             score = score,
             w = w,
             cl = cl,
-            rank_adj = rank_adj
+            rank_adj = rank_adj,
+            w_sandwich = if (!is.null(sandwich_col)) w_sandwich else NULL
           )
 
           list(
@@ -3319,6 +3335,22 @@ x_rank <- function(data, idx = NULL, x_vars = NULL, has_FE = FALSE) {
   as.integer(qr(mm)$rank)
 }
 
+## ===== 3b. x_rank_const() =================================================
+## Cheap constant approximation to x_rank(), for use where the exact per-idx
+## qr()-based computation would be evaluated far too often to afford (the
+## training-side cutoff/leaf search in forest_test_core()/CART_test(), run at
+## every candidate rather than once per final held-out test). X is
+## continuous, so its design-matrix rank is almost always exactly
+## length(x_vars) + (1 for the intercept, when there's no FE to absorb it),
+## the same formula x_rank() itself would return whenever a candidate has
+## more rows than that -- candidates too small for that to hold are already
+## screened out by the G >= minsize check elsewhere. Takes no `data`/`idx`:
+## it does not vary across candidates, so callers compute it once.
+x_rank_const <- function(x_vars, has_FE = FALSE) {
+  if (!length(x_vars)) return(0L)
+  as.integer(length(x_vars) + if (!has_FE) 1L else 0L)
+}
+
 ## ===== 4. rank_adj_total() =================================================
 ## Combines fe_rank() and x_rank() into the single `rank_adj` value consumed
 ## by crv1_mean(), gated by the shared `fe_rank_adj` switch. `x_vars` is
@@ -3605,7 +3637,12 @@ crv1_mean <- function(score,
   ## the classical FWL/OLS coefficient exactly): using that same constant
   ## inside the sandwich erases real per-cluster heterogeneity in the
   ## underlying (Z-Z.hat)^2 and inflates the reported SE. Defaults to `w`,
-  ## reproducing the original single-weight formula exactly.
+  ## reproducing the original single-weight formula exactly. A row with an
+  ## invalid (non-finite/negative) `w_sandwich` -- e.g. weight = 0 leaving a
+  ## row's nuisance fit unpopulated upstream -- falls back to that row's own
+  ## `w` instead of being dropped from `ok`: `w_sandwich` must only affect
+  ## the sandwich term, never silently shrink the sample `theta` is computed
+  ## from.
   if (is.null(w_sandwich)) {
     w_sandwich <- w
   } else {
@@ -3613,6 +3650,8 @@ crv1_mean <- function(score,
     if (length(w_sandwich) != n0) {
       stop("`w_sandwich` must be NULL or have the same length as `score`.", call. = FALSE)
     }
+    bad_ws <- !is.finite(w_sandwich) | w_sandwich < 0
+    w_sandwich[bad_ws] <- w[bad_ws]
   }
 
   if (is.null(cl)) {
@@ -3987,6 +4026,7 @@ forest_test_core <- function(
     po <- predov[idx]
     sc <- scorev[idx]
     w  <- wv[idx]
+    wsand <- if (!is.null(wv_sandwich)) wv_sandwich[idx] else w
     cl <- clv[idx]
 
     dt <- data.table::data.table(
@@ -3995,6 +4035,7 @@ forest_test_core <- function(
       pred_o = po,
       score  = sc,
       w      = w,
+      wsand  = wsand,
       cl     = cl,
       rid    = seq_along(idx)
     )
@@ -4005,29 +4046,48 @@ forest_test_core <- function(
 
     data.table::setorder(dt, sample, pred)
 
-    if (isTRUE(fe_rank_adj) && !is.null(fe_expr)) {
-      add_running_fe_rank(
-        DT = dt,
-        fe_expr = fe_expr,
-        by = "sample",
-        out = ".fe_rank_running",
-        conservative = fe_rank_conservative,
-        cluster_vals = dt$cl
-      )
+    if (isTRUE(fe_rank_adj)) {
+      if (!is.null(fe_expr)) {
+        add_running_fe_rank(
+          DT = dt,
+          fe_expr = fe_expr,
+          by = "sample",
+          out = ".fe_rank_running",
+          conservative = fe_rank_conservative,
+          cluster_vals = dt$cl
+        )
+      } else {
+        dt[, .fe_rank_running := 0L]
+      }
+
+      ## Cheap constant stand-in for x_rank() on this training-side (grid-
+      ## search) path: recomputing the exact qr()-based rank at every
+      ## candidate cutoff would be far too expensive here. X is continuous,
+      ## so its column rank is almost always exactly length(x_rank_vars) + (1
+      ## for the intercept, when there's no FE to absorb it) -- see
+      ## x_rank_const(). Gated on fe_rank_adj to match rank_adj_total()'s
+      ## own gating on the test side.
+      dt[, .fe_rank_running := .fe_rank_running + x_rank_const(x_rank_vars, has_FE = !is.null(fe_expr))]
     } else {
       dt[, .fe_rank_running := 0L]
     }
 
     dt[, N := seq_len(.N), by = sample]
-    dt[, `:=`(a = w * score, b = w)]
-    dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b)), by = .(sample, cl)]
+    ## `a`/`b` (and their cumulative sums WgY/Wg) drive `theta`/`m` -- using
+    ## `w`, exactly as before. The per-cluster "meat" terms (dTB2/dTAB) use
+    ## `wsand` (via WgSand) instead of `w`, mirroring crv1_mean()'s own
+    ## `w_sandwich` argument: using the pooled/broadcast `w` there instead of
+    ## the row-level (Z-Z.hat)^2 weight erases real per-cluster heterogeneity
+    ## and inflates the reported statistic.
+    dt[, `:=`(a = w * score, b = w, bsand = wsand)]
+    dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b), WgSand = cumsum(bsand)), by = .(sample, cl)]
     dt[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample]
     dt[, m := SWY / SW, by = sample]
 
     dt[, `:=`(
       dTA2 =  WgY^2 - (WgY - a)^2,
-      dTB2 =  Wg^2  - (Wg  - b)^2,
-      dTAB =  WgY * Wg - (WgY - a) * (Wg - b)
+      dTB2 =  WgSand^2  - (WgSand  - bsand)^2,
+      dTAB =  WgY * WgSand - (WgY - a) * (WgSand - bsand)
     )]
 
     dt[, `:=`(
