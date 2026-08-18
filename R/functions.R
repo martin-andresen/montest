@@ -3328,6 +3328,15 @@ x_rank <- function(data, idx = NULL, x_vars = NULL, has_FE = FALSE) {
   }
   if (!nrow(dsub)) return(0L)
 
+  ## MW rows never go through the parametric Q.hat/x_expr machinery this
+  ## rank is meant to charge for (MW's score comes straight from Z.hat, see
+  ## montest.R) -- exclude them so a cell that happens to include MW rows
+  ## isn't charged a penalty for a fit that was never done on their account.
+  if ("condition" %in% names(dsub)) {
+    dsub <- dsub[dsub$condition != "MW", ]
+  }
+  if (!nrow(dsub)) return(0L)
+
   fml <- stats::reformulate(x_vars, intercept = !has_FE)
   mm <- tryCatch(stats::model.matrix(fml, data = dsub), error = function(e) NULL)
   if (is.null(mm) || !ncol(mm)) return(0L)

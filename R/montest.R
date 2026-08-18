@@ -83,6 +83,24 @@
 #'   outcome on the right hand side \code{MW,AHS}.
 #' @param testtype Character string selecting the subset-search routine. Must be
 #'   \code{"forest"} or \code{"CART"}. Default: Forest.
+#' @param fe_rank_adj Logical; if \code{TRUE} (default), degrees of freedom for the
+#'   final cluster-robust test statistics are reduced by the rank of the fixed effects
+#'   (and, under \code{parametric = TRUE}, the rank of the parametric nuisance
+#'   covariates) actually used within each tested cell. This always uses an exact
+#'   computation and affects every reported statistic, regardless of \code{testtype}.
+#' @param fe_rank_conservative Logical; only relevant when \code{testtype = "forest"}.
+#'   Controls the cheap, approximate running fixed-effects-rank formula used purely to
+#'   screen candidate cutoffs during the forest-based search (recomputing the exact
+#'   rank at every candidate would be too slow). \code{TRUE} (default) sums each fixed-
+#'   effect term's running category count independently, which over-counts (and is
+#'   therefore conservative -- smaller effective degrees of freedom, wider intervals)
+#'   whenever multiple fixed-effect terms share or interact categories. \code{FALSE}
+#'   applies a cruder overlap correction that can under-count in the same situation.
+#'   This setting never affects the final reported statistic for whichever cutoff is
+#'   selected -- that value always comes from the exact computation controlled by
+#'   \code{fe_rank_adj} -- only which cutoff the search prefers. Has no effect at all
+#'   under \code{testtype = "CART"}, whose own cutoff search already uses the exact
+#'   computation.
 #' @param gridpoints Optional integer controlling the number of candidate cutoffs searched
 #'   by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.
 #' @param min_n Integer minimum number of treated and untreated instrument observations
@@ -197,7 +215,7 @@
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
-                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=FALSE,fe_rank_adj=TRUE,
+                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=TRUE,
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
@@ -355,6 +373,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     if (any(condition %in% c("KR","AHS","MW"))) {
       stop("Other conditions than (variants of) simple may not be used when Y is not specified. Specify the Y argument or use condition=simple")
     }
+  }
+
+  ## AHS's Q.hat fit (its i_yres rows, see the Q.hat-estimation block below)
+  ## uses one extra regressor beyond X_expr_Q -- either Y itself or its FE/X-
+  ## residualized version Y.res (y_name_rhs, built later from Y.res), which
+  ## x_rank_vars otherwise has no way to know about. Folding Y itself into
+  ## x_rank_vars adds exactly the +1 that extra regressor is worth (Y is
+  ## virtually never collinear with the X's used for nuisance fitting, and
+  ## its own rank contribution doesn't depend on whether the fitted model
+  ## ends up using raw Y or Y.res), without needing to track the exact
+  ## column name AHS's fit will end up using.
+  if (isTRUE(parametric) && "AHS" %in% condition) {
+    x_rank_vars <- unique(c(x_rank_vars, Y))
   }
 
   ## linearD/linearZ have no meaning for KR/MW -- their moment conditions are
@@ -2023,8 +2054,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ## Estimate Q.hat after Q has been constructed
   data[, Q.hat := NA_real_]
 
+  ## MW rows get no Q.hat fit at all -- MW's own score is assigned directly
+  ## from Z.hat (see the MW Q block above) and never reads Q.hat, so fitting
+  ## one would be pure wasted computation, and it would wrongly cost MW's
+  ## test statistic degrees of freedom via x_rank_vars for a fit it never
+  ## uses. Q.hat stays NA_real_ for MW rows (never consumed downstream:
+  ## Q_needs_resid excludes MW from the sd_resQ check below, and MW's own
+  ## scoring doesn't touch Q.hat).
   i_base <- which(!data$condition %in% c("MW", "AHS"))
-  i_yres <- which(data$condition %in% c("MW", "AHS"))
+  i_yres <- which(data$condition %in% c("AHS"))
 
   ## Rows with ordinary Q nuisance: Q ~ fml.Q | FE
   if (length(i_base)) {
