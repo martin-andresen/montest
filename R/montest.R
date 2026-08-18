@@ -1946,6 +1946,78 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     stop("Some rows still have missing Q.", call. = FALSE)
   }
 
+  ## ---------------- pre-check: drop cells with no variation in Q ----------------
+  ## Checked here, before Q.hat is ever fit -- not just later, on the
+  ## residual Q - Q.hat (see the bad_Q block further below). A cell with a
+  ## completely constant Q carries no information for any downstream test,
+  ## parametric or not, but under parametric = TRUE specifically feols()
+  ## hard-errors trying to fit Q ~ X against a constant dependent variable,
+  ## instead of the (still uninformative, but non-crashing) fit a forest
+  ## would produce under parametric = FALSE. Screening it out up front makes
+  ## both paths behave the same way instead of one of them crashing. Mirrors
+  ## the later bad_Q block's own convention exactly (same "at least one
+  ## sample part" grouping/wording, same drop-the-whole-margin-cell
+  ## behavior), just applied to Q itself instead of its residual, before
+  ## nuisance fitting instead of after.
+  byvars_preQ <- c("sample", margins)
+  data[, nQ_preQ := data.table::uniqueN(Q, na.rm = TRUE), by = byvars_preQ]
+
+  if (length(margins) == 0L) {
+    drop_all_preQ <- data[, any(nQ_preQ < 2L, na.rm = TRUE)]
+
+    if (isTRUE(drop_all_preQ)) {
+      message("Dropping all rows because at least one sample part has no usable variation in Q, before nuisance fitting.")
+      data <- data[0]
+
+      if (exists("margin_index")) {
+        margin_index <- margin_index[0]
+      }
+    }
+
+  } else {
+    bad_preQ <- unique(data[nQ_preQ < 2L, ..margins])
+
+    if (nrow(bad_preQ) > 0L) {
+      if (length(margins) == 1L) {
+        msg <- paste(bad_preQ[[margins]], collapse = ", ")
+        message(
+          "Dropping ", nrow(bad_preQ),
+          " margin cell(s) because at least one sample part has no usable variation in Q, before nuisance fitting: ",
+          msg
+        )
+      } else {
+        bad_labels <- apply(bad_preQ, 1, function(r) {
+          paste(paste(names(r), r, sep = "="), collapse = ", ")
+        })
+        message(
+          "Dropping ", nrow(bad_preQ),
+          " margin cell(s) because at least one sample part has no usable variation in Q, before nuisance fitting:\n",
+          paste("  -", bad_labels, collapse = "\n")
+        )
+      }
+
+      bad_preQ[, drop_preQ__ := TRUE]
+
+      data <- bad_preQ[data, on = margins]
+      data <- data[is.na(drop_preQ__)][, drop_preQ__ := NULL]
+
+      if (exists("margin_index")) {
+        margin_index <- bad_preQ[margin_index, on = margins]
+        margin_index <- margin_index[is.na(drop_preQ__)][, drop_preQ__ := NULL]
+      }
+    }
+  }
+
+  data[, nQ_preQ := NULL]
+
+  if (nrow(data) == 0L) {
+    stop(
+      "No remaining variation in Q for any margins. ",
+      "Likely identification issue -- does X perfectly explain Z or D?",
+      call. = FALSE
+    )
+  }
+
   time=rbind(time,"Stack data across margins"=proc.time())
 
   ## Estimate Q.hat after Q has been constructed
