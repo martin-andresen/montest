@@ -9,7 +9,7 @@ montestplot(object, sample = NULL, margins = NULL, numX = 10)
 \arguments{
 \item{object}{An object returned by \code{montest()} for a single search method,
 expected to contain elements such as \code{results}, \code{Xmeans},
-\code{Xmeans_all}, \code{XSD}, and optionally a table of margin shares.}
+\code{Xmeans_all}, \code{XSD}, and optionally \code{shares}.}
 
 \item{sample}{Optional sample index to plot. If \code{NULL}, the function attempts to
 infer the relevant sample from the object.}
@@ -20,8 +20,9 @@ infer the relevant sample from the object.}
 \item{numX}{Maximum number of covariates to display in the standardized-difference plot.}
 }
 \value{
-Invisibly returns the bar midpoints from the standardized-difference plot. The main
-purpose of the function is side-effect plotting.
+Invisibly returns the bar midpoints from the standardized-difference plot, or
+\code{NULL} if that panel could not be produced. The main purpose of the function is
+side-effect plotting.
 }
 \description{
 \code{montestplot()} visualizes the covariate imbalance of the testing subset selected
@@ -33,18 +34,29 @@ The first panel is a bar plot of standardized differences in covariate means bet
 the testing subset and the full sample, using information stored in
 \code{object$Xmeans}, \code{object$Xmeans_all}, and \code{object$XSD}. If margin-share
 information is available and requested, additional panels compare the test-sample share
-with the full-sample share across the specified margin variables.
+with the full-sample share across the specified margin variables, using \code{object$shares}.
 
+
+\code{Xmeans}, \code{Xmeans_all}, \code{XSD}, and \code{shares} are all keyed by
+whichever of \code{montest()}'s pool/select dimensions (\code{zmargin}, \code{dval},
+\code{yval}, \code{condition}, \code{equation}, \code{sample}) were \emph{not} pooled
+when the object was produced -- i.e. their row structure depends on the \code{pool}/
+\code{select} choices made in the original \code{montest()} call, and can range from a
+single pooled row to one row per sample/margin combination. \code{montestplot()}
+recovers this key structure from the column names actually present, locates the tested
+subset with the strongest violation (smallest test-sample p-value in
+\code{object$results}, optionally restricted to \code{sample}), and plots the matching
+row(s) rather than assuming a fixed layout.
 
 Covariates are ordered by the absolute magnitude of their standardized mean difference,
 and only the top \code{numX} are plotted. When \code{margins} is specified, the
 function produces additional bar plots comparing the share of the testing subset with
-the share of the full sample within each requested margin category.
+the share of the full sample within each requested, pooled margin category (from
+\code{object$shares}).
 
-This function expects a fairly specific object structure. In the current source, the
-plotting code appears to assume components named \code{Xmeans}, \code{Xmeans_all},
-\code{XSD}, and a table of margin shares. If the returned \code{montest()} object uses
-a different nesting convention, a wrapper method or small revision may be needed.
+\code{testtype = "CART"} results from \code{montest()} do not currently record
+\code{Xmeans}/\code{Xmeans_all}/\code{XSD}/\code{shares}, so the corresponding panels
+are unavailable for such objects.
 }
 \examples{
 \dontrun{
