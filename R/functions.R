@@ -4682,11 +4682,14 @@ forest_test_core <- function(
     df_all <- data[, .SD, .SDcols = cols_need]
     df_tst <- data[in_test, .SD, .SDcols = cols_need]
 
-    ## x_names carry an internal "__xf_" namespacing prefix (added by
-    ## make_X_residualized_from_FE() to avoid colliding with real data
-    ## columns) that is meaningless to a reader of the output -- strip it
-    ## for display, keeping only the raw/res tag plus the covariate name.
-    x_names_display <- sub("^__xf_", "", x_names)
+    ## x_names carry an internal "__xf_raw_"/"__xf_res_" namespacing prefix
+    ## (added by make_X_residualized_from_FE() to avoid colliding with real
+    ## data columns, and to distinguish raw vs. FE-residualized versions of
+    ## the same covariate) that is meaningless to a reader of the output --
+    ## strip it for display, leaving just the original covariate name. A
+    ## given x_names vector only ever contains one of raw/res per covariate
+    ## (never both), so this can't introduce duplicate display names.
+    x_names_display <- sub("^__xf_(raw|res)_", "", x_names)
 
     wmeans_dt <- function(df, w, by_cols) {
       DTtmp <- data.table::as.data.table(df)
