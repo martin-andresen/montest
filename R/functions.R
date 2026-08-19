@@ -201,7 +201,12 @@ CART_test <- function(
     fe_expr = NULL,
     fe_rank_adj = TRUE,
     x_rank_vars = character(0),
-    sandwich = NULL
+    sandwich = NULL,
+    center = NULL,
+    resid_treat = NULL,
+    resid_outcome = NULL,
+    sample_weight = NULL,
+    clip = 1e-3
 ) {
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
@@ -212,6 +217,32 @@ CART_test <- function(
   scores_col <- as.character(scores)
   stopifnot(length(sample_col) == 1L, sample_col %in% names(data))
   stopifnot(length(scores_col) == 1L, scores_col %in% names(data))
+
+  ## `center`/`resid_treat`/`resid_outcome`/`sample_weight` are optional
+  ## column names: when all four are supplied and every row of a given
+  ## held-out test job has `center[row]==TRUE`, the FINAL test-side
+  ## crv1_mean() call for that job uses crv1_mean(..., center=TRUE) --
+  ## refitting the with-intercept coefficient locally on that job's own
+  ## rows -- instead of the through-origin score/weight. `sample_weight` is
+  ## the plain (pre-`w_eff`/pre-v-scaling) sampling weight -- NOT the same
+  ## column as `weight` above, which by the time it reaches CART_test() is
+  ## already weight*v (see montest.R's w_eff). Centering is never applied
+  ## to the search/screening phase (the training-sample crv1_mean() calls
+  ## above), only to the final evaluation in the opposite/held-out sample.
+  ## See montest.R's need_ols_v for which rows set `center=TRUE`.
+  center_col <- if (is.null(center)) NULL else as.character(center)
+  resid_treat_col <- if (is.null(resid_treat)) NULL else as.character(resid_treat)
+  resid_outcome_col <- if (is.null(resid_outcome)) NULL else as.character(resid_outcome)
+  sample_weight_col <- if (is.null(sample_weight)) NULL else as.character(sample_weight)
+  use_centering <- !is.null(center_col) && !is.null(resid_treat_col) && !is.null(resid_outcome_col)
+  if (use_centering) {
+    stopifnot(
+      center_col %in% names(data),
+      resid_treat_col %in% names(data),
+      resid_outcome_col %in% names(data),
+      is.null(sample_weight_col) || sample_weight_col %in% names(data)
+    )
+  }
 
   x_names <- as.character(x_names)
   stopifnot(length(x_names) >= 1L, all(x_names %in% names(data)))
@@ -984,10 +1015,6 @@ CART_test <- function(
     idx_keep_all <- sort(unique(idx_keep_all))
     if (length(idx_keep_all) == 0L) next
 
-    y <- as.numeric(data[[scores_col]])[idx_keep_all]
-    w <- if (!is.null(weight_col)) as.numeric(data[[weight_col]])[idx_keep_all] else rep(1.0, length(idx_keep_all))
-    w[!is.finite(w)] <- 0
-    w_sandwich <- if (!is.null(sandwich_col)) as.numeric(data[[sandwich_col]])[idx_keep_all] else NULL
     cl <- if (!is.null(cluster_col)) data[[cluster_col]][idx_keep_all] else NULL
 
     rank_adj <- rank_adj_total(
@@ -1000,7 +1027,26 @@ CART_test <- function(
       fe_rank_adj = fe_rank_adj
     )
 
-    o <- crv1_mean(y, w, cl, rank_adj = rank_adj, w_sandwich = w_sandwich)
+    job_centered <- use_centering && all(as.logical(data[[center_col]][idx_keep_all]), na.rm = FALSE)
+
+    if (isTRUE(job_centered)) {
+      u <- as.numeric(data[[resid_outcome_col]])[idx_keep_all]
+      v <- as.numeric(data[[resid_treat_col]])[idx_keep_all]
+      sw <- if (!is.null(sample_weight_col)) as.numeric(data[[sample_weight_col]])[idx_keep_all] else rep(1.0, length(idx_keep_all))
+      sw[!is.finite(sw)] <- 0
+
+      o <- crv1_mean(
+        u, cl = cl, rank_adj = rank_adj,
+        center = TRUE, resid_treat = v, sample_weight = sw, clip = clip
+      )
+    } else {
+      y <- as.numeric(data[[scores_col]])[idx_keep_all]
+      w <- if (!is.null(weight_col)) as.numeric(data[[weight_col]])[idx_keep_all] else rep(1.0, length(idx_keep_all))
+      w[!is.finite(w)] <- 0
+      w_sandwich <- if (!is.null(sandwich_col)) as.numeric(data[[sandwich_col]])[idx_keep_all] else NULL
+
+      o <- crv1_mean(y, w, cl, rank_adj = rank_adj, w_sandwich = w_sandwich)
+    }
 
     sample_here <- unique(jobs_here$est_s)
     leaf_here   <- unique(jobs_here$leaf)
@@ -2461,7 +2507,18 @@ make_scores_vec <- function(Y,
 
   score <- t + (w_use - e) / v * (y - m - t * (w_use - e))
 
-  list(score = score, v = v)
+  ## Raw residualized regressor/outcome (V_i, U_i), exposed so a caller can
+  ## re-fit a with-intercept (rather than through-origin) version of the
+  ## through-origin SR/overlap score against whatever subgroup it ends up
+  ## being tested on -- see crv1_mean()'s `center` argument. Harmless to
+  ## compute unconditionally; only meaningful/used for doubly.robust=FALSE
+  ## rows, where t=0 makes `resid_outcome` reduce to the plain y-m residual.
+  list(
+    score = score,
+    v = v,
+    resid_treat = w_use - e,
+    resid_outcome = y - m - t * (w_use - e)
+  )
 }
 
 # ========= Helper: Estimate causal/regression/instrumental forests =========
@@ -2526,6 +2583,12 @@ fit_models <- function(DT,
   }
   if (do_scores && !("scores_v" %in% names(DT))) {
     DT[, scores_v := NA_real_]
+  }
+  if (do_scores && !(".resid_treat" %in% names(DT))) {
+    DT[, .resid_treat := NA_real_]
+  }
+  if (do_scores && !(".resid_outcome" %in% names(DT))) {
+    DT[, .resid_outcome := NA_real_]
   }
 
   if (shrink) {
@@ -2758,6 +2821,8 @@ fit_models <- function(DT,
   pred_o_buf <- rep(NA_real_, n_i)
   score_buf  <- if (do_scores) rep(NA_real_, n_i) else NULL
   score_v_buf <- if (do_scores) rep(NA_real_, n_i) else NULL
+  resid_treat_buf <- if (do_scores) rep(NA_real_, n_i) else NULL
+  resid_outcome_buf <- if (do_scores) rep(NA_real_, n_i) else NULL
 
   if (shrink) {
     pred_var_buf   <- rep(NA_real_, n_i)
@@ -2857,6 +2922,8 @@ fit_models <- function(DT,
       )
       sc1 <- res_sc1$score
       scv1 <- res_sc1$v
+      rt1 <- res_sc1$resid_treat
+      ro1 <- res_sc1$resid_outcome
     }
 
     if (do_scores && length(idx2)) {
@@ -2874,6 +2941,8 @@ fit_models <- function(DT,
       )
       sc2 <- res_sc2$score
       scv2 <- res_sc2$v
+      rt2 <- res_sc2$resid_treat
+      ro2 <- res_sc2$resid_outcome
     }
 
     if (length(idx1)) {
@@ -2884,6 +2953,8 @@ fit_models <- function(DT,
       if (do_scores) {
         score_buf[r1] <- sc1
         score_v_buf[r1] <- scv1
+        resid_treat_buf[r1] <- rt1
+        resid_outcome_buf[r1] <- ro1
       }
 
       if (shrink) {
@@ -2900,6 +2971,8 @@ fit_models <- function(DT,
       if (do_scores) {
         score_buf[r2] <- sc2
         score_v_buf[r2] <- scv2
+        resid_treat_buf[r2] <- rt2
+        resid_outcome_buf[r2] <- ro2
       }
 
       if (shrink) {
@@ -2921,7 +2994,9 @@ fit_models <- function(DT,
         pred_o = pred_o_buf,
         pred_o_var = pred_o_var_buf,
         scores = score_buf,
-        scores_v = score_v_buf
+        scores_v = score_v_buf,
+        .resid_treat = resid_treat_buf,
+        .resid_outcome = resid_outcome_buf
       )]
     } else {
       DT[i, `:=`(
@@ -2937,7 +3012,9 @@ fit_models <- function(DT,
         pred = pred_buf,
         pred_o = pred_o_buf,
         scores = score_buf,
-        scores_v = score_v_buf
+        scores_v = score_v_buf,
+        .resid_treat = resid_treat_buf,
+        .resid_outcome = resid_outcome_buf
       )]
     } else {
       DT[i, `:=`(
@@ -3406,7 +3483,12 @@ forest_test <- function(
     fe_rank_adj = !is.null(fe_expr),
     fe_rank_conservative = TRUE,
     x_rank_vars = character(0),
-    sandwich = NULL
+    sandwich = NULL,
+    center = NULL,
+    resid_treat = NULL,
+    resid_outcome = NULL,
+    sample_weight = NULL,
+    clip = 1e-3
 ) {
   screen <- match.arg(screen)
 
@@ -3469,7 +3551,12 @@ forest_test <- function(
       fe_rank_adj = fe_rank_adj,
       fe_rank_conservative = fe_rank_conservative,
       x_rank_vars = x_rank_vars,
-      sandwich = sandwich
+      sandwich = sandwich,
+      center = center,
+      resid_treat = resid_treat,
+      resid_outcome = resid_outcome,
+      sample_weight = sample_weight,
+      clip = clip
     )
   }
 
@@ -3618,7 +3705,104 @@ crv1_mean <- function(score,
                       w = NULL,
                       cl = NULL,
                       rank_adj = 0,
-                      w_sandwich = NULL) {
+                      w_sandwich = NULL,
+                      center = FALSE,
+                      resid_treat = NULL,
+                      sample_weight = NULL,
+                      clip = 1e-3) {
+  stopifnot(
+    "center must be a single non-missing logical" =
+      is.logical(center) && length(center) == 1L && !is.na(center)
+  )
+
+  if (isTRUE(center)) {
+    ## Centered/with-intercept mode: `score`/`w`/`w_sandwich` are not used
+    ## directly. Instead `score` is reinterpreted as the raw residualized
+    ## outcome U_i (e.g. Y_i-m_i), `resid_treat` as the raw residualized
+    ## regressor V_i (e.g. W_i-e_i), and `sample_weight` as the plain
+    ## sampling weight -- i.e. the ingredients of a weighted OLS-with-
+    ## intercept of U on V, NOT the pre-combined through-origin moment.
+    ##
+    ## theta = sum(w*score)/sum(w) is only the classical FWL/OLS
+    ## coefficient when the residualized regressor has zero (weighted) mean
+    ## within whatever group it's summed over -- true in population when the
+    ## nuisance V is fit on, but not guaranteed to hold empirically within
+    ## an adaptively-selected subgroup nested inside that fitting group (see
+    ## montest.R's need_ols_v comments). Demeaning V (and, for the residual
+    ## used in the sandwich, U too) by THIS call's own weighted mean before
+    ## forming the through-origin ratio recovers exactly the with-intercept
+    ## coefficient and its cluster-robust SE -- i.e. re-fits the regression
+    ## fresh on whatever rows this call was given, mirroring how
+    ## grf::average_treatment_effect(target.sample="overlap") always reruns
+    ## its lm() on whichever `subset` it's asked about rather than reusing
+    ## an externally-fit variance. One extra parameter (the local intercept)
+    ## is estimated here, so `rank_adj` is bumped by 1 accordingly.
+    if (is.null(w) && is.null(w_sandwich)) {
+      # allowed: caller only supplied the centered-mode arguments
+    } else {
+      stop(
+        "`w`/`w_sandwich` must not be supplied when `center = TRUE`; use ",
+        "`sample_weight` instead.",
+        call. = FALSE
+      )
+    }
+
+    stopifnot(
+      "`resid_treat` is required when `center = TRUE`" = !is.null(resid_treat)
+    )
+
+    u_raw <- as.numeric(score)
+    v_raw <- as.numeric(resid_treat)
+    n0 <- length(u_raw)
+
+    if (length(v_raw) != n0) {
+      stop("`resid_treat` must have the same length as `score`.", call. = FALSE)
+    }
+
+    sw <- if (is.null(sample_weight)) rep(1.0, n0) else as.numeric(sample_weight)
+    if (length(sw) != n0) {
+      stop("`sample_weight` must be NULL or have the same length as `score`.", call. = FALSE)
+    }
+
+    if (!is.null(cl) && length(cl) != n0) {
+      stop("`cl` must be NULL or have the same length as `score`.", call. = FALSE)
+    }
+
+    ok0 <- is.finite(u_raw) & is.finite(v_raw) & is.finite(sw) & sw >= 0
+    if (!is.null(cl)) ok0 <- ok0 & !is.na(cl)
+
+    if (!any(ok0)) {
+      return(list(
+        coef = NA_real_, se = NA_real_, t = NA_real_,
+        N = 0L, G = 0L, rank_adj = rank_adj + 1, df = NA_real_
+      ))
+    }
+
+    u_raw <- u_raw[ok0]
+    v_raw <- v_raw[ok0]
+    sw <- sw[ok0]
+    cl_kept <- if (is.null(cl)) NULL else cl[ok0]
+
+    v_bar <- stats::weighted.mean(v_raw, w = sw)
+    u_bar <- stats::weighted.mean(u_raw, w = sw)
+    v_dm <- v_raw - v_bar
+    u_dm <- u_raw - u_bar
+
+    v_scale <- stats::weighted.mean(v_dm^2, w = sw)
+    v_floor <- validate_and_clip(
+      v_dm^2,
+      hard_lower = 0,
+      floor = if (!is.null(clip)) clip * v_scale else NULL,
+      label = "row-level variance for centered (with-intercept) test-side estimator"
+    )
+
+    score <- v_dm * u_dm / v_floor
+    w <- sw * v_floor
+    w_sandwich <- w
+    cl <- cl_kept
+    rank_adj <- rank_adj + 1
+  }
+
   score <- as.numeric(score)
   n0 <- length(score)
 
@@ -3757,7 +3941,12 @@ forest_test_core <- function(
     fe_rank_adj = !is.null(fe_expr),
     fe_rank_conservative = TRUE,
     x_rank_vars = character(0),
-    sandwich = NULL
+    sandwich = NULL,
+    center = NULL,
+    resid_treat = NULL,
+    resid_outcome = NULL,
+    sample_weight = NULL,
+    clip = 1e-3
 ) {
 
   select_keep_ids <- function(cand, choose_by, id_by, alpha) {
@@ -3810,6 +3999,16 @@ forest_test_core <- function(
   weight_col <- if (is.null(weight)) NULL else as.character(weight)
   sandwich_col <- if (is.null(sandwich)) NULL else as.character(sandwich)
 
+  ## See CART_test() for the meaning of `center`/`resid_treat`/
+  ## `resid_outcome`/`sample_weight` -- same opt-in with-intercept test-side
+  ## evaluation, applied only to the final held-out-sample crv1_mean() calls
+  ## below, never to the training-side search/screening calls above them.
+  center_col <- if (is.null(center)) NULL else as.character(center)
+  resid_treat_col <- if (is.null(resid_treat)) NULL else as.character(resid_treat)
+  resid_outcome_col <- if (is.null(resid_outcome)) NULL else as.character(resid_outcome)
+  sample_weight_col <- if (is.null(sample_weight)) NULL else as.character(sample_weight)
+  use_centering <- !is.null(center_col) && !is.null(resid_treat_col) && !is.null(resid_outcome_col)
+
   stopifnot(length(sample_col) == 1L, sample_col %in% names(data))
   stopifnot(length(pred_col)   == 1L, pred_col   %in% names(data))
   stopifnot(length(pred_o_col) == 1L, pred_o_col %in% names(data))
@@ -3818,6 +4017,14 @@ forest_test_core <- function(
 
   if (!is.null(weight_col)) stopifnot(weight_col %in% names(data))
   if (!is.null(sandwich_col)) stopifnot(sandwich_col %in% names(data))
+  if (use_centering) {
+    stopifnot(
+      center_col %in% names(data),
+      resid_treat_col %in% names(data),
+      resid_outcome_col %in% names(data),
+      is.null(sample_weight_col) || sample_weight_col %in% names(data)
+    )
+  }
 
   if (!is.null(cluster)) {
     cluster_col <- as.character(cluster)
@@ -3914,6 +4121,15 @@ forest_test_core <- function(
   wv[!is.finite(wv)] <- 0
 
   wv_sandwich <- if (!is.null(sandwich_col)) as.numeric(data[[sandwich_col]]) else NULL
+
+  resid_treat_v <- if (use_centering) as.numeric(data[[resid_treat_col]]) else NULL
+  resid_outcome_v <- if (use_centering) as.numeric(data[[resid_outcome_col]]) else NULL
+  sample_weight_v <- if (use_centering) {
+    if (!is.null(sample_weight_col)) as.numeric(data[[sample_weight_col]]) else rep(1.0, n)
+  } else {
+    NULL
+  }
+  center_v <- if (use_centering) as.logical(data[[center_col]]) else NULL
 
   clv <- if (!is.null(cluster_col)) {
     as.integer(factor(data[[cluster_col]], exclude = NULL))
@@ -4444,7 +4660,11 @@ forest_test_core <- function(
     score = scorev,
     w = wv,
     w_sandwich = if (!is.null(wv_sandwich)) wv_sandwich else NA_real_,
-    cl = clv
+    cl = clv,
+    resid_treat = if (use_centering) resid_treat_v else NA_real_,
+    resid_outcome = if (use_centering) resid_outcome_v else NA_real_,
+    sample_weight = if (use_centering) sample_weight_v else NA_real_,
+    center = if (use_centering) center_v else FALSE
   )
 
   if (length(test_by) > 0L) {
@@ -4452,6 +4672,29 @@ forest_test_core <- function(
   }
 
   dt_test <- dt_test[in_test]
+
+  ## Shared final test-side moment: through-origin by default, or
+  ## crv1_mean(..., center=TRUE) -- a fresh with-intercept fit local to
+  ## exactly this group's own rows -- whenever centering is requested and
+  ## every row of this group is eligible for it. See CART_test() for the
+  ## same logic and montest.R's need_ols_v for eligibility.
+  run_test_moment <- function(score, w, w_sandwich, cl,
+                               resid_treat, resid_outcome, sample_weight, center,
+                               rank_adj) {
+    job_centered <- use_centering && all(as.logical(center), na.rm = FALSE)
+    if (isTRUE(job_centered)) {
+      crv1_mean(
+        resid_outcome, cl = cl, rank_adj = rank_adj,
+        center = TRUE, resid_treat = resid_treat, sample_weight = sample_weight,
+        clip = clip
+      )
+    } else {
+      crv1_mean(
+        score, w, cl, rank_adj = rank_adj,
+        w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
+      )
+    }
+  }
 
   ## First build the valid final tests.
   ## In sample_pool_after_margin_select mode this is intentionally sample-specific.
@@ -4466,12 +4709,11 @@ forest_test_core <- function(
       fe_rank_adj = fe_rank_adj
     )
 
-    o <- crv1_mean(
-      score = dt_test$score,
-      w = dt_test$w,
-      cl = dt_test$cl,
-      rank_adj = rank_adj,
-      w_sandwich = if (!is.null(wv_sandwich)) dt_test$w_sandwich else NULL
+    o <- run_test_moment(
+      score = dt_test$score, w = dt_test$w, w_sandwich = dt_test$w_sandwich, cl = dt_test$cl,
+      resid_treat = dt_test$resid_treat, resid_outcome = dt_test$resid_outcome,
+      sample_weight = dt_test$sample_weight, center = dt_test$center,
+      rank_adj = rank_adj
     )
 
     test_out <- data.table::data.table(
@@ -4509,12 +4751,11 @@ forest_test_core <- function(
         fe_rank_adj = fe_rank_adj
       )
 
-      o <- crv1_mean(
-        score = score,
-        w = w,
-        cl = cl,
-        rank_adj = rank_adj,
-        w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
+      o <- run_test_moment(
+        score = score, w = w, w_sandwich = w_sandwich, cl = cl,
+        resid_treat = resid_treat, resid_outcome = resid_outcome,
+        sample_weight = sample_weight, center = center,
+        rank_adj = rank_adj
       )
 
       data.table::data.table(
@@ -4607,12 +4848,11 @@ forest_test_core <- function(
             fe_rank_adj = fe_rank_adj
           )
 
-          o <- crv1_mean(
-            score = score,
-            w = w,
-            cl = cl,
-            rank_adj = rank_adj,
-            w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
+          o <- run_test_moment(
+            score = score, w = w, w_sandwich = w_sandwich, cl = cl,
+            resid_treat = resid_treat, resid_outcome = resid_outcome,
+            sample_weight = sample_weight, center = center,
+            rank_adj = rank_adj
           )
 
           data.table::data.table(

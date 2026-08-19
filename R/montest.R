@@ -2397,6 +2397,41 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     ]
   }
 
+  ## ------------------------------------------------------------
+  ## Test-side centering: for need_ols_v rows only (doubly.robust=FALSE &
+  ## target=="overlap"), the through-origin score's ratio structure only
+  ## reproduces classical FWL/OLS at the level `Z.hat` was normalized at --
+  ## an adaptively-found leaf nested inside that level isn't guaranteed to
+  ## have zero mean(Z-Z.hat), so forest_test()/CART_test()'s final held-out
+  ## test uses crv1_mean(..., center=TRUE) instead, re-fitting a with-
+  ## intercept coefficient fresh on each candidate leaf's own rows. See
+  ## crv1_mean()'s `center` argument and montest.R's `need_ols_v`. Applies
+  ## only to the final test-side moment, never to the search/screening
+  ## phase; and only to conditions that actually route through
+  ## make_scores_vec() (excludes MW, matching the w_eff gate above), and
+  ## only when those conditions' raw residual columns were populated.
+  ## ------------------------------------------------------------
+
+  resid_cols_exist <- all(c(".resid_treat", ".resid_outcome") %in% names(data))
+
+  data[, use_centered_test := FALSE]
+  if (need_ols_v && resid_cols_exist) {
+    data[
+      condition %in% c("simple", "KR", "AHS"),
+      use_centered_test := TRUE
+    ]
+  }
+
+  ## Only pass the centering column names through to forest_test()/
+  ## CART_test() when they actually exist (e.g. not for an MW-only run,
+  ## which never populates `.resid_treat`/`.resid_outcome`) -- otherwise
+  ## `use_centered_test` is all-FALSE and these arguments would be dead
+  ## weight, but forest_test_core()/CART_test() validate any non-NULL
+  ## `resid_treat`/`resid_outcome` column name actually exists in `data`.
+  center_arg <- if (resid_cols_exist) "use_centered_test" else NULL
+  resid_treat_arg <- if (resid_cols_exist) ".resid_treat" else NULL
+  resid_outcome_arg <- if (resid_cols_exist) ".resid_outcome" else NULL
+
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
   if (shrink>0&testtype=="forest") {
@@ -2419,8 +2454,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,clip=aipw.clip)
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,clip=aipw.clip)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())
