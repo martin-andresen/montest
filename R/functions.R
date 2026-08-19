@@ -205,8 +205,7 @@ CART_test <- function(
     center = NULL,
     resid_treat = NULL,
     resid_outcome = NULL,
-    sample_weight = NULL,
-    clip = 1e-3
+    sample_weight = NULL
 ) {
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
@@ -1037,7 +1036,7 @@ CART_test <- function(
 
       o <- crv1_mean(
         u, cl = cl, rank_adj = rank_adj,
-        center = TRUE, resid_treat = v, sample_weight = sw, clip = clip
+        center = TRUE, resid_treat = v, sample_weight = sw
       )
     } else {
       y <- as.numeric(data[[scores_col]])[idx_keep_all]
@@ -3487,8 +3486,7 @@ forest_test <- function(
     center = NULL,
     resid_treat = NULL,
     resid_outcome = NULL,
-    sample_weight = NULL,
-    clip = 1e-3
+    sample_weight = NULL
 ) {
   screen <- match.arg(screen)
 
@@ -3555,8 +3553,7 @@ forest_test <- function(
       center = center,
       resid_treat = resid_treat,
       resid_outcome = resid_outcome,
-      sample_weight = sample_weight,
-      clip = clip
+      sample_weight = sample_weight
     )
   }
 
@@ -3708,8 +3705,7 @@ crv1_mean <- function(score,
                       w_sandwich = NULL,
                       center = FALSE,
                       resid_treat = NULL,
-                      sample_weight = NULL,
-                      clip = 1e-3) {
+                      sample_weight = NULL) {
   stopifnot(
     "center must be a single non-missing logical" =
       is.logical(center) && length(center) == 1L && !is.na(center)
@@ -3781,26 +3777,68 @@ crv1_mean <- function(score,
     u_raw <- u_raw[ok0]
     v_raw <- v_raw[ok0]
     sw <- sw[ok0]
-    cl_kept <- if (is.null(cl)) NULL else cl[ok0]
+    cl_kept <- if (is.null(cl)) seq_along(u_raw) else as.integer(factor(cl[ok0], exclude = NULL))
 
     v_bar <- stats::weighted.mean(v_raw, w = sw)
     u_bar <- stats::weighted.mean(u_raw, w = sw)
     v_dm <- v_raw - v_bar
     u_dm <- u_raw - u_bar
 
-    v_scale <- stats::weighted.mean(v_dm^2, w = sw)
-    v_floor <- validate_and_clip(
-      v_dm^2,
-      hard_lower = 0,
-      floor = if (!is.null(clip)) clip * v_scale else NULL,
-      label = "row-level variance for centered (with-intercept) test-side estimator"
+    ## Computed directly from sums of PRODUCTS (v_dm*u_dm, v_dm^2, and the
+    ## regression residual v_dm*resid) -- exactly how a real weighted
+    ## OLS-with-intercept fit (lm(U~V, weights=sw)) computes its slope and
+    ## cluster-robust SE, and exactly why "pure" residual-on-residual FWL
+    ## never needs clipping: a row with v_dm_i == 0 contributes exactly zero
+    ## to every sum below, harmlessly. This deliberately does NOT reuse the
+    ## through-origin score/weight machinery below (which forms a per-row
+    ## score_i = U_i/V_i, dividing by that row's own possibly-near-zero
+    ## demeaned regressor) -- that per-row division is what the through-
+    ## origin SR/overlap score's design genuinely needs (it IS a per-unit
+    ## pseudo-outcome elsewhere), but the centered estimator has no per-row
+    ## pseudo-outcome to preserve, so there is nothing division would buy it.
+    dt0 <- data.table::data.table(
+      num = sw * v_dm * u_dm,
+      den = sw * v_dm^2,
+      cl = cl_kept
     )
+    gb <- dt0[, .(num = sum(num), den = sum(den)), by = cl]
 
-    score <- v_dm * u_dm / v_floor
-    w <- sw * v_floor
-    w_sandwich <- w
-    cl <- cl_kept
-    rank_adj <- rank_adj + 1
+    G <- nrow(gb)
+    Wden <- sum(gb$den)
+
+    if (!is.finite(Wden) || Wden <= 0) {
+      return(list(
+        coef = NA_real_, se = NA_real_, t = NA_real_,
+        N = length(u_raw), G = G, rank_adj = rank_adj + 1, df = NA_real_
+      ))
+    }
+
+    theta_c <- sum(gb$num) / Wden
+    resid <- u_dm - theta_c * v_dm
+    meat <- sw * v_dm * resid
+
+    dt1 <- data.table::data.table(meat = meat, cl = cl_kept)
+    gm <- dt1[, .(m = sum(meat)), by = cl]
+
+    rank_adj_c <- rank_adj + 1
+    df_c <- G - 1 - rank_adj_c
+
+    se_c <- if (G < 2L || df_c <= 0 || !is.finite(df_c)) {
+      NA_real_
+    } else {
+      s <- sqrt((G / df_c) * sum(gm$m^2)) / abs(Wden)
+      if (!is.finite(s)) NA_real_ else s
+    }
+
+    return(list(
+      coef = theta_c,
+      se = se_c,
+      t = theta_c / se_c,
+      N = length(u_raw),
+      G = G,
+      rank_adj = rank_adj_c,
+      df = df_c
+    ))
   }
 
   score <- as.numeric(score)
@@ -3945,8 +3983,7 @@ forest_test_core <- function(
     center = NULL,
     resid_treat = NULL,
     resid_outcome = NULL,
-    sample_weight = NULL,
-    clip = 1e-3
+    sample_weight = NULL
 ) {
 
   select_keep_ids <- function(cand, choose_by, id_by, alpha) {
@@ -4685,8 +4722,7 @@ forest_test_core <- function(
     if (isTRUE(job_centered)) {
       crv1_mean(
         resid_outcome, cl = cl, rank_adj = rank_adj,
-        center = TRUE, resid_treat = resid_treat, sample_weight = sample_weight,
-        clip = clip
+        center = TRUE, resid_treat = resid_treat, sample_weight = sample_weight
       )
     } else {
       crv1_mean(

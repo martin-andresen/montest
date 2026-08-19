@@ -2454,8 +2454,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,clip=aipw.clip)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,clip=aipw.clip)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight)
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())
