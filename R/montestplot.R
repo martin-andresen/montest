@@ -1,45 +1,61 @@
 #' Plot montest results
 #'
 #' \code{montestplot()} visualizes the covariate imbalance of the testing subset selected
-#' by \code{montest()} and, optionally, the shares of the selected subset across pooled
-#' margin dimensions.
+#' by \code{montest()}, the cutoff-selection curve that produced it, and, optionally, the
+#' shares of the selected subset across pooled margin dimensions.
 #'
 #' The first panel is a bar plot of standardized differences in covariate means between
 #' the testing subset and the full sample, using information stored in
-#' \code{object$Xmeans}, \code{object$Xmeans_all}, and \code{object$XSD}. If margin-share
-#' information is available and requested, additional panels compare the test-sample share
-#' with the full-sample share across the specified margin variables, using \code{object$shares}.
+#' \code{object$Xmeans}, \code{object$Xmeans_all}, and \code{object$XSD}. The second panel
+#' (when \code{grid = TRUE}) plots the cutoff-search curve(s) (test statistic \code{t}
+#' against candidate cutoff \code{tau}) from \code{object$grid}, with the actually-selected
+#' cutoff(s) from \code{object$results}' train rows marked as vertical lines. If
+#' margin-share information is available and requested, additional panels compare the
+#' test-sample share with the full-sample share across the specified margin variables,
+#' using \code{object$shares}.
 #'
 #' @param object An object returned by \code{montest()} for a single search method,
 #'   expected to contain elements such as \code{results}, \code{Xmeans},
-#'   \code{Xmeans_all}, \code{XSD}, and optionally \code{shares}.
+#'   \code{Xmeans_all}, \code{XSD}, \code{grid}, and optionally \code{shares}.
 #' @param sample Optional sample index to plot. If \code{NULL}, the function attempts to
 #'   infer the relevant sample from the object.
 #' @param margins Optional character vector of margin names to visualize. Use
 #'   \code{"all"} to plot all available stored margins.
+#' @param grid Logical, default \code{TRUE}. If \code{TRUE}, adds a panel plotting the
+#'   cutoff-selection curve(s) from \code{object$grid}. Requires \code{testtype = "forest"}
+#'   results (see Details); set to \code{FALSE} to omit this panel.
 #' @param numX Maximum number of covariates to display in the standardized-difference plot.
 #'
 #' @details
-#' \code{Xmeans}, \code{Xmeans_all}, \code{XSD}, and \code{shares} are all keyed by
-#' whichever of \code{montest()}'s pool/select dimensions (\code{zmargin}, \code{dval},
-#' \code{yval}, \code{condition}, \code{equation}, \code{sample}) were \emph{not} pooled
-#' when the object was produced -- i.e. their row structure depends on the \code{pool}/
-#' \code{select} choices made in the original \code{montest()} call, and can range from a
-#' single pooled row to one row per sample/margin combination. \code{montestplot()}
-#' recovers this key structure from the column names actually present, locates the tested
-#' subset with the strongest violation (smallest test-sample p-value in
-#' \code{object$results}, optionally restricted to \code{sample}), and plots the matching
-#' row(s) rather than assuming a fixed layout.
+#' \code{Xmeans}, \code{Xmeans_all}, \code{XSD}, \code{shares}, \code{grid}, and
+#' \code{results} are all keyed by whichever of \code{montest()}'s pool/select dimensions
+#' (\code{zmargin}, \code{dval}, \code{yval}, \code{condition}, \code{equation},
+#' \code{sample}) were \emph{not} pooled when the object was produced -- i.e. their row
+#' structure depends on the \code{pool}/\code{select} choices made in the original
+#' \code{montest()} call, and can range from a single pooled row to one row per
+#' sample/margin combination. \code{montestplot()} recovers this key structure from
+#' \code{object$results}' column names, locates the tested subset with the strongest
+#' violation (smallest test-sample p-value, optionally restricted to \code{sample}), and
+#' plots the matching row(s) rather than assuming a fixed layout.
 #'
 #' Covariates are ordered by the absolute magnitude of their standardized mean difference,
-#' and only the top \code{numX} are plotted. When \code{margins} is specified, the
-#' function produces additional bar plots comparing the share of the testing subset with
-#' the share of the full sample within each requested, pooled margin category (from
-#' \code{object$shares}).
+#' and only the top \code{numX} are plotted.
 #'
-#' \code{testtype = "CART"} results from \code{montest()} do not currently record
-#' \code{Xmeans}/\code{Xmeans_all}/\code{XSD}/\code{shares}, so the corresponding panels
-#' are unavailable for such objects.
+#' The cutoff-selection panel (\code{grid = TRUE}) shows the train-sample search that
+#' produced the selected subset. \code{object$grid}'s \code{sample} column identifies the
+#' \emph{training} half that searched a given curve (the opposite of the half it was later
+#' tested in). If the winning subset's test statistic was pooled across sample halves,
+#' both training samples' curves and cutoffs are drawn together in one panel; otherwise
+#' only the one training half whose cutoff was actually tested against the winning
+#' (holdout) sample is drawn -- i.e. \code{sample} here, like elsewhere in this function,
+#' refers to the holdout/test half, with the matching training half inferred as the
+#' other one. \code{testtype = "CART"} results do not record \code{$grid} (or
+#' \code{Xmeans}/\code{Xmeans_all}/\code{XSD}/\code{shares}); requesting \code{grid = TRUE}
+#' (the default) on such an object raises an error rather than silently skipping the panel.
+#'
+#' When \code{margins} is specified, the function produces additional bar plots comparing
+#' the share of the testing subset with the share of the full sample within each
+#' requested, pooled margin category (from \code{object$shares}).
 #'
 #' @return
 #' Invisibly returns the bar midpoints from the standardized-difference plot, or
@@ -57,44 +73,77 @@
 #'   test = "simple"
 #' )
 #'
-#' # Plot default summary
+#' # Plot default summary: standardized differences + cutoff-selection curve
 #' montestplot(out$forest)
 #'
-#' # Plot standardized differences plus all stored margins
+#' # Add all stored margin-share panels
 #' montestplot(out$forest, margins = "all", numX = 8)
+#'
+#' # Skip the cutoff-selection panel
+#' montestplot(out$forest, grid = FALSE)
 #' }
 #'
 #' @seealso montest
 #' @export
 
-montestplot <- function(object, sample = NULL, margins = NULL, numX = 10) {
+montestplot <- function(object, sample = NULL, margins = NULL, grid = TRUE, numX = 10) {
 
   ## montest()'s fixed vocabulary of pool/select dimensions. Xmeans/
-  ## Xmeans_all/XSD/shares/results are all keyed by whichever of these were
-  ## *not* pooled -- this lets us recover that key structure purely from the
-  ## column names actually present, instead of assuming a fixed layout.
+  ## Xmeans_all/XSD/shares/grid/results are all keyed by whichever of these
+  ## were *not* pooled -- this lets us recover that key structure purely
+  ## from the column names actually present, instead of assuming a fixed
+  ## layout.
   DIMS <- c("zmargin", "dval", "yval", "condition", "equation", "sample")
 
-  has_X <- !is.null(object$Xmeans) && !is.null(object$Xmeans_all) && !is.null(object$XSD)
+  ## `$grid` (and Xmeans/Xmeans_all/XSD/shares) are only ever recorded for
+  ## testtype = "forest" results -- CART_test() never builds them. Since
+  ## grid = TRUE is the default, a bare montestplot(cart_object) call would
+  ## otherwise fail with a generic "nothing to plot" message; naming CART
+  ## specifically here is far more actionable. `object$options$testtype`
+  ## (added alongside `object$call` in montest()'s return value) makes this
+  ## precise instead of guessing from `is.null(object$grid)` alone.
+  if (isTRUE(grid)) {
+    testtype_used <- object$options$testtype
+    if (identical(testtype_used, "CART")) {
+      stop(
+        "montestplot()'s cutoff-selection panel (grid = TRUE, the default) requires ",
+        "testtype = \"forest\" results; `object` was estimated with testtype = \"CART\", ",
+        "which does not record $grid. Re-fit with testtype = \"forest\", or call ",
+        "montestplot(object, grid = FALSE) to skip this panel.",
+        call. = FALSE
+      )
+    }
+    if (is.null(object$grid)) {
+      stop(
+        "montestplot()'s cutoff-selection panel (grid = TRUE, the default) requires ",
+        "`object$grid`, which is not present on this object. Call ",
+        "montestplot(object, grid = FALSE) to skip this panel.",
+        call. = FALSE
+      )
+    }
+  }
+
+  has_grid  <- isTRUE(grid) && !is.null(object$grid)
+  has_X     <- !is.null(object$Xmeans) && !is.null(object$Xmeans_all) && !is.null(object$XSD)
   has_shares <- !is.null(object$shares)
 
-  if (!has_X && !has_shares) {
+  if (!has_X && !has_shares && !has_grid) {
     stop(
-      "`object` has neither covariate-balance information (Xmeans/Xmeans_all/XSD) ",
-      "nor margin-share information (shares) to plot. Note that testtype = \"CART\" ",
-      "results currently record neither."
+      "`object` has no covariate-balance information (Xmeans/Xmeans_all/XSD), no ",
+      "cutoff-selection grid, and no margin-share information (shares) to plot. Note ",
+      "that testtype = \"CART\" results currently record none of these."
     )
   }
 
-  key_cols <- intersect(names(if (has_X) object$Xmeans else object$shares), DIMS)
+  res <- object$results
+  if (is.null(res) || !all(c("train", "p.raw") %in% names(res))) {
+    stop("`object$results` with `train`/`p.raw` columns is required to locate the tested subset.")
+  }
+  key_cols <- intersect(names(res), DIMS)
 
   ## ---- Locate the tested subset with the strongest violation ----
   target <- NULL
   if (length(key_cols) > 0L) {
-    res <- object$results
-    if (is.null(res) || !all(c("train", "p.raw") %in% names(res))) {
-      stop("`object$results` with `train`/`p.raw` columns is required to locate the tested subset.")
-    }
     tst <- res[res$train == FALSE & is.finite(res$p.raw)]
     if (!is.null(sample) && "sample" %in% names(tst)) {
       ## Copied to a differently-named variable because data.table's
@@ -126,8 +175,8 @@ montestplot <- function(object, sample = NULL, margins = NULL, numX = 10) {
     which(ok)
   }
 
-  ## ---- Panel 1: standardized differences in covariate means ----
-  bar_mid <- NULL
+  ## ---- Panel 1 (values): standardized differences in covariate means ----
+  vals <- names_x <- NULL
 
   if (has_X) {
     x_cols <- setdiff(names(object$Xmeans), key_cols)
@@ -165,6 +214,61 @@ montestplot <- function(object, sample = NULL, margins = NULL, numX = 10) {
     }
   }
 
+  ## ---- Panel 2 (values): cutoff-selection curve(s) ----
+  grid_panel <- NULL
+
+  if (has_grid) {
+    g  <- object$grid
+    tr <- res[res$train == TRUE & res$relevant == 1L]
+
+    cell_cols <- setdiff(key_cols, "sample")
+    target_cell <- if (!is.null(target)) {
+      target[, intersect(names(target), cell_cols), with = FALSE]
+    } else {
+      NULL
+    }
+
+    g_sub  <- g[match_rows(g, target_cell)]
+    tr_sub <- tr[match_rows(tr, target_cell)]
+
+    ## `sample` on `target` (when present) is the winning row's *holdout*
+    ## sample -- NA means the winning cell's test statistic was pooled
+    ## across sample halves. `g`/`tr`'s own `sample` column instead means
+    ## the *training* half (each cutoff is always searched in one half and
+    ## tested in the other), so a non-pooled holdout sample `s` maps to
+    ## training sample `3 - s`.
+    winner_sample <- if (!is.null(target) && "sample" %in% names(target)) target$sample[1L] else NA_integer_
+    pooled_sample <- is.na(winner_sample)
+
+    samples_to_plot <- if (pooled_sample) {
+      sort(unique(tr_sub$sample))
+    } else {
+      3L - as.integer(winner_sample)
+    }
+    samples_to_plot <- samples_to_plot[!is.na(samples_to_plot)]
+
+    gp <- g_sub[g_sub$sample %in% samples_to_plot]
+
+    if (length(samples_to_plot) == 0L || nrow(gp) == 0L) {
+      stop(
+        "Could not locate matching cutoff-search data in `object$grid`/`object$results` ",
+        "for the selected subset."
+      )
+    }
+
+    main_title <- "Cutoff selection"
+    if (!is.null(target_cell) && ncol(target_cell) > 0L) {
+      main_title <- paste0(
+        main_title, ": ",
+        paste(paste(names(target_cell), as.character(unlist(target_cell)), sep = "="), collapse = ", ")
+      )
+    }
+
+    grid_panel <- list(
+      gp = gp, tr_sub = tr_sub, samples_to_plot = samples_to_plot, main_title = main_title
+    )
+  }
+
   ## ---- Resolve margin panels (test-sample vs. full-sample share) ----
   if (!is.null(margins)) {
     if (!has_shares) {
@@ -182,11 +286,14 @@ montestplot <- function(object, sample = NULL, margins = NULL, numX = 10) {
     }
   }
 
-  numplots <- (if (has_X) 1L else 0L) + length(margins)
+  numplots <- (if (has_X) 1L else 0L) + (if (!is.null(grid_panel)) 1L else 0L) + length(margins)
   if (numplots > 1L) {
     op_outer <- par(mfrow = c(ceiling(numplots / 2), 2))
     on.exit(par(op_outer), add = TRUE)
   }
+
+  ## ---- Panel 1 (draw): standardized differences in covariate means ----
+  bar_mid <- NULL
 
   if (has_X) {
     ## find right margin
@@ -235,6 +342,43 @@ montestplot <- function(object, sample = NULL, margins = NULL, numX = 10) {
       adj    = 1,
       xpd    = NA
     )
+  }
+
+  ## ---- Panel 2 (draw): cutoff-selection curve(s) ----
+  if (!is.null(grid_panel)) {
+    gp <- grid_panel$gp
+    tr_sub <- grid_panel$tr_sub
+    samples_to_plot <- grid_panel$samples_to_plot
+
+    cols_pal <- c("black", "steelblue")
+
+    plot(
+      gp$tau, gp$t, type = "n",
+      xlab = expression(tau), ylab = "t",
+      main = grid_panel$main_title
+    )
+
+    leg_labels <- character(length(samples_to_plot))
+    for (i in seq_along(samples_to_plot)) {
+      s <- samples_to_plot[i]
+      gs <- gp[gp$sample == s]
+      data.table::setorder(gs, tau)
+      lines(gs$tau, gs$t, col = cols_pal[((i - 1L) %% length(cols_pal)) + 1L])
+
+      cut_s <- tr_sub[tr_sub$sample == s, tau_cutoff]
+      if (length(cut_s) > 0L && is.finite(cut_s[1L])) {
+        abline(v = cut_s[1L], col = cols_pal[((i - 1L) %% length(cols_pal)) + 1L], lty = 2)
+      } else {
+        message("No train-row cutoff found for sample ", s, "; curve shown without a cutoff line.")
+      }
+      leg_labels[i] <- paste("Sample", s)
+    }
+
+    if (length(samples_to_plot) > 1L) {
+      legend("topright", legend = leg_labels,
+             col = cols_pal[((seq_along(samples_to_plot) - 1L) %% length(cols_pal)) + 1L],
+             lty = 1, bty = "n")
+    }
   }
 
   ## ---- Margin panels ----
