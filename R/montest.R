@@ -1057,10 +1057,53 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     ]
 
     if (!has_FE && !need_ols_v) {
+      ## Was a silent pmin/pmax -- clipped the propensity with no warning
+      ## and, worse, no hard-stop for a severely invalid value (e.g. an LPM
+      ## prediction of 1.5), directly contradicting aipw.clip's documented
+      ## guarantee. Routing through validate_and_clip() here (matching
+      ## make_scores_vec()'s own call for the has_FE branch) also protects
+      ## condition="MW"'s later validate_and_clip() call downstream, which
+      ## would otherwise only ever see already-clipped values and could
+      ## never itself detect or report a misspecification.
       data[
         z_is_linear_raw != TRUE,
-        (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
+        (zhat_col) := validate_and_clip(
+          get(zhat_col),
+          hard_lower = 0, hard_upper = 1,
+          floor = aipw.clip, ceiling = 1 - aipw.clip,
+          label = "propensity e(X) for binary-Z rows"
+        )
       ]
+    }
+  }
+
+  ## `need_ols_v` rows deliberately leave the binary-Z propensity unclipped
+  ## (see the block above) -- clipping it would distort the point estimate
+  ## away from the exact classical FWL/OLS coefficient this path exists to
+  ## reproduce, and the score only ever uses it additively, so nothing
+  ## numerically requires it. But doubly.robust=FALSE's consistency argument
+  ## still requires Z.hat to be the TRUE conditional mean of Z given X, and a
+  ## value outside (0,1) is direct proof that fails for that row -- a real
+  ## risk of bias in the resulting estimate, not just a numerical curiosity.
+  ## So: warn (never clip, never error) whenever this happens, independent of
+  ## `normalize.Z`/`has_FE`, since the concern is unrelated to either.
+  if (need_ols_v) {
+    zhat_vals <- data[[zhat]]
+    is_binary_row <- data[["z_is_linear_raw"]] != TRUE
+    n_bad <- sum(is_binary_row & (zhat_vals < 0 | zhat_vals > 1), na.rm = TRUE)
+
+    if (n_bad > 0L) {
+      warning(sprintf(
+        paste0(
+          "propensity e(X) for binary-Z rows: %d value(s) outside (0,1). ",
+          "These are left unclipped by design (target=\"overlap\" & ",
+          "doubly.robust=FALSE reproduces the classical FWL/OLS coefficient ",
+          "exactly, which needs Z.hat unclipped), but this is direct evidence ",
+          "the propensity model is misspecified for those rows, which can ",
+          "bias the resulting singly-robust estimate."
+        ),
+        n_bad
+      ), call. = FALSE)
     }
   }
 
