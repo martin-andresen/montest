@@ -250,6 +250,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
 ){
 
+  ## Captured first, before any argument gets reassigned/resolved below, so
+  ## it reflects exactly what the caller typed (standard R idiom, as in
+  ## lm()/glm(): supports print()/update() on the returned object). See
+  ## `options` in the return value for the resolved (post-default) values
+  ## instead.
+  mc <- match.call()
+
   time=rbind(start=proc.time())
   if (!is.null(seed)) set.seed(seed)
 
@@ -2585,7 +2592,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
   time=time[,1:3]
   time=rbind(time,"Total"=colSums(time))
+
+  ## `options`: the *resolved* value of every montest() argument (after all
+  ## match.arg()/default-resolution logic above has run), keyed by pulling
+  ## each formal's current binding out of this call frame -- so it stays in
+  ## sync automatically as arguments are added/changed, without hand-
+  ## maintaining a list. `data` is excluded: by this point it is the fully
+  ## expanded/mutated internal working table, not the caller's original
+  ## data, and would needlessly bloat the returned object.
+  options <- mget(setdiff(names(formals(montest)), "data"), envir = environment())
+
   out <- c(res, list(
+    call = mc,
+    options = options,
     time = time,
     obs = obs,
     margins = margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE]
