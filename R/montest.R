@@ -30,8 +30,8 @@
 #'   continuous). These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X, so
 #'   \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. When \code{doubly.robust=TRUE}, \code{target} changes only the
 #'   weight used when aggregating scores into the final test statistic, not the per-row score formula itself. When \code{doubly.robust=FALSE}, \code{target} additionally selects which conditional-variance
-#'   estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus a pooled/group-level estimate for \code{"overlap"}), so the per-row scores themselves differ between the two
-#'   settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient.
+#'   estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus the raw empirical \eqn{(Z-\hat Z)^2} for \code{"overlap"}), so the per-row scores themselves differ between the two
+#'   settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient, at any level of aggregation (the full sample, or any subgroup subsequently averaged over).
 #' @param doubly.robust Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
 #'   If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
 #'   \code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
@@ -344,11 +344,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ## because it also gates the propensity clip in the normalize.Z block
   ## below, in addition to the v(X) block further down: whenever
   ## doubly.robust = FALSE & target == "overlap", binary-Z rows use the
-  ## pooled empirical variance of (Z-Z.hat) instead of the closed-form
-  ## e*(1-e), and that path needs an UNCLIPPED Z.hat to actually reproduce
-  ## the classical FWL/OLS coefficient it's meant to match -- see
+  ## row-level empirical (Z-Z.hat)^2 instead of the closed-form e*(1-e),
+  ## and that path needs an UNCLIPPED Z.hat to actually reproduce the
+  ## classical FWL/OLS coefficient it's meant to match -- see
   ## make_scores_vec().
-  need_pooled_v <- !isTRUE(doubly.robust) && identical(target, "overlap")
+  need_ols_v <- !isTRUE(doubly.robust) && identical(target, "overlap")
 
   screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant"))
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
@@ -1018,9 +1018,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ##   - !has_FE: under has_FE, binary representation is handled instead by
   ##     validate_and_clip() inside make_scores_vec(), conditional on
   ##     doubly.robust/target (see the v(X) block below).
-  ##   - !need_pooled_v: whenever doubly.robust = FALSE & target == "overlap",
-  ##     binary rows use the pooled empirical variance of (Z-Z.hat) instead
-  ##     of e*(1-e) (again, see the v(X) block below), which needs Z.hat
+  ##   - !need_ols_v: whenever doubly.robust = FALSE & target == "overlap",
+  ##     binary rows use the row-level empirical (Z-Z.hat)^2 instead of
+  ##     e*(1-e) (again, see the v(X) block below), which needs Z.hat
   ##     UNCLIPPED to actually reproduce the classical FWL/OLS coefficient
   ##     it's meant to match -- clipping it here, before make_scores_vec()
   ##     even runs, would silently defeat that regardless of what
@@ -1056,7 +1056,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       by = by_norm
     ]
 
-    if (!has_FE && !need_pooled_v) {
+    if (!has_FE && !need_ols_v) {
       data[
         z_is_linear_raw != TRUE,
         (zhat_col) := pmin(pmax(get(zhat_col), aipw.clip), 1 - aipw.clip)
@@ -1079,26 +1079,35 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ## weighting). Binary rows never need a fitted model for this case: the
   ## closed form e*(1-e) already varies by X for free.
   ##
-  ## Otherwise (doubly.robust = FALSE & target == "overlap", `need_pooled_v`)
-  ## every row -- binary and continuous alike -- gets the pooled empirical
-  ## variance of (Z - Z.hat) instead. For continuous rows this is exactly
-  ## what classical FWL/OLS already uses, no new model needed. For binary
-  ## rows it replaces the closed form e*(1-e): unlike e*(1-e), the pooled
-  ## empirical variance never requires Z.hat to represent a valid
-  ## probability, so it is robust to Z.hat straying outside [0,1] (e.g. an
-  ## LPM fit on a rare/near-degenerate binary Z) in exactly the situation
-  ## where the classical FWL/OLS coefficient this is meant to reproduce
-  ## would also be robust to it -- see `make_scores_vec()`.
+  ## Otherwise (doubly.robust = FALSE & target == "overlap", `need_ols_v`)
+  ## every row -- binary and continuous alike -- gets its OWN raw
+  ## (Z_i - Z.hat_i)^2 as v_i, not a value averaged/pooled across a group.
+  ## This is exactly what classical FWL/OLS uses (its coefficient is a sum
+  ## divided by a sum, never a per-row division by a pre-averaged variance),
+  ## so `crv1_mean()`'s theta = sum(w*score)/sum(w) reproduces the FWL/OLS
+  ## coefficient at whatever level it is later summed over: the full
+  ## sample, one margins/sample block, or a leaf found afterwards by
+  ## forest_test()/CART_test()'s own subgroup search. A pooled/broadcast
+  ## constant would only match FWL/OLS at the specific group it was pooled
+  ## over -- any finer subgroup nested inside that group (which is exactly
+  ## what the search is built to find) would then be normalized by a
+  ## variance that isn't its own, contaminating the effect-heterogeneity
+  ## test with unrelated heterogeneity in Var(Z|X). This also means the
+  ## row-level value never requires Z.hat to represent a valid probability,
+  ## so it is robust to Z.hat straying outside [0,1] (e.g. an LPM fit on a
+  ## rare/near-degenerate binary Z) in exactly the situation where the
+  ## classical FWL/OLS coefficient this is meant to reproduce would also be
+  ## robust to it -- see `make_scores_vec()`.
   ## ---------------------------------------------------------------------
 
   zvarhat <- paste0(Z, ".var.hat")
   z_use_lin_any <- any(data$z_use_linear_score, na.rm = TRUE)
   need_v_hat <- z_use_lin_any &&
     (isTRUE(doubly.robust) || identical(target, "all"))
-  ## need_pooled_v was already computed early (before the normalize.Z
+  ## need_ols_v was already computed early (before the normalize.Z
   ## block), since it also gates the propensity clip there.
 
-  if (need_v_hat || need_pooled_v) {
+  if (need_v_hat || need_ols_v) {
     ## `data[[Z]]`/`data[[zhat]]` (plain `[[`, evaluated here, not inside a
     ## `data[i, j]` call) sidestep data.table's column-name masking of `j` --
     ## masking would otherwise silently resolve the bare symbol `Z` to the
@@ -1138,41 +1147,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     )
   }
 
-  zsandwich <- paste0(Z, ".sandwich.w")
-  data[, (zsandwich) := NA_real_]
-
-  if (need_pooled_v) {
-    ## Applies to every row (binary and continuous representations alike).
-    ## Same reasoning as by_norm above: under parametric = TRUE there is no
-    ## cross-fitting to justify splitting this pooled variance by "sample" --
-    ## it just makes the per-cluster sandwich contributions (crv1_mean()'s
-    ## ug_g = U_g - theta*W_g) depend on which sample half a cluster's rows
-    ## fall in, inflating the reported SE for no real reason.
-    by_pool <- if (isTRUE(parametric)) unique(margins) else unique(c("sample", margins))
-    wt_vals <- if (is.null(weight)) rep(1, nrow(data)) else data[[weight]]
-    wtmp_col <- ".__wtmp__"
-    data[, (wtmp_col) := wt_vals]
-
-    data[
-      ,
-      (zvarhat) := stats::weighted.mean(get(z_resid_sq), w = get(wtmp_col), na.rm = TRUE),
-      by = by_pool
-    ]
-
-    ## Pooling v across a group and broadcasting it back as a *constant*
-    ## weight is what makes the coefficient exactly reproduce classical
-    ## FWL/OLS -- but fed unchanged into crv1_mean()'s cluster sandwich, that
-    ## same constant erases each cluster's own (Z-Z.hat)^2 heterogeneity and
-    ## inflates the reported SE. Keep the row-level value around (as a
-    ## weight, weight_i * (Z_i-Z.hat_i)^2, mirroring w_eff's own weight * v
-    ## convention) so the sandwich can use it instead -- see crv1_mean()'s
-    ## `w_sandwich` argument and the `w_sandwich` column built below.
-    data[, (zsandwich) := get(wtmp_col) * get(z_resid_sq)]
-
-    data[, (wtmp_col) := NULL]
+  if (need_ols_v) {
+    ## Every row -- binary and continuous alike -- gets its own raw
+    ## (Z_i-Z.hat_i)^2, no group averaging. See the comment block above for
+    ## why this (rather than a pooled/broadcast constant) is what makes the
+    ## resulting coefficient reproduce classical FWL/OLS at any level of
+    ## aggregation, not just the level it would have been pooled at.
+    data[, (zvarhat) := get(z_resid_sq)]
   }
 
-  if (need_v_hat || need_pooled_v) {
+  if (need_v_hat || need_ols_v) {
     data[, (z_resid_sq) := NULL]
   }
 
@@ -2413,21 +2397,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     ]
   }
 
-  ## crv1_mean()'s cluster sandwich needs the row-level weight * (Z-Z.hat)^2
-  ## from the need_pooled_v path (see `zsandwich` above), not the pooled/
-  ## broadcast v folded into w_eff -- using the pooled constant there erases
-  ## real per-cluster heterogeneity and inflates the reported SE. Defaults to
-  ## w_eff everywhere else, so this is a no-op unless need_pooled_v applied.
-  data[, w_sandwich := w_eff]
-  if (need_pooled_v) {
-    data[
-      condition %in% c("simple", "KR", "AHS"),
-      w_sandwich := get(zsandwich)
-    ]
-  }
-
-
-
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
   if (shrink>0&testtype=="forest") {
@@ -2450,8 +2419,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,sandwich="w_sandwich")
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,sandwich="w_sandwich")
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars)
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars)
 
 
   time=rbind(time,"Find promising subset and test"=proc.time())

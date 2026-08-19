@@ -150,8 +150,8 @@ Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"} (not \code{"MW"}, whos
 continuous). These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X, so
 \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. When \code{doubly.robust=TRUE}, \code{target} changes only the
 weight used when aggregating scores into the final test statistic, not the per-row score formula itself. When \code{doubly.robust=FALSE}, \code{target} additionally selects which conditional-variance
-estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus a pooled/group-level estimate for \code{"overlap"}), so the per-row scores themselves differ between the two
-settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient.}
+estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus the raw empirical \eqn{(Z-\hat Z)^2} for \code{"overlap"}), so the per-row scores themselves differ between the two
+settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient, at any level of aggregation (the full sample, or any subgroup subsequently averaged over).}
 
 \item{doubly.robust}{Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
 If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment. "Singly robust" here means robust specifically to misspecification of the outcome nuisance

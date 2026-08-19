@@ -2365,17 +2365,18 @@ validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
 ## `target == "overlap"`.
 ##
 ## v_i's source: continuous-Z rows always require a supplied `Z.var.hat`
-## (fitted per-row, or a group-pooled scalar -- montest() decides which).
-## Binary-Z rows normally use the closed-form v_i = e_i*(1-e_i), with e_i
-## validated/clipped to [0,1] (needed for e_i*(1-e_i) to be a valid,
-## nonnegative variance at all). BUT if a (non-NA) pooled `Z.var.hat` is
-## supplied for binary rows too -- montest() does this whenever
-## doubly.robust=FALSE & target=="overlap" -- that pooled value is used
-## instead, and e_i is left UNCLIPPED in the (W_i-e_i) numerator: e_i is
-## only ever used additively there, so clipping it would introduce a real
-## divergence from the classical FWL/OLS coefficient this combination is
-## meant to reproduce (which never bounds its residualized-W term either),
-## whereas the closed form genuinely needs e_i in [0,1] to be well-defined.
+## (a fitted per-row v(X_i), or the raw empirical (Z_i-Z.hat_i)^2 --
+## montest() decides which). Binary-Z rows normally use the closed-form
+## v_i = e_i*(1-e_i), with e_i validated/clipped to [0,1] (needed for
+## e_i*(1-e_i) to be a valid, nonnegative variance at all). BUT if a
+## (non-NA) `Z.var.hat` is supplied for binary rows too -- montest() does
+## this whenever doubly.robust=FALSE & target=="overlap", supplying the raw
+## (Z_i-Z.hat_i)^2 -- that value is used instead, and e_i is left UNCLIPPED
+## in the (W_i-e_i) numerator: e_i is only ever used additively there, so
+## clipping it would introduce a real divergence from the classical
+## FWL/OLS coefficient this combination is meant to reproduce (which never
+## bounds its residualized-W term either), whereas the closed form
+## genuinely needs e_i in [0,1] to be well-defined.
 make_scores_vec <- function(Y,
                             Z,
                             Y.hat,
@@ -2426,10 +2427,10 @@ make_scores_vec <- function(Y,
     ii <- idx_binary
     w_use[ii] <- as.numeric(z[ii] > 0.5)
 
-    has_pooled_v <- !is.null(Z.var.hat) && !all(is.na(as.numeric(Z.var.hat)[ii]))
+    has_ols_v <- !is.null(Z.var.hat) && !all(is.na(as.numeric(Z.var.hat)[ii]))
 
-    if (has_pooled_v) {
-      ## Pooled empirical variance supplied -- e is used only additively in
+    if (has_ols_v) {
+      ## Empirical (Z-Z.hat)^2 supplied -- e is used only additively in
       ## the score (w_use - e), never as a divisor, so it is left unclipped.
       v[ii] <- as.numeric(Z.var.hat)[ii]
     } else {
@@ -3640,13 +3641,11 @@ crv1_mean <- function(score,
 
   ## `w_sandwich` lets the caller use a different (typically row-level, not
   ## pooled/broadcast) weight inside the cluster sandwich than the one used
-  ## to compute `theta` itself. This matters when `w` has been pooled to a
-  ## constant within some group (e.g. montest.R's need_pooled_v path, which
-  ## deliberately broadcasts a single variance estimate so `theta` reproduces
-  ## the classical FWL/OLS coefficient exactly): using that same constant
-  ## inside the sandwich erases real per-cluster heterogeneity in the
-  ## underlying (Z-Z.hat)^2 and inflates the reported SE. Defaults to `w`,
-  ## reproducing the original single-weight formula exactly. A row with an
+  ## to compute `theta` itself. This matters if `w` were ever pooled to a
+  ## constant within some group: using that same constant inside the
+  ## sandwich would erase real per-cluster heterogeneity in the underlying
+  ## quantity and inflate the reported SE. Defaults to `w`, reproducing the
+  ## original single-weight formula exactly. A row with an
   ## invalid (non-finite/negative) `w_sandwich` -- e.g. weight = 0 leaving a
   ## row's nuisance fit unpopulated upstream -- falls back to that row's own
   ## `w` instead of being dropped from `ok`: `w_sandwich` must only affect
