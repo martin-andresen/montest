@@ -2280,6 +2280,7 @@ make_X_residualized_from_FE <- function(DT,
       x_names = NULL,
       raw_names = NULL,
       resid_names = NULL,
+      clean_names = NULL,
       has_FE = !is.null(fe_expr)
     ))
   }
@@ -2305,11 +2306,19 @@ make_X_residualized_from_FE <- function(DT,
       x_names = NULL,
       raw_names = NULL,
       resid_names = NULL,
+      clean_names = NULL,
       has_FE = !is.null(fe_expr)
     ))
   }
 
-  raw_names <- paste0(prefix, "_raw_", make.names(colnames(mm), unique = TRUE))
+  ## `clean_names` is the un-prefixed, human-readable counterpart of
+  ## raw_names/resid_names below (same make.names() call, so always aligned
+  ## 1-1 with x_names regardless of which of the two is in effect) -- kept
+  ## around so callers can label output (e.g. Xmeans/Xmeans_all/XSD) with
+  ## the original covariate names instead of the internal `__xf_*` ones.
+  clean_names <- make.names(colnames(mm), unique = TRUE)
+
+  raw_names <- paste0(prefix, "_raw_", clean_names)
   mm_dt <- data.table::as.data.table(mm)
   data.table::setnames(mm_dt, raw_names)
   DT[, (raw_names) := mm_dt]
@@ -2320,12 +2329,13 @@ make_X_residualized_from_FE <- function(DT,
       x_names = raw_names,
       raw_names = raw_names,
       resid_names = raw_names,
+      clean_names = clean_names,
       has_FE = FALSE
     ))
   }
 
   ## 3. If FE exist, residualize each model-matrix column from FE.
-  resid_names <- paste0(prefix, "_res_", make.names(colnames(mm), unique = TRUE))
+  resid_names <- paste0(prefix, "_res_", clean_names)
 
   for (jj in seq_along(raw_names)) {
     out_j <- resid_names[jj]
@@ -2356,6 +2366,7 @@ make_X_residualized_from_FE <- function(DT,
     x_names = resid_names,
     raw_names = raw_names,
     resid_names = resid_names,
+    clean_names = clean_names,
     has_FE = TRUE
   )
 }
