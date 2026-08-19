@@ -708,11 +708,33 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   ##OUTER SPLIT
   stopifnot(is.logical(stratify), length(stratify) == 1L, !is.na(stratify))
+  stratify_explicit <- !missing(stratify)
 
   strat <- NULL
 
   if (isTRUE(stratify) && is.null(cluster)) {
-    strat <- Z
+    ## Stratifying a 2-fold split by Z's raw value only makes sense for a
+    ## small number of support points -- make_group_folds() groups by exact
+    ## value (by = Z), and its fallback for a too-small stratum
+    ## (fold[ok] <- 1L, since a stratum of size 1 can't be split into 2
+    ## non-empty folds) fires almost everywhere for a genuinely continuous/
+    ## high-cardinality Z, collapsing the whole sample split into one
+    ## degenerate all-in-one-fold assignment -- which then crashes
+    ## fit_models() downstream once the opposite sample turns out empty.
+    ## K_true <= 2 mirrors the same binary/continuous threshold used for the
+    ## has_FE/linearZ representation choice elsewhere in this file.
+    if (K_true <= 2L) {
+      strat <- Z
+    } else if (isTRUE(stratify_explicit)) {
+      warning(
+        "stratify = TRUE was requested, but Z has ", K_true, " support ",
+        "point(s) in the data (not binary). Stratifying the sample split ",
+        "by a continuous/high-cardinality Z can collapse it into a ",
+        "degenerate, all-in-one-fold split, so an unstratified split is ",
+        "used instead.",
+        call. = FALSE
+      )
+    }
   }
   make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=strat)
 
@@ -2500,6 +2522,38 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight)
   if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight)
 
+  ## Xmeans/Xmeans_all/XSD (when present) are keyed on the internal
+  ## `__xf_raw_*`/`__xf_res_*` forest-feature columns from
+  ## make_X_residualized_from_FE() -- FE-residualized whenever `fml` has an
+  ## FE part -- rather than the original covariate names. Rename them back
+  ## to the clean (model-matrix) covariate names for output, so downstream
+  ## consumers like montestplot() show the real names. Guard against a
+  ## clean name colliding with the pool/select vocabulary or with another
+  ## covariate's cleaned name, either of which would make the rename
+  ## ambiguous to name-based lookups; such columns keep their internal name.
+  if (!is.null(X_forest_info) && !is.null(X_forest_info$x_names)) {
+    reserved <- c("zmargin", "dval", "yval", "condition", "equation", "sample")
+    old_nm <- X_forest_info$x_names
+    new_nm <- X_forest_info$clean_names
+    bad <- new_nm %in% reserved | duplicated(new_nm) | duplicated(new_nm, fromLast = TRUE)
+    if (any(bad)) {
+      warning(
+        "Could not restore original covariate name(s) for: ",
+        paste(unique(new_nm[bad]), collapse = ", "),
+        " (collides with a pool/select dimension name or another covariate's ",
+        "cleaned name); keeping the internal column name in Xmeans/Xmeans_all/XSD instead.",
+        call. = FALSE
+      )
+      old_nm <- old_nm[!bad]
+      new_nm <- new_nm[!bad]
+    }
+    for (xtbl in c("Xmeans", "Xmeans_all", "XSD")) {
+      if (!is.null(res[[xtbl]])) {
+        keep <- old_nm %in% names(res[[xtbl]])
+        if (any(keep)) data.table::setnames(res[[xtbl]], old_nm[keep], new_nm[keep])
+      }
+    }
+  }
 
   time=rbind(time,"Find promising subset and test"=proc.time())
 

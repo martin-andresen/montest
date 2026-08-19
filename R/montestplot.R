@@ -194,8 +194,14 @@ montestplot <- function(object, sample = NULL, margins = NULL, numX = 10) {
     w <- strwidth(names_x, units = "inches", cex = 1)   # unrotated width
     t <- strheight(names_x, units = "inches", cex = 1)  # unrotated height
 
-    # Vertical projection of a rotated rectangle (good approximation for text)
-    needed_in <- max(w * sin(theta) + t * cos(theta))
+    ## Small physical gap between the axis and the rotated label's anchor,
+    ## in inches (see below for why this must be a physical, not a data-
+    ## unit, distance).
+    gap_in <- 0.05
+
+    # Vertical projection of a rotated rectangle (good approximation for text),
+    # plus the anchor gap -- both physical distances below the axis.
+    needed_in <- max(w * sin(theta) + t * cos(theta)) + gap_in
 
     # Convert inches to "lines" used by par(mar=...)
     line_in <- par("csi")  # character size (inches) per line
@@ -208,9 +214,22 @@ montestplot <- function(object, sample = NULL, margins = NULL, numX = 10) {
             main = "Standardized differences in means",
             ylab = "(test mean - full mean) / test SD",
             xaxt = "n")
+
+    ## The label anchor needs to sit a small, fixed physical distance below
+    ## the axis (matching the `gap_in` budgeted into the margin above). A
+    ## plain `par("usr")[3] - 0.05` offset is in *data* units, so its
+    ## physical size swings with the y-axis's scale -- for montest()'s
+    ## standardized differences (typically well under 1 in magnitude), that
+    ## alone can eat most or all of the reserved margin before any text is
+    ## drawn, pushing (with adj = 1, srt = 45 extending the label down and
+    ## to the left of its anchor) most of each label off the bottom of the
+    ## device. Converting through inches keeps the gap scale-invariant.
+    y_axis_in <- grconvertY(par("usr")[3], from = "user", to = "inches")
+    y_anchor  <- grconvertY(y_axis_in - gap_in, from = "inches", to = "user")
+
     text(
       x      = bar_mid,
-      y      = par("usr")[3] - 0.05,
+      y      = y_anchor,
       labels = names_x,
       srt    = 45,
       adj    = 1,
