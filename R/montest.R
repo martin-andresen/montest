@@ -730,12 +730,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   vars_forest <- all.vars(X_expr_forest)
   vars_Z      <- all.vars(X_expr_Z)
+  vars_varZ   <- all.vars(X_expr_varZ)
   vars_Q      <- all.vars(X_expr_Q)
   vars_FE     <- if (has_FE) all.vars(FE_expr) else character()
 
   allvars <- unique(c(
     vars_forest,
     vars_Z,
+    vars_varZ,
     vars_Q,
     vars_FE,
     Y, D, Z,
