@@ -47,3 +47,11 @@
   own conditional mean. Defaults to `fml.Z` (which itself defaults to
   `fml`'s main X part), so leaving it unset reproduces the previous
   behavior exactly.
+* Renamed: the `fe_rank` column in `forest_test()`'s and `CART_test()`'s
+  output (`results`/`train`/`global`) is now `dof_rank`. It was never
+  literally "the rank of the FE" -- it's the degrees-of-freedom correction
+  from already-estimated parameters generally: under `parametric = TRUE`
+  it includes the rank of both `X` and the FE, under the semiparametric
+  default it includes only the FE rank, and it excludes the rank of an FE
+  that clustering happens to be on. `fe_rank_adj`/`fe_rank_conservative`
+  (the arguments controlling whether/how this is computed) are unchanged.
