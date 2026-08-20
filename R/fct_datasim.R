@@ -8,6 +8,16 @@
 ##     j = treatment margin D >= j
 ##     k = instrument margin Z: k - 1 -> k
 ##  Note: alpha reparametrized in probability space.
+##  nFE1/nFE2: optional number of levels for one/two grouping (fixed-effect)
+##    variables FE1/FE2. When set, Z's distribution shifts by FE group
+##    (strength fe_z_strength) and Y gets an additive FE main effect (sd
+##    fe_y_sd) -- an FE-correlated instrument plus an FE-correlated outcome
+##    confound, i.e. exactly the setting where absorbing FE is load-bearing
+##    for validity. NULL (default) reproduces the previous FE-free behavior.
+##  z_score_expr: optional string overriding setup "B"'s default linear
+##    z_score formula (0.2*rowSums(X)), evaluated the same way alpha_good
+##    is -- lets a caller plant genuine nonlinearity in Z's true dependence
+##    on X (e.g. to test parametric=TRUE under a misspecified fml.Z).
 fct_datasim <- function(
     setup, n,
     J = 1, K = 1,
@@ -20,6 +30,11 @@ fct_datasim <- function(
     tau = rep(1, J),
     eps = 1e-6,
     min_cell_prob = 0.02,
+    nFE1 = NULL,
+    nFE2 = NULL,
+    fe_z_strength = 0.75,
+    fe_y_sd = 1,
+    z_score_expr = NULL,
     return_design = FALSE
 ) {
 
@@ -39,6 +54,29 @@ fct_datasim <- function(
   colnames(X) <- paste0("Xvar", 1:p)
 
   Xdf <- as.data.frame(X)
+
+  has_FE1 <- !is.null(nFE1)
+  has_FE2 <- !is.null(nFE2)
+
+  ## Group sizes follow a mild power-law (rather than a uniform draw) so
+  ## that, with a moderate number of groups, a realistic mix of large and
+  ## singleton/near-singleton groups occurs -- giving montest's
+  ## drop_singletons/drop_novar_Z options something real to do, rather than
+  ## requiring an unrealistically large nFE1/nFE2 to ever see a singleton.
+  FE1 <- if (has_FE1) {
+    sample.int(nFE1, n, replace = TRUE, prob = (seq_len(nFE1))^(-1))
+  } else {
+    NULL
+  }
+
+  FE2 <- if (has_FE2) {
+    sample.int(nFE2, n, replace = TRUE, prob = (seq_len(nFE2))^(-1))
+  } else {
+    NULL
+  }
+
+  if (has_FE1) Xdf$FE1 <- FE1
+  if (has_FE2) Xdf$FE2 <- FE2
 
   eval_inside <- function(x, name) {
     if (is.character(x) && length(x) == 1L) {
@@ -117,11 +155,50 @@ fct_datasim <- function(
   }
 
   if (setup == "A") {
-    Z <- sample(0:K, n, replace = TRUE)
+    if (has_FE1) {
+      ## Z's marginal distribution shifts by FE group (and, if present, a
+      ## second FE group) -- unconditionally correlated with FE, but still
+      ## exogenous *within* FE, since nothing else about the DGP depends on
+      ## the FE-group shift used here. This is what makes controlling for
+      ## FE load-bearing for validity: an instrument "as good as randomly
+      ## assigned" only within group, the standard motivation for a
+      ## fixed-effects IV design (e.g. judge/region/cohort designs).
+      fe1_z_shift <- stats::rnorm(nFE1, 0, fe_z_strength)
+      z_score <- fe1_z_shift[FE1]
+
+      if (has_FE2) {
+        fe2_z_shift <- stats::rnorm(nFE2, 0, fe_z_strength)
+        z_score <- z_score + fe2_z_shift[FE2]
+      }
+
+      z_score <- z_score + rnorm(n)
+
+      br <- unique(quantile(
+        z_score,
+        probs = seq(0, 1, length.out = K + 2),
+        na.rm = TRUE
+      ))
+
+      Z <- as.integer(cut(
+        z_score,
+        breaks = br,
+        include.lowest = TRUE,
+        labels = FALSE
+      )) - 1L
+
+    } else {
+      Z <- sample(0:K, n, replace = TRUE)
+    }
+
     b <- rep(0, n)
 
   } else if (setup == "B") {
-    z_score <- 0.2 * rowSums(X) + rnorm(n)
+    z_score <- if (!is.null(z_score_expr)) {
+      eval_inside(z_score_expr, "z_score_expr")
+    } else {
+      0.2 * rowSums(X)
+    }
+    z_score <- z_score + rnorm(n)
 
     br <- unique(quantile(
       z_score,
@@ -425,9 +502,19 @@ fct_datasim <- function(
     tau_D <- tau_D + tau[j] * as.numeric(D >= j)
   }
 
-  Y <- as.vector(tau_D + gamma_z + X %*% betaXY + errors[, 2])
+  ## FE main effects on Y: a generic outcome confounder correlated with FE
+  ## and, via Z's own FE-dependence above, unconditionally correlated with
+  ## the instrument -- the classic omitted-fixed-effect confound that
+  ## controlling for FE in `fml` is meant to absorb.
+  fe1_y <- if (has_FE1) stats::rnorm(nFE1, 0, fe_y_sd)[FE1] else 0
+  fe2_y <- if (has_FE2) stats::rnorm(nFE2, 0, fe_y_sd)[FE2] else 0
+
+  Y <- as.vector(tau_D + gamma_z + X %*% betaXY + fe1_y + fe2_y + errors[, 2])
 
   out <- data.frame(Y, D, Z, X)
+
+  if (has_FE1) out$FE1 <- FE1
+  if (has_FE2) out$FE2 <- FE2
 
   if (return_design) {
     expected_first_stage <- matrix(NA_real_, nrow = J, ncol = K)
