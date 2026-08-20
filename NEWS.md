@@ -31,3 +31,19 @@
   asymmetric: an analogous lack of variation in `D` is *not* dropped, since
   such a cell still contributes a genuine zero-covariance data point to the
   classical estimator rather than being uninformative.
+* Changed: `doubly.robust`'s default is now `NULL`, resolved from
+  `parametric` instead of being unconditionally `TRUE`: `TRUE` whenever
+  `parametric = FALSE` (the overall default), `FALSE` whenever
+  `parametric = TRUE`. AIPW's orthogonality protection matters most when
+  nuisances are flexibly/ML-estimated; under `parametric = TRUE` the
+  nuisance functional form is trusted by construction, so AIPW buys
+  comparatively little while still adding a second nuisance function's
+  estimation noise on top of the singly-robust/FWL score. Passing
+  `doubly.robust` explicitly still overrides this regardless of
+  `parametric`.
+* Added: `fml.varZ`, a new `montest()` argument giving a one-sided formula
+  for the covariates used by the conditional-variance nuisance
+  `v(X)=Var(Z|X,FE)` alone, separately from `fml.Z`'s covariates for `Z`'s
+  own conditional mean. Defaults to `fml.Z` (which itself defaults to
+  `fml`'s main X part), so leaving it unset reproduces the previous
+  behavior exactly.
