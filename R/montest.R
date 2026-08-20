@@ -15,6 +15,13 @@
 #'   Observations with missing values in any variables used by the call are dropped.
 #' @param fml A fixest-style formula on the form Y~X|fe|D~Z that specifies the IV call to be tested. Importantly, the instrument Z should be coded so that higher values of Z imply weakly higher values of D for everyone - positive monotonicity. By default, the X part of the formula is used for both nuisance estimation and heterogeneous effects. X may contain the same variables as FE, indicating that some FE variables should also be used for heterogeneity.
 #' @param fml.Z Optional: A one-sided formula for the nuisance of the instrument. Defaults to the same as the the general formula in fml
+#' @param fml.varZ Optional: A one-sided formula for the conditional-variance nuisance
+#'   \eqn{v(X)=Var(Z|X,FE)} alone (see \code{doubly.robust}/\code{target} for when this is
+#'   estimated), separately from \code{fml.Z}'s covariates for \code{Z}'s own conditional
+#'   mean -- the two need not use the same covariates (e.g. a more parsimonious variance
+#'   model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
+#'   main X part), so leaving it unset reproduces the previous behavior of reusing the same
+#'   covariates used for \code{Z}'s conditional mean.
 #' @param fml.Q Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 #' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
 #' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or using semiparametric methods (the default). In the latter case,
@@ -32,11 +39,19 @@
 #'   weight used when aggregating scores into the final test statistic, not the per-row score formula itself. When \code{doubly.robust=FALSE}, \code{target} additionally selects which conditional-variance
 #'   estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus the raw empirical \eqn{(Z-\hat Z)^2} for \code{"overlap"}), so the per-row scores themselves differ between the two
 #'   settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient, at any level of aggregation (the full sample, or any subgroup subsequently averaged over).
-#' @param doubly.robust Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
+#' @param doubly.robust Logical, default \code{NULL} (resolved from \code{parametric}: \code{TRUE}
+#'   whenever \code{parametric = FALSE}, the overall default; \code{FALSE} whenever
+#'   \code{parametric = TRUE}). If \code{TRUE}, scores are constructed using the doubly-robust
+#'   (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
 #'   If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
 #'   \code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
 #'   but, unlike AIPW, offers no protection in the other direction. AIPW (\code{doubly.robust=TRUE}) is robust to
-#'   misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric}; see \code{target} for how the two interact when \code{doubly.robust=FALSE}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
+#'   misspecification of *either* nuisance, as long as the other is correct. AIPW's orthogonality protection matters most
+#'   when nuisances are flexibly/ML-estimated (\code{parametric = FALSE}) -- under \code{parametric = TRUE} the nuisance
+#'   functional form is trusted by construction, so AIPW buys comparatively little while still adding a second nuisance
+#'   function's estimation noise, hence the conditional default above. Passing \code{doubly.robust} explicitly always
+#'   overrides this regardless of \code{parametric}; see \code{target} for how the two interact when \code{doubly.robust=FALSE}.
+#'   Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
 #'   \code{"MW"}, which does not use this scoring machinery.
 #' @param linearD Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 #'   instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
@@ -56,17 +71,47 @@
 #' @param normalize.Z Logical, default TRUE; if \code{TRUE}, the estimated conditional mean of the instrument
 #'   (\code{Z.hat}) is mean-shifted within each sample/margin group so its group-average residual is exactly
 #'   zero, correcting finite-sample/cross-fitting bias. Applies regardless of representation (binary or
-#'   continuous) or fixed effects. Additionally, for the binary representation only (which requires \code{Z.hat}
-#'   to behave as a valid probability), \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]}.
+#'   continuous) or fixed effects. Additionally, for a binary instrument estimated \emph{without} fixed effects
+#'   (which requires \code{Z.hat} to behave as a valid probability), \code{Z.hat} is also clipped to
+#'   \code{[aipw.clip, 1-aipw.clip]}. With fixed effects, \code{Z.hat} is instead always built as an FE mean
+#'   plus a fitted FE-residual, an unconstrained recombination with no such guarantee even for a genuinely
+#'   binary instrument -- so that case is scored via the continuous/fitted-variance representation instead,
+#'   where \code{Z.hat} is used only additively and never needs to be clipped, and the fitted conditional
+#'   variance \eqn{v(X)} (see \code{aipw.clip}) is used in its place.
 #' @param aipw.clip Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
-#'   Also used, for continuous instrument case, to floor the fitted conditional-variance nuisance \eqn{v(X)} at
-#'   \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
+#'   Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
+#'   binary instrument estimated with fixed effects), to floor the fitted conditional-variance nuisance \eqn{v(X)}
+#'   at \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
 #'   outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
 #'   that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
 #'   Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
 #'   additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
 #'   the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.
+#' @param drop_singletons Logical, default TRUE. If \code{TRUE} and fixed effects are
+#'   present, observations belonging to a fixed-effect "singleton" (an FE level with only
+#'   one observation -- possibly only after removing other singletons in a different FE
+#'   dimension, under multiple FE) are dropped before any nuisance estimation. These
+#'   observations are perfectly explained by their own FE dummy and contribute nothing to
+#'   any regressor's FE-adjusted coefficient; per Correia (2016) and reghdfe's own default
+#'   (\code{keepsingletons = FALSE}), leaving them in without a matching degrees-of-freedom
+#'   correction biases cluster-robust standard errors downward. Coefficient point estimates
+#'   are unaffected either way -- this only corrects inference. Implemented via fixest's own
+#'   \code{fixef.rm = "singletons"} (iterative, multi-way-FE-aware) rather than a hand-rolled
+#'   version.
+#' @param drop_novar_Z Logical, default TRUE. If \code{TRUE} and fixed effects are present,
+#'   observations in fixed-effect cells with no within-cell variation in the instrument
+#'   \code{Z} are dropped before any nuisance estimation. Such a cell's residualized
+#'   \code{Z} is exactly 0, so -- in the classical Frisch-Waugh-Lovell sense -- it
+#'   contributes nothing to identifying the coefficient on \code{Z} or its variance; in the
+#'   semiparametric pipeline these cells are additionally the primary source of the
+#'   "conditional variance v(X) for continuous-Z rows" clip warnings described under
+#'   \code{aipw.clip} (a variance model fit by pooling across FE cells inevitably leaks a
+#'   small nonzero fitted deviation into a cell whose true variance is exactly zero). Unlike
+#'   \code{drop_singletons}, this is specific to \code{Z} -- an analogous lack of variation
+#'   in \code{D} (or \code{Y}) is not dropped, since such a cell still contributes a genuine
+#'   zero-covariance data point to the classical estimator (correctly diluting a
+#'   heterogeneous effect toward its population average) rather than being uninformative.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing cannot be combined with cluster.
@@ -240,12 +285,12 @@
 #' @seealso montestplot LATEtest
 #' @export
 
-montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 normalize.Z=TRUE,aipw.clip=1e-3,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
+montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
+                 normalize.Z=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=TRUE,
+                 doubly.robust=NULL,
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
 ){
@@ -264,6 +309,20 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ################### 1 CHECK INPUT #####################
   data <- data.table::as.data.table(data.table::copy(data))
   target <- if (is.null(target)) "all" else match.arg(target, c("all", "overlap"))
+
+  ## `doubly.robust`'s default depends on `parametric`: AIPW's orthogonality
+  ## protection (robust to misspecification of *either* nuisance) matters
+  ## most when nuisances are flexibly/ML-estimated (parametric = FALSE, the
+  ## overall default) -- so that case defaults to doubly.robust = TRUE. Under
+  ## parametric = TRUE, the nuisance functional form is taken as given/
+  ## trusted by construction, so AIPW is buying comparatively little (no
+  ## protection against misspecification you've already assumed away) while
+  ## still adding a second nuisance function's estimation noise on top of
+  ## the singly-robust/FWL score -- so that case defaults to
+  ## doubly.robust = FALSE instead, matching the classical parametric
+  ## FWL/2SLS-style coefficient more directly. An explicit doubly.robust=
+  ## TRUE/FALSE always overrides this regardless of `parametric`.
+  doubly.robust <- if (is.null(doubly.robust)) !isTRUE(parametric) else doubly.robust
 
   ##Check formula and validate
   v <- validate_iv(fml, data)
@@ -316,13 +375,23 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   if (is.null(X_expr_Z)) X_expr_Z <- X_expr_forest
   if (is.null(X_expr_Q)) X_expr_Q <- X_expr_forest
 
+  ## `fml.varZ` controls the covariates used for the conditional-variance
+  ## nuisance v(X) = Var(Z|X,FE) alone (see the `need_v_hat` block below),
+  ## separately from `fml.Z`'s covariates for Z's own conditional mean --
+  ## the two need not be the same set (e.g. a more parsimonious variance
+  ## model for stability). Defaults to `fml.Z` (which itself already
+  ## defaults to `fml`'s main X part), so leaving it unset reproduces
+  ## exactly the previous behavior of reusing Z.hat's own covariates.
+  X_expr_varZ <- parse_one_sided_rhs(fml.varZ, "fml.varZ")
+  if (is.null(X_expr_varZ)) X_expr_varZ <- X_expr_Z
+
   ## Under parametric = TRUE, Z.hat/Q.hat's linear nuisance models are fit
   ## on the same rows used for testing (no cross-fitting), so the degrees-
   ## of-freedom correction must also account for X's rank, alongside the
   ## existing FE-rank correction (fe_rank_adj). Under parametric = FALSE,
   ## X is genuinely cross-fit, so no such penalty applies.
   x_rank_vars <- if (isTRUE(parametric)) {
-    unique(c(all.vars(X_expr_Z), all.vars(X_expr_Q)))
+    unique(c(all.vars(X_expr_Z), all.vars(X_expr_Q), all.vars(X_expr_varZ)))
   } else {
     character(0)
   }
@@ -701,6 +770,54 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     }
   }
 
+  ## Two distinct FE-driven exclusions, run in this order (see drop_singletons/
+  ## drop_novar_Z docs): (1) true singletons (FE levels with a single
+  ## observation) are regressor-agnostic and affect degrees of freedom for
+  ## every nuisance, not just Z's; (2) no-within-FE-variation-in-Z rows are
+  ## specific to identifying gamma and to the numerical stability of the
+  ## Z-variance nuisance. A true singleton is trivially also a no-variation-
+  ## in-Z row, so running (1) first just avoids (2) rediscovering the same
+  ## rows -- it is not required for correctness either way.
+  n_dropped_singletons <- 0L
+  n_dropped_novar_Z <- 0L
+
+  if (has_FE && isTRUE(drop_singletons)) {
+    idx_singleton <- drop_fe_singletons(data, FE_expr, placeholder_y = D, weight = weight)
+    n_dropped_singletons <- length(idx_singleton)
+
+    if (n_dropped_singletons > 0L) {
+      message(
+        "Note: dropped ", n_dropped_singletons,
+        " observation(s) belonging to a fixed-effect singleton (an FE level ",
+        "with only one observation, possibly only after removing other ",
+        "singletons in a different FE dimension). These are perfectly ",
+        "explained by their own FE dummy and contribute nothing to any ",
+        "regressor's FE-adjusted coefficient or its standard error -- see ",
+        "`drop_singletons`. Set `drop_singletons = FALSE` to keep them."
+      )
+      data <- data[-idx_singleton]
+    }
+  }
+
+  if (has_FE && isTRUE(drop_novar_Z)) {
+    idx_novar_Z <- drop_novar_Z_rows(data, Z, FE_expr, weight = weight)
+    n_dropped_novar_Z <- length(idx_novar_Z)
+
+    if (n_dropped_novar_Z > 0L) {
+      message(
+        "Note: dropped ", n_dropped_novar_Z,
+        " observation(s) in fixed-effect cells with no within-cell variation ",
+        "in `", Z, "`. Their residualized `", Z, "` is exactly 0, so they ",
+        "contribute nothing to identifying the coefficient on `", Z, "` (or ",
+        "its variance) in the classical FWL sense, and are the primary ",
+        "source of the \"conditional variance v(X) for continuous-Z rows\" ",
+        "clip warnings this option exists to avoid -- see `drop_novar_Z`. ",
+        "Set `drop_novar_Z = FALSE` to keep them."
+      )
+      data <- data[-idx_novar_Z]
+    }
+  }
+
   n=nrow(data)
   if (is.null(cluster)==FALSE) {
     G <- data.table::uniqueN(data[[cluster]])
@@ -926,19 +1043,39 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
 
   ## Continuous-Z rows (FWL, or AIPW with a fitted variance nuisance) are
   ## chosen whenever:
-  ##   - has_FE AND Z is genuinely non-binary (K_true > 2): with a
-  ##     multivalued Z, has_FE makes e(X) more FE-flexible (hence more
-  ##     variable), and there is no closed-form alternative to a fitted
-  ##     v(X) model for a non-Bernoulli variable. But when Z is genuinely
-  ##     binary (K_true <= 2), Var(Z|X) = e(X)*(1-e(X)) is exact regardless
-  ##     of how e(X) was estimated (with or without FE) -- FE only changes
-  ##     the ESTIMATION METHOD for e(X), never what e(X) is an estimate of,
-  ##     so forcing a separately-fit variance model in that case only adds
-  ##     a second, noisier source of estimation error on top of e(X)'s own,
-  ##     with none of the closed form's built-in [0, 0.25] guarantee. (A
-  ##     noisy e(X) still biases e(X)*(1-e(X)) downward -- see the `target`
-  ##     docs -- but it can never make it negative or otherwise invalid the
-  ##     way an unconstrained fitted variance model can.)
+  ##   - has_FE: under FE, Z.hat is never a directly-fitted probability --
+  ##     estimate_conditional_mean() always builds it as an FE mean
+  ##     (Zbar_g) plus an ML fit of the FE-residual on Xtilde, recombined
+  ##     additively. That recombination is unconstrained: nothing about it
+  ##     guarantees Z.hat in [0,1], for a multivalued Z OR a genuinely
+  ##     binary one. For binary Z it is *true* that Var(Z|X,FE) =
+  ##     e(X,FE)*(1-e(X,FE)) exactly, as an identity about the estimand --
+  ##     but that identity is no protection when the ESTIMATE of e(X,FE)
+  ##     itself can land outside [0,1] (small/unbalanced FE cells are
+  ##     exactly where this happens, and exactly where you have the least
+  ##     evidence to fall back on). Using the closed form there means the
+  ##     score construction needs a bound the nuisance estimator cannot
+  ##     promise, and fails hard (validate_and_clip()'s hard_lower/
+  ##     hard_upper) rather than merely losing precision.
+  ##
+  ##     The fitted-v(X) alternative targets the exact same Var(Z|X,FE) --
+  ##     (Z-Z.hat)^2 has conditional expectation e(X,FE)*(1-e(X,FE)) under
+  ##     correct specification, so this is not a different estimand, just a
+  ##     different estimator of it -- but it only ever needs v(X) floored
+  ##     near 0 (small negative excursions near a genuine near-zero-variance
+  ##     boundary are treated as estimation noise, not misspecification --
+  ##     see make_scores_vec()'s idx_linear branch), and Z.hat itself is
+  ##     then used solely additively in (Z-Z.hat), never as a multiplicative/
+  ##     bounded quantity. A one-sided, wide-slack requirement instead of a
+  ##     two-sided one that typically sits close to a boundary in exactly
+  ##     the low-overlap cells FE identification relies on.
+  ##
+  ##     Without FE, this tradeoff reverses: e(X) is fit directly (no FE
+  ##     recombination), so it already has whatever bound its own model
+  ##     provides (a closed-form logit/forest classifier stays in [0,1] by
+  ##     construction), and e(X)*(1-e(X)) is then genuinely the cheaper,
+  ##     lower-noise choice with no offsetting robustness benefit. So the
+  ##     binary/closed-form path remains the default whenever !has_FE.
   ##   - linearZ = TRUE: the user explicitly asked for Z on its raw/linear
   ##     scale (see `linearZ` docs); already implies K_true > 2, since
   ##     linearZ is downgraded to FALSE above whenever Z is binary.
@@ -948,7 +1085,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   ## parametric/semiparametric choice from the binary/continuous
   ## representation choice. `doubly.robust` (AIPW vs. FWL) is likewise an
   ## independent choice -- see the `fit_models()` calls below.
-  if ((has_FE && K_true > 2L) || isTRUE(linearZ)) {
+  if (has_FE || isTRUE(linearZ)) {
     data[, z_use_linear_score := TRUE]
   }
 
@@ -1192,12 +1329,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
   }
 
   if (need_v_hat) {
+    ## `X_expr_varZ` (from `fml.varZ`) may name a different covariate set
+    ## than `X_expr_Z`. Reuse Z_hat_info's already-residualized columns only
+    ## when the two formulas actually agree (the default, `fml.varZ` unset)
+    ## -- otherwise let estimate_conditional_mean() residualize `X_expr_varZ`
+    ## itself fresh (x_names = NULL triggers this internally).
+    X_names_reuse_for_varZ <- if (
+      !isTRUE(parametric) && identical(X_expr_varZ, X_expr_Z)
+    ) Z_hat_info$x_names else NULL
+
     ## Restricted to continuous-representation rows: binary rows never need
     ## a fitted model here (see comment block above).
     estimate_conditional_mean(
       DT = data,
       y_name = z_resid_sq,
-      x_expr = X_expr_Z,
+      x_expr = X_expr_varZ,
       fe_expr = FE_expr,
       out_hat = zvarhat,
       by = margins,
@@ -1210,7 +1356,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
       crossfit_label = "Z",
       forest_opts = Zparameters,
       fixest_opts = Zparameters,
-      x_names = Z_hat_info$x_names,
+      x_names = X_names_reuse_for_varZ,
       x_prefix = "__xzv",
       keep_x = FALSE,
       return_residual = FALSE,
@@ -2607,6 +2753,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,condition=NULL,inner.folds=NULL,
     options = options,
     time = time,
     obs = obs,
+    dropped = c(fe_singletons = n_dropped_singletons, novar_Z = n_dropped_novar_Z),
     margins = margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE]
   ))
   return(out)

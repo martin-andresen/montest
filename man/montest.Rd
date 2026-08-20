@@ -9,11 +9,14 @@ montest(
   data,
   fml.Z = NULL,
   fml.Q = NULL,
+  fml.varZ = NULL,
   condition = NULL,
   inner.folds = NULL,
   crossfit = NULL,
   normalize.Z = TRUE,
   aipw.clip = 0.001,
+  drop_singletons = TRUE,
+  drop_novar_Z = TRUE,
   weight = NULL,
   cluster = NULL,
   seed = 10101,
@@ -28,7 +31,7 @@ montest(
   Zsubsets = 4L,
   Y.res = TRUE,
   testtype = "forest",
-  fe_rank_conservative = FALSE,
+  fe_rank_conservative = TRUE,
   fe_rank_adj = TRUE,
   gridpoints = NULL,
   min_n = 1L,
@@ -38,7 +41,7 @@ montest(
   linearD = FALSE,
   linearZ = FALSE,
   target = NULL,
-  doubly.robust = TRUE,
+  doubly.robust = NULL,
   cp = 0,
   maxrankcp = 10L,
   Rparameters = list(),
@@ -63,6 +66,14 @@ Observations with missing values in any variables used by the call are dropped.}
 \item{fml.Q}{Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.}
 
+\item{fml.varZ}{Optional: A one-sided formula for the conditional-variance nuisance
+\eqn{v(X)=Var(Z|X,FE)} alone (see \code{doubly.robust}/\code{target} for when this is
+estimated), separately from \code{fml.Z}'s covariates for \code{Z}'s own conditional
+mean -- the two need not use the same covariates (e.g. a more parsimonious variance
+model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
+main X part), so leaving it unset reproduces the previous behavior of reusing the same
+covariates used for \code{Z}'s conditional mean.}
+
 \item{condition}{Character vector selecting which tests to run. Allowed values are any combination of
 \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 If \code{Y} is omitted from the formula, only \code{"simple"} is allowed.}
@@ -76,18 +87,50 @@ cross-fitting nuisance functions and, optionally, forest predictions. Set to
 \item{normalize.Z}{Logical, default TRUE; if \code{TRUE}, the estimated conditional mean of the instrument
 (\code{Z.hat}) is mean-shifted within each sample/margin group so its group-average residual is exactly
 zero, correcting finite-sample/cross-fitting bias. Applies regardless of representation (binary or
-continuous) or fixed effects. Additionally, for the binary representation only (which requires \code{Z.hat}
-to behave as a valid probability), \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]}.}
+continuous) or fixed effects. Additionally, for a binary instrument estimated \emph{without} fixed effects
+(which requires \code{Z.hat} to behave as a valid probability), \code{Z.hat} is also clipped to
+\code{[aipw.clip, 1-aipw.clip]}. With fixed effects, \code{Z.hat} is instead always built as an FE mean
+plus a fitted FE-residual, an unconstrained recombination with no such guarantee even for a genuinely
+binary instrument -- so that case is scored via the continuous/fitted-variance representation instead,
+where \code{Z.hat} is used only additively and never needs to be clipped, and the fitted conditional
+variance \eqn{v(X)} (see \code{aipw.clip}) is used in its place.}
 
 \item{aipw.clip}{Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
-Also used, for continuous instrument case, to floor the fitted conditional-variance nuisance \eqn{v(X)} at
-\code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
+Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
+binary instrument estimated with fixed effects), to floor the fitted conditional-variance nuisance \eqn{v(X)}
+at \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
 outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
 that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
 Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
 additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
 the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.}
+
+\item{drop_singletons}{Logical, default TRUE. If \code{TRUE} and fixed effects are
+present, observations belonging to a fixed-effect "singleton" (an FE level with only
+one observation -- possibly only after removing other singletons in a different FE
+dimension, under multiple FE) are dropped before any nuisance estimation. These
+observations are perfectly explained by their own FE dummy and contribute nothing to
+any regressor's FE-adjusted coefficient; per Correia (2016) and reghdfe's own default
+(\code{keepsingletons = FALSE}), leaving them in without a matching degrees-of-freedom
+correction biases cluster-robust standard errors downward. Coefficient point estimates
+are unaffected either way -- this only corrects inference. Implemented via fixest's own
+\code{fixef.rm = "singletons"} (iterative, multi-way-FE-aware) rather than a hand-rolled
+version.}
+
+\item{drop_novar_Z}{Logical, default TRUE. If \code{TRUE} and fixed effects are present,
+observations in fixed-effect cells with no within-cell variation in the instrument
+\code{Z} are dropped before any nuisance estimation. Such a cell's residualized
+\code{Z} is exactly 0, so -- in the classical Frisch-Waugh-Lovell sense -- it
+contributes nothing to identifying the coefficient on \code{Z} or its variance; in the
+semiparametric pipeline these cells are additionally the primary source of the
+"conditional variance v(X) for continuous-Z rows" clip warnings described under
+\code{aipw.clip} (a variance model fit by pooling across FE cells inevitably leaks a
+small nonzero fitted deviation into a cell whose true variance is exactly zero). Unlike
+\code{drop_singletons}, this is specific to \code{Z} -- an analogous lack of variation
+in \code{D} (or \code{Y}) is not dropped, since such a cell still contributes a genuine
+zero-covariance data point to the classical estimator (correctly diluting a
+heterogeneous effect toward its population average) rather than being uninformative.}
 
 \item{weight}{Optional character scalar naming a nonnegative weight variable.}
 
@@ -113,6 +156,26 @@ outcome on the right hand side \code{MW,AHS}.}
 
 \item{testtype}{Character string selecting the subset-search routine. Must be
 \code{"forest"} or \code{"CART"}. Default: Forest.}
+
+\item{fe_rank_conservative}{Logical; only relevant when \code{testtype = "forest"}.
+Controls the cheap, approximate running fixed-effects-rank formula used purely to
+screen candidate cutoffs during the forest-based search (recomputing the exact
+rank at every candidate would be too slow). \code{TRUE} (default) sums each fixed-
+effect term's running category count independently, which over-counts (and is
+therefore conservative -- smaller effective degrees of freedom, wider intervals)
+whenever multiple fixed-effect terms share or interact categories. \code{FALSE}
+applies a cruder overlap correction that can under-count in the same situation.
+This setting never affects the final reported statistic for whichever cutoff is
+selected -- that value always comes from the exact computation controlled by
+\code{fe_rank_adj} -- only which cutoff the search prefers. Has no effect at all
+under \code{testtype = "CART"}, whose own cutoff search already uses the exact
+computation.}
+
+\item{fe_rank_adj}{Logical; if \code{TRUE} (default), degrees of freedom for the
+final cluster-robust test statistics are reduced by the rank of the fixed effects
+(and, under \code{parametric = TRUE}, the rank of the parametric nuisance
+covariates) actually used within each tested cell. This always uses an exact
+computation and affects every reported statistic, regardless of \code{testtype}.}
 
 \item{gridpoints}{Optional integer controlling the number of candidate cutoffs searched
 by the forest-based test. If \code{NULL}, all eligible cutoffs are considered.}
@@ -153,11 +216,19 @@ weight used when aggregating scores into the final test statistic, not the per-r
 estimator normalizes each row's score (a fitted per-observation model for \code{"all"}, versus the raw empirical \eqn{(Z-\hat Z)^2} for \code{"overlap"}), so the per-row scores themselves differ between the two
 settings, not just their aggregation weight; \code{"overlap"} in that case coincides exactly with the classical Frisch-Waugh-Lovell / OLS partialling-out coefficient, at any level of aggregation (the full sample, or any subgroup subsequently averaged over).}
 
-\item{doubly.robust}{Logical, default TRUE. If \code{TRUE}, scores are constructed using the doubly-robust (AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
+\item{doubly.robust}{Logical, default \code{NULL} (resolved from \code{parametric}: \code{TRUE}
+whenever \code{parametric = FALSE}, the overall default; \code{FALSE} whenever
+\code{parametric = TRUE}). If \code{TRUE}, scores are constructed using the doubly-robust
+(AIPW-style) moments, augmenting the residual term with the causal forest's predicted CATE.
 If \code{FALSE}, scores use the singly-robust/partialling-out (FWL) moment. "Singly robust" here means robust specifically to misspecification of the outcome nuisance
 \code{Q.hat}: the FWL score is consistent whenever the instrument's conditional mean \code{Z.hat} is correctly specified, for *any* \code{Q.hat} (which then only affects efficiency, not consistency) --
 but, unlike AIPW, offers no protection in the other direction. AIPW (\code{doubly.robust=TRUE}) is robust to
-misspecification of *either* nuisance, as long as the other is correct. Orthogonal to \code{parametric}; see \code{target} for how the two interact when \code{doubly.robust=FALSE}. Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
+misspecification of *either* nuisance, as long as the other is correct. AIPW's orthogonality protection matters most
+when nuisances are flexibly/ML-estimated (\code{parametric = FALSE}) -- under \code{parametric = TRUE} the nuisance
+functional form is trusted by construction, so AIPW buys comparatively little while still adding a second nuisance
+function's estimation noise, hence the conditional default above. Passing \code{doubly.robust} explicitly always
+overrides this regardless of \code{parametric}; see \code{target} for how the two interact when \code{doubly.robust=FALSE}.
+Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
 \code{"MW"}, which does not use this scoring machinery.}
 
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
@@ -250,6 +321,34 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   statistic uses Z.hat directly as a propensity weight with no AIPW/FWL orthogonalization protecting it).
   \code{linearZ}/\code{linearD} are disallowed in combination with \code{"MW"} for the same reason: its moment
   conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
+}
+
+\code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),
+but not every combination is equally well-justified statistically:
+\enumerate{
+  \item \code{parametric=FALSE}, \code{doubly.robust=TRUE} (the default for both): the best-justified
+  pairing for flexible nuisances. Cross-fit forests converge slower than \eqn{\sqrt{n}} and can be
+  locally misspecified; a Neyman-orthogonal (doubly-robust) score is what keeps that first-order
+  nuisance-estimation error out of the final estimate, letting it enter only at second order instead
+  of biasing the result. Recommended unless there is a specific reason to deviate.
+  \item \code{parametric=TRUE}, \code{doubly.robust=FALSE}: sensible when the nuisance functional form
+  is genuinely trusted to be (close to) linear. A correctly-specified linear model does not have the
+  slow-convergence problem doubly-robust scoring exists to protect against, so the AIPW correction adds
+  little while a doubly-robust score built on in-sample, non-cross-fit nuisances loses the finite-sample
+  protection cross-fitting would otherwise provide.
+  \item \code{parametric=FALSE}, \code{doubly.robust=FALSE}: still consistent (the FWL score only
+  requires \code{Z.hat} to be correctly specified, for any \code{Q.hat} -- see \code{doubly.robust}),
+  but gives up both the orthogonality protection and the efficiency gain from using the causal forest's
+  predicted CATE as a control variate, for no compensating benefit. Rarely worth choosing deliberately.
+  \item \code{parametric=TRUE}, \code{doubly.robust=TRUE}: the most fragile combination. Nuisances are
+  fit in-sample without cross-fitting, so the doubly-robust correction loses much of its usual
+  theoretical justification (no sample-splitting protects against the same-sample fit's own overfitting),
+  while keeping the fragility risk of an unconstrained parametric propensity (e.g. a linear-probability-
+  model prediction outside \eqn{[0,1]}). This combination is not disallowed -- the concrete failure mode
+  is caught by the validity checks described under \code{aipw.clip} (a hard stop on structurally invalid
+  nuisance values, or a clip-and-warn near the boundary) -- but it is the pairing to reach for last, and
+  only when the linear nuisance model is trusted to be well-specified with propensities safely bounded
+  away from 0 and 1.
 }
 }
 \examples{

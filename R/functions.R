@@ -2037,6 +2037,84 @@ feols_partial_out <- function(DT,
   )
 }
 
+## ========= Helper: drop true FE singletons (reghdfe-style) =========
+## An FE level with exactly one observation is perfectly explained by its
+## own FE dummy, so it contributes nothing to ANY regressor's FE-adjusted
+## coefficient -- this is regressor-agnostic, unlike drop_novar_Z_rows()
+## below. Correia (2016) shows leaving these in (without a matching degrees-
+## of-freedom correction) biases cluster-robust SEs downward; reghdfe's
+## default (`keepsingletons = FALSE`) is to drop them, iterating under
+## multiple FE dimensions since removing a singleton in one FE can create a
+## new singleton in another.
+##
+## fixest already implements exactly this (iterative, multi-way-aware)
+## algorithm via `fixef.rm = "singletons"`, so it is reused here rather than
+## re-implemented: fit a throwaway regression of `placeholder_y` (any real
+## numeric column already in `data` -- singleton status depends only on FE
+## structure, never on the LHS values) on the FE alone, and read off which
+## rows fixest itself decided to remove. Per fixest's own docs, "the
+## coefficient estimates will remain the same [with or without this
+## removal]; it only affects inference" -- so this is purely a degrees-of-
+## freedom correction, dropped upfront here rather than left for downstream
+## df logic (fe_rank()/fe_rank_adj) to infer on its own.
+drop_fe_singletons <- function(data, fe_expr, placeholder_y, weight = NULL) {
+  lhs_q <- paste0("`", gsub("`", "``", placeholder_y), "`")
+  fml <- stats::as.formula(paste0(lhs_q, " ~ 1 | ", deparse1(fe_expr)))
+
+  args <- list(
+    fml = fml, data = data, fixef.rm = "singletons",
+    notes = FALSE, warn = FALSE
+  )
+  if (!is.null(weight)) {
+    args$weights <- stats::as.formula(paste0("~", weight))
+  }
+
+  fit <- do.call(fixest::feols, args)
+
+  removed <- fit$obs_selection$obsRemoved
+  if (is.null(removed)) integer() else -removed
+}
+
+## ========= Helper: drop rows with no within-FE variation in Z =========
+## A row whose FE cell has zero residual Z variation is exactly zero-
+## information for identifying gamma: in the classical FWL estimator its
+## residualized Z is exactly 0, contributing nothing to either the
+## numerator or denominator of the coefficient (or its variance) -- see
+## montest()'s `drop_novar_Z` docs. In the semiparametric pipeline these
+## rows are additionally the primary source of "conditional variance v(X)
+## for continuous-Z rows" clip warnings (make_scores_vec()'s idx_linear
+## branch): a variance model fit by pooling across FE cells inevitably
+## leaks a small nonzero fitted deviation into a cell whose true variance is
+## exactly zero, pushing the FE-mean-plus-forest-residual recombination
+## across zero.
+##
+## Detected via feols_partial_out() -- the same residualization the rest of
+## the pipeline already uses for Z -- rather than a raw per-group
+## tabulation, so it generalizes to multi-way/interacted FE for free instead
+## of only handling a single FE dimension. `tol` is a numerical-noise
+## tolerance, not a magnitude threshold: a truly FE-constant Z has residual
+## exactly 0 up to floating point, so this does not touch genuinely
+## low-but-nonzero-variance cells (those are what `target = "overlap"`
+## weighting is for, not a hard drop).
+drop_novar_Z_rows <- function(data, Z, fe_expr, weight = NULL, tol = 1e-8) {
+  po <- feols_partial_out(
+    DT = data,
+    y = Z,
+    rhs_expr = quote(1),
+    fe_expr = fe_expr,
+    weight = weight,
+    prefix = "__novarZ",
+    keep = "resid"
+  )
+
+  ztilde <- data[[po$resid]]
+  data[, (po$resid) := NULL]
+
+  scale <- stats::sd(data[[Z]], na.rm = TRUE)
+  if (!is.finite(scale) || scale <= 0) scale <- 1
+
+  which(abs(ztilde) <= tol * scale)
+}
 
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
@@ -2488,7 +2566,30 @@ make_scores_vec <- function(Y,
     if (has_ols_v) {
       ## Empirical (Z-Z.hat)^2 supplied -- e is used only additively in
       ## the score (w_use - e), never as a divisor, so it is left unclipped.
-      v[ii] <- as.numeric(Z.var.hat)[ii]
+      ## v itself IS used as a divisor here, though: an unfloored raw
+      ## squared residual can land extremely close to zero whenever the
+      ## fitted e(X) happens to be very confident for some row (common,
+      ## not a sign of misspecification -- it just means that region has
+      ## little residual variance left to identify from). Dividing by that
+      ## near-zero v inflates just that row's score to an enormous,
+      ## sometimes leaf/tree-dominating value on the training/search side:
+      ## unlike the test-side estimator (crv1_mean(center=TRUE), which
+      ## never forms a per-row score at all), this score genuinely is
+      ## consumed row-by-row -- CART_test() fits rpart() directly on it,
+      ## and forest_test_core()'s grid search sums w*score per candidate
+      ## cutoff. The aggregate through-origin ratio itself is unaffected by
+      ## how v is floored (v always cancels out of w_eff*score), so this
+      ## costs nothing where it matters and only stabilizes the per-row
+      ## intermediate -- same floor convention the continuous branch below
+      ## already uses.
+      v_raw_ii <- as.numeric(Z.var.hat)[ii]
+      v_scale_ii <- stats::weighted.mean(v_raw_ii, w = wt[ii], na.rm = TRUE)
+      v[ii] <- validate_and_clip(
+        v_raw_ii,
+        hard_lower = 0,
+        floor = if (!is.null(clip)) clip * v_scale_ii else NULL,
+        label = "row-level empirical variance for binary-Z rows (target=\"overlap\")"
+      )
     } else {
       e[ii] <- validate_and_clip(
         e[ii],
@@ -2507,9 +2608,20 @@ make_scores_vec <- function(Y,
     zres_c <- zres - stats::weighted.mean(zres, w = wt[ii], na.rm = TRUE)
     v_scale <- stats::weighted.mean(zres_c^2, w = wt[ii], na.rm = TRUE)
 
+    ## No `hard_lower` here (unlike the propensity checks above/below): this
+    ## Z.var.hat is a FITTED conditional-variance nuisance -- estimate_conditional_mean()
+    ## builds it the same way it builds Z.hat, an FE-specific mean (itself an
+    ## average of the nonnegative-by-construction (Z-Z.hat)^2, so >= 0) plus an
+    ## unconstrained ML fit of the FE-residual on X. That recombination has no
+    ## built-in floor, so small negative excursions near a genuine near-zero-
+    ## variance boundary (a near-degenerate FE cell, e.g.) are expected
+    ## estimation noise from the functional form, not evidence the model is
+    ## nonsensical the way a propensity outside [0,1] would be -- there is no
+    ## interpretable "impossible value" threshold for variance the way there is
+    ## for a probability. So these are always floored (with a warning) rather
+    ## than erroring, same as small propensity excursions near 0/1 already are.
     v[ii] <- validate_and_clip(
       as.numeric(Z.var.hat)[ii],
-      hard_lower = 0,
       floor = if (!is.null(clip)) clip * v_scale else NULL,
       label = "conditional variance v(X) for continuous-Z rows"
     )
@@ -4301,6 +4413,19 @@ forest_test_core <- function(
     wsand <- if (!is.null(wv_sandwich)) wv_sandwich[idx] else w
     cl <- clv[idx]
 
+    ## Centered/with-intercept training-side path (need_ols_v rows only):
+    ## a completely separate branch built from the raw residualized
+    ## regressor/outcome (V/U), never from `score`/`w` at all -- unlike the
+    ## uncentered path, this isn't a stabilized version of the same
+    ## quantity, it targets a genuinely different (locally re-centered)
+    ## object, so it earns its own branch rather than a patch on the
+    ## existing one. See the computation block below for why.
+    V  <- if (use_centering) resid_treat_v[idx] else NULL
+    U  <- if (use_centering) resid_outcome_v[idx] else NULL
+    sw <- if (use_centering) sample_weight_v[idx] else NULL
+    ctr <- if (use_centering) center_v[idx] else NULL
+    cell_centered <- use_centering && length(ctr) > 0L && all(ctr)
+
     dt <- data.table::data.table(
       sample = s,
       pred   = pr,
@@ -4311,6 +4436,9 @@ forest_test_core <- function(
       cl     = cl,
       rid    = seq_along(idx)
     )
+    if (isTRUE(cell_centered)) {
+      dt[, `:=`(V = V, U = U, sw = sw)]
+    }
 
     if (!is.null(fe_dt_full)) {
       dt[, (fe_vars_needed) := fe_dt_full[idx]]
@@ -4345,70 +4473,214 @@ forest_test_core <- function(
     }
 
     dt[, N := seq_len(.N), by = sample]
-    ## `a`/`b` (and their cumulative sums WgY/Wg) drive `theta`/`m` -- using
-    ## `w`, exactly as before. The per-cluster "meat" terms (dTB2/dTAB) use
-    ## `wsand` (via WgSand) instead of `w`, mirroring crv1_mean()'s own
-    ## `w_sandwich` argument: using the pooled/broadcast `w` there instead of
-    ## the row-level (Z-Z.hat)^2 weight erases real per-cluster heterogeneity
-    ## and inflates the reported statistic.
-    dt[, `:=`(a = w * score, b = w, bsand = wsand)]
-    dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b), WgSand = cumsum(bsand)), by = .(sample, cl)]
-    dt[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample]
-    dt[, m := SWY / SW, by = sample]
 
-    dt[, `:=`(
-      dTA2 =  WgY^2 - (WgY - a)^2,
-      dTB2 =  WgSand^2  - (WgSand  - bsand)^2,
-      dTAB =  WgY * WgSand - (WgY - a) * (WgSand - bsand)
-    )]
+    if (isTRUE(cell_centered)) {
+      ## Centered/with-intercept theta(k) and its cluster-robust SE, at
+      ## EVERY candidate cutoff k along the sorted `pred` grid, computed
+      ## purely from running sums of 5 basic per-row products -- q1..q5
+      ## below -- never a per-row division. Mirrors crv1_mean(center=TRUE)
+      ## exactly (see montest.R's need_ols_v comments for why this,
+      ## rather than the through-origin ratio, is the right target): a
+      ## through-origin ratio using an externally mean-shifted Z.hat only
+      ## reproduces classical FWL/OLS for the group it was normalized at,
+      ## not for an arbitrary adaptively-chosen candidate cutoff's own
+      ## rows.
+      ##
+      ## theta(k) = Cov_k(V,U) / Var_k(V), both unnormalized (sums, not
+      ## divided by Sw), via the standard streaming/weighted-covariance
+      ## identity Cov_k = S4 - S2*S3/S1, Var_k = S5 - S2^2/S1, where
+      ## S1..S5 are the running (as-of-k) totals of q1..q5. Still a pure
+      ## ratio of sums -- exactly like the through-origin `m := SWY/SW`
+      ## below -- so no per-row division ever occurs here either.
+      dt[, `:=`(
+        q1 = sw,
+        q2 = sw * V,
+        q3 = sw * U,
+        q4 = sw * V * U,
+        q5 = sw * V^2
+      )]
 
-    dt[, `:=`(
-      TA2 = cumsum(dTA2),
-      TB2 = cumsum(dTB2),
-      TAB = cumsum(dTAB)
-    ), by = sample]
+      ## Per-cluster running sums of each basic quantity -- same pattern as
+      ## WgY/Wg in the uncentered branch, generalized from 2 quantities to
+      ## 5 (one per basic product needed to reconstruct the with-intercept
+      ## moment below).
+      dt[, `:=`(
+        Wg1 = cumsum(q1), Wg2 = cumsum(q2), Wg3 = cumsum(q3),
+        Wg4 = cumsum(q4), Wg5 = cumsum(q5)
+      ), by = .(sample, cl)]
 
-    dt[, G := cumsum(!duplicated(cl)), by = sample]
+      ## Global (within-sample) running sums.
+      dt[, `:=`(
+        S1 = cumsum(q1), S2 = cumsum(q2), S3 = cumsum(q3),
+        S4 = cumsum(q4), S5 = cumsum(q5)
+      ), by = sample]
 
-    dt[, sumS2 := (TA2 - 2 * m * TAB + (m^2) * TB2) / (SW^2)]
+      dt[, `:=`(Vbar = S2 / S1, Ubar = S3 / S1)]
+      dt[, `:=`(
+        covnum = S4 - S2 * S3 / S1,
+        varden = S5 - S2^2 / S1
+      )]
+      dt[, m := covnum / varden]
 
-    tol_var <- 1e-12
+      ## Sandwich "meat": Sigma_g M_g(k)^2, where cluster g's with-
+      ## intercept moment contribution M_g(k) = weight*(V-Vbar)*resid,
+      ## resid = (U-Ubar) - theta*(V-Vbar), expands into a LINEAR
+      ## combination of cluster g's own 5 running sums (Wg1..Wg5) with
+      ## coefficients c1..c5 that depend only on the current cutoff's
+      ## (Vbar, Ubar, theta) -- so Sigma_g M_g(k)^2 is a quadratic form
+      ## using the 15 pairwise telescoped sums T_pq(k) = Sigma_g [cluster
+      ## g's running sum of p]*[cluster g's running sum of q], each built
+      ## with the exact same squared-difference telescoping trick the
+      ## uncentered branch's TA2/TB2/TAB use (generalized from 1 pair to
+      ## all 5-choose-2 + 5 = 15 pairs).
+      tel <- function(Wp, qp, Wq, qq) Wp * Wq - (Wp - qp) * (Wq - qq)
 
-    if (any(dt$sumS2 < -tol_var & dt$G >= minsize, na.rm = TRUE)) {
-      warning(
-        "Negative cluster variance encountered in an eligible-size prefix. ",
-        "This may indicate numerical instability or problematic weights."
-      )
+      dt[, `:=`(
+        T11 = cumsum(tel(Wg1, q1, Wg1, q1)),
+        T12 = cumsum(tel(Wg1, q1, Wg2, q2)),
+        T13 = cumsum(tel(Wg1, q1, Wg3, q3)),
+        T14 = cumsum(tel(Wg1, q1, Wg4, q4)),
+        T15 = cumsum(tel(Wg1, q1, Wg5, q5)),
+        T22 = cumsum(tel(Wg2, q2, Wg2, q2)),
+        T23 = cumsum(tel(Wg2, q2, Wg3, q3)),
+        T24 = cumsum(tel(Wg2, q2, Wg4, q4)),
+        T25 = cumsum(tel(Wg2, q2, Wg5, q5)),
+        T33 = cumsum(tel(Wg3, q3, Wg3, q3)),
+        T34 = cumsum(tel(Wg3, q3, Wg4, q4)),
+        T35 = cumsum(tel(Wg3, q3, Wg5, q5)),
+        T44 = cumsum(tel(Wg4, q4, Wg4, q4)),
+        T45 = cumsum(tel(Wg4, q4, Wg5, q5)),
+        T55 = cumsum(tel(Wg5, q5, Wg5, q5))
+      ), by = sample]
+
+      dt[, `:=`(
+        c1 = Vbar * Ubar - m * Vbar^2,  # coefficient on q1 (weight)
+        c2 = -Ubar + 2 * m * Vbar,      # coefficient on q2 (weight*V)
+        c3 = -Vbar,                     # coefficient on q3 (weight*U)
+        c4 = 1,                         # coefficient on q4 (weight*V*U)
+        c5 = -m                         # coefficient on q5 (weight*V^2)
+      )]
+
+      dt[, sumS2 :=
+        c1^2 * T11 + c2^2 * T22 + c3^2 * T33 + c4^2 * T44 + c5^2 * T55 +
+        2 * (
+          c1 * c2 * T12 + c1 * c3 * T13 + c1 * c4 * T14 + c1 * c5 * T15 +
+          c2 * c3 * T23 + c2 * c4 * T24 + c2 * c5 * T25 +
+          c3 * c4 * T34 + c3 * c5 * T35 +
+          c4 * c5 * T45
+        )
+      ]
+
+      dt[, G := cumsum(!duplicated(cl)), by = sample]
+
+      ## `sumS2` here is an algebraic EXPANSION of a sum-of-squares (same
+      ## risk as the uncentered branch's TA2-2m*TAB+m^2*TB2), so floating-
+      ## point rounding can push a true-zero value slightly negative --
+      ## tolerance scaled by varden^2 since, unlike the uncentered branch,
+      ## `sumS2` here is not pre-normalized to an O(1) scale.
+      dt[, tol_var := 1e-12 * varden^2]
+
+      if (any(dt$sumS2 < -dt$tol_var & dt$G >= minsize, na.rm = TRUE)) {
+        warning(
+          "Negative cluster variance encountered in an eligible-size prefix (centered). ",
+          "This may indicate numerical instability or problematic weights."
+        )
+      }
+
+      dt[
+        is.finite(sumS2) & sumS2 < 0 & sumS2 >= -tol_var,
+        sumS2 := 0
+      ]
+
+      ## One extra parameter (the local intercept) is estimated at every
+      ## cutoff here, matching crv1_mean(center=TRUE)'s rank_adj + 1.
+      dt[, df := G - 1 - .fe_rank_running - 1L]
+
+      dt[, se := NA_real_]
+      dt[
+        G >= 2L &
+          df > 0 &
+          is.finite(varden) & varden != 0 &
+          is.finite(sumS2) &
+          sumS2 >= 0,
+        se := sqrt((G / df) * sumS2) / abs(varden)
+      ]
+      dt[!is.finite(se) | se <= 0, se := NA_real_]
+
+      dt[, t_stat := NA_real_]
+      dt[is.finite(se), t_stat := m / se]
+
+      ## `w` still feeds percentile_indices() below (store_grid); use the
+      ## plain sampling weight here, matching what centered mode's `w`
+      ## conceptually represents (see crv1_mean(center=TRUE)).
+      dt[, w := sw]
+
+    } else {
+      ## `a`/`b` (and their cumulative sums WgY/Wg) drive `theta`/`m` -- using
+      ## `w`, exactly as before. The per-cluster "meat" terms (dTB2/dTAB) use
+      ## `wsand` (via WgSand) instead of `w`, mirroring crv1_mean()'s own
+      ## `w_sandwich` argument: using the pooled/broadcast `w` there instead of
+      ## the row-level (Z-Z.hat)^2 weight erases real per-cluster heterogeneity
+      ## and inflates the reported statistic.
+      dt[, `:=`(a = w * score, b = w, bsand = wsand)]
+      dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b), WgSand = cumsum(bsand)), by = .(sample, cl)]
+      dt[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample]
+      dt[, m := SWY / SW, by = sample]
+
+      dt[, `:=`(
+        dTA2 =  WgY^2 - (WgY - a)^2,
+        dTB2 =  WgSand^2  - (WgSand  - bsand)^2,
+        dTAB =  WgY * WgSand - (WgY - a) * (WgSand - bsand)
+      )]
+
+      dt[, `:=`(
+        TA2 = cumsum(dTA2),
+        TB2 = cumsum(dTB2),
+        TAB = cumsum(dTAB)
+      ), by = sample]
+
+      dt[, G := cumsum(!duplicated(cl)), by = sample]
+
+      dt[, sumS2 := (TA2 - 2 * m * TAB + (m^2) * TB2) / (SW^2)]
+
+      tol_var <- 1e-12
+
+      if (any(dt$sumS2 < -tol_var & dt$G >= minsize, na.rm = TRUE)) {
+        warning(
+          "Negative cluster variance encountered in an eligible-size prefix. ",
+          "This may indicate numerical instability or problematic weights."
+        )
+      }
+
+      dt[
+        is.finite(sumS2) & sumS2 < 0 & sumS2 >= -tol_var,
+        sumS2 := 0
+      ]
+
+      dt[, df := G - 1 - .fe_rank_running]
+
+      dt[, se := NA_real_]
+
+      dt[
+        G >= 2L &
+          df > 0 &
+          SW > 0 &
+          is.finite(sumS2) &
+          sumS2 >= 0,
+        se := sqrt((G / df) * sumS2)
+      ]
+
+      dt[
+        !is.finite(se) | se <= 0,
+        se := NA_real_
+      ]
+
+      dt[, t_stat := NA_real_]
+      dt[
+        is.finite(se),
+        t_stat := m / se
+      ]
     }
-
-    dt[
-      is.finite(sumS2) & sumS2 < 0 & sumS2 >= -tol_var,
-      sumS2 := 0
-    ]
-
-    dt[, df := G - 1 - .fe_rank_running]
-
-    dt[, se := NA_real_]
-
-    dt[
-      G >= 2L &
-        df > 0 &
-        SW > 0 &
-        is.finite(sumS2) &
-        sumS2 >= 0,
-      se := sqrt((G / df) * sumS2)
-    ]
-
-    dt[
-      !is.finite(se) | se <= 0,
-      se := NA_real_
-    ]
-
-    dt[, t_stat := NA_real_]
-    dt[
-      is.finite(se),
-      t_stat := m / se
-    ]
 
     tau_tr <- dt[G >= minsize, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
 

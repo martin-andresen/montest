@@ -4,18 +4,22 @@
 \alias{montestplot}
 \title{Plot montest results}
 \usage{
-montestplot(object, sample = NULL, margins = NULL, numX = 10)
+montestplot(object, sample = NULL, margins = NULL, grid = TRUE, numX = 10)
 }
 \arguments{
 \item{object}{An object returned by \code{montest()} for a single search method,
 expected to contain elements such as \code{results}, \code{Xmeans},
-\code{Xmeans_all}, \code{XSD}, and optionally \code{shares}.}
+\code{Xmeans_all}, \code{XSD}, \code{grid}, and optionally \code{shares}.}
 
 \item{sample}{Optional sample index to plot. If \code{NULL}, the function attempts to
 infer the relevant sample from the object.}
 
 \item{margins}{Optional character vector of margin names to visualize. Use
 \code{"all"} to plot all available stored margins.}
+
+\item{grid}{Logical, default \code{TRUE}. If \code{TRUE}, adds a panel plotting the
+cutoff-selection curve(s) from \code{object$grid}. Requires \code{testtype = "forest"}
+results (see Details); set to \code{FALSE} to omit this panel.}
 
 \item{numX}{Maximum number of covariates to display in the standardized-difference plot.}
 }
@@ -26,37 +30,50 @@ side-effect plotting.
 }
 \description{
 \code{montestplot()} visualizes the covariate imbalance of the testing subset selected
-by \code{montest()} and, optionally, the shares of the selected subset across pooled
-margin dimensions.
+by \code{montest()}, the cutoff-selection curve that produced it, and, optionally, the
+shares of the selected subset across pooled margin dimensions.
 }
 \details{
 The first panel is a bar plot of standardized differences in covariate means between
 the testing subset and the full sample, using information stored in
-\code{object$Xmeans}, \code{object$Xmeans_all}, and \code{object$XSD}. If margin-share
-information is available and requested, additional panels compare the test-sample share
-with the full-sample share across the specified margin variables, using \code{object$shares}.
+\code{object$Xmeans}, \code{object$Xmeans_all}, and \code{object$XSD}. The second panel
+(when \code{grid = TRUE}) plots the cutoff-search curve(s) (test statistic \code{t}
+against candidate cutoff \code{tau}) from \code{object$grid}, with the actually-selected
+cutoff(s) from \code{object$results}' train rows marked as vertical lines. If
+margin-share information is available and requested, additional panels compare the
+test-sample share with the full-sample share across the specified margin variables,
+using \code{object$shares}.
 
 
-\code{Xmeans}, \code{Xmeans_all}, \code{XSD}, and \code{shares} are all keyed by
-whichever of \code{montest()}'s pool/select dimensions (\code{zmargin}, \code{dval},
-\code{yval}, \code{condition}, \code{equation}, \code{sample}) were \emph{not} pooled
-when the object was produced -- i.e. their row structure depends on the \code{pool}/
-\code{select} choices made in the original \code{montest()} call, and can range from a
-single pooled row to one row per sample/margin combination. \code{montestplot()}
-recovers this key structure from the column names actually present, locates the tested
-subset with the strongest violation (smallest test-sample p-value in
-\code{object$results}, optionally restricted to \code{sample}), and plots the matching
-row(s) rather than assuming a fixed layout.
+\code{Xmeans}, \code{Xmeans_all}, \code{XSD}, \code{shares}, \code{grid}, and
+\code{results} are all keyed by whichever of \code{montest()}'s pool/select dimensions
+(\code{zmargin}, \code{dval}, \code{yval}, \code{condition}, \code{equation},
+\code{sample}) were \emph{not} pooled when the object was produced -- i.e. their row
+structure depends on the \code{pool}/\code{select} choices made in the original
+\code{montest()} call, and can range from a single pooled row to one row per
+sample/margin combination. \code{montestplot()} recovers this key structure from
+\code{object$results}' column names, locates the tested subset with the strongest
+violation (smallest test-sample p-value, optionally restricted to \code{sample}), and
+plots the matching row(s) rather than assuming a fixed layout.
 
 Covariates are ordered by the absolute magnitude of their standardized mean difference,
-and only the top \code{numX} are plotted. When \code{margins} is specified, the
-function produces additional bar plots comparing the share of the testing subset with
-the share of the full sample within each requested, pooled margin category (from
-\code{object$shares}).
+and only the top \code{numX} are plotted.
 
-\code{testtype = "CART"} results from \code{montest()} do not currently record
-\code{Xmeans}/\code{Xmeans_all}/\code{XSD}/\code{shares}, so the corresponding panels
-are unavailable for such objects.
+The cutoff-selection panel (\code{grid = TRUE}) shows the train-sample search that
+produced the selected subset. \code{object$grid}'s \code{sample} column identifies the
+\emph{training} half that searched a given curve (the opposite of the half it was later
+tested in). If the winning subset's test statistic was pooled across sample halves,
+both training samples' curves and cutoffs are drawn together in one panel; otherwise
+only the one training half whose cutoff was actually tested against the winning
+(holdout) sample is drawn -- i.e. \code{sample} here, like elsewhere in this function,
+refers to the holdout/test half, with the matching training half inferred as the
+other one. \code{testtype = "CART"} results do not record \code{$grid} (or
+\code{Xmeans}/\code{Xmeans_all}/\code{XSD}/\code{shares}); requesting \code{grid = TRUE}
+(the default) on such an object raises an error rather than silently skipping the panel.
+
+When \code{margins} is specified, the function produces additional bar plots comparing
+the share of the testing subset with the share of the full sample within each
+requested, pooled margin category (from \code{object$shares}).
 }
 \examples{
 \dontrun{
@@ -69,11 +86,14 @@ out <- montest(
   test = "simple"
 )
 
-# Plot default summary
+# Plot default summary: standardized differences + cutoff-selection curve
 montestplot(out$forest)
 
-# Plot standardized differences plus all stored margins
+# Add all stored margin-share panels
 montestplot(out$forest, margins = "all", numX = 8)
+
+# Skip the cutoff-selection panel
+montestplot(out$forest, grid = FALSE)
 }
 
 }
