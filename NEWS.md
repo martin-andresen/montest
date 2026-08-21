@@ -77,3 +77,18 @@
   Never applied to the training-side adaptive search, only to the final
   evaluation, and never to cells already using the `target="overlap" &
   doubly.robust=FALSE` centered path.
+* Renamed and changed: `normalize.Z` is now `stabilize.scores`. For the
+  continuous representation, behavior is unchanged (`Z.hat` is still
+  mean-shifted per sample/margin group). For the binary/closed-form
+  representation, the previous additive mean-shift of `Z.hat` is replaced by
+  a Hajek/self-normalized-IPW stabilization: the score's actual IPW weight
+  `Z/e(X)-(1-Z)/(1-e(X))` is rescaled per row so that treated rows'
+  `mean(1/e(X))` and control rows' `mean(1/(1-e(X)))` each equal exactly 1
+  within their own sample/margin group, folded into `make_scores_vec()`'s
+  `v = e(1-e)` via a new `Z.stab` argument. `e(X)` itself is only clipped for
+  these rows, no longer shifted -- the additive mean-shift was a less
+  targeted fix than stabilizing the weight the score actually divides by,
+  and is superseded rather than kept alongside it. Not applied under
+  `doubly.robust=FALSE & target="overlap"`, same exclusion as the existing
+  propensity clip. `recenter_test`'s local re-centering is not yet updated to
+  match (still an additive correction) -- a known follow-up.

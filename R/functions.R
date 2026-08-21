@@ -2115,19 +2115,17 @@ feols_partial_out <- function(DT,
 ## removal]; it only affects inference" -- so this is purely a degrees-of-
 ## freedom correction, dropped upfront here rather than left for downstream
 ## df logic (fe_rank()/fe_rank_adj) to infer on its own.
-drop_fe_singletons <- function(data, fe_expr, placeholder_y, weight = NULL) {
+## No `weight` parameter: singleton status (fixef.rm = "singletons") is a
+## purely structural property -- how many rows share a given FE level --
+## and is unaffected by weights, confirmed empirically (identical output
+## with weight = NULL, arbitrary positive weights, and near-zero weights on
+## individual rows). Unlike drop_novar_Z_rows() below, which genuinely
+## needs `weight` because feols_partial_out()'s residuals depend on it.
+drop_fe_singletons <- function(data, fe_expr, placeholder_y) {
   lhs_q <- paste0("`", gsub("`", "``", placeholder_y), "`")
   fml <- stats::as.formula(paste0(lhs_q, " ~ 1 | ", deparse1(fe_expr)))
 
-  args <- list(
-    fml = fml, data = data, fixef.rm = "singletons",
-    notes = FALSE, warn = FALSE
-  )
-  if (!is.null(weight)) {
-    args$weights <- stats::as.formula(paste0("~", weight))
-  }
-
-  fit <- do.call(fixest::feols, args)
+  fit <- fixest::feols(fml, data = data, fixef.rm = "singletons", notes = FALSE, warn = FALSE)
 
   removed <- fit$obs_selection$obsRemoved
   if (is.null(removed)) integer() else -removed
@@ -2574,12 +2572,17 @@ make_scores_vec <- function(Y,
                             Y.hat,
                             Z.hat,
                             Z.var.hat = NULL,
+                            Z.stab = NULL,
                             tau = NULL,
                             doubly.robust = TRUE,
                             z_is_linear = FALSE,
                             weight = NULL,
                             clip = 1e-3) {
   n <- length(Y)
+
+  if (!is.null(Z.stab) && length(Z.stab) != n) {
+    stop("`Z.stab` must have length equal to `Y`.", call. = FALSE)
+  }
 
   if (length(z_is_linear) == 1L) {
     z_is_linear <- rep(z_is_linear, n)
@@ -2656,6 +2659,26 @@ make_scores_vec <- function(Y,
         label = "propensity e(X) for binary-Z rows"
       )
       v[ii] <- e[ii] * (1 - e[ii])
+
+      ## Hajek/self-normalized IPW stabilization (montest.R's
+      ## stabilize.scores, binary representation): `Z.stab[ii]` carries,
+      ## per row, c1 = mean(1/e) over treated rows or c0 = mean(1/(1-e))
+      ## over control rows (computed in montest.R within the same
+      ## sample/margin group this row belongs to). Multiplying it into v
+      ## here is algebraically equivalent to leaving `w_use-e` untouched and
+      ## rescaling the IPW weight Z/e-(1-Z)/(1-e) it forms by 1/c1 (treated)
+      ## or 1/c0 (control): (w_use-e)/(e(1-e)*c1) = (1/e)/c1 for a treated
+      ## row, so that mean_treated(1/(e*c1)) = 1 exactly by construction of
+      ## c1 -- and likewise for control rows/c0. Left at 1 (no-op) for any
+      ## row where `Z.stab` is NA (e.g. `stabilize.scores = FALSE`, or the
+      ## need_ols_v path, which never populates the column at all).
+      if (!is.null(Z.stab)) {
+        zstab_ii <- as.numeric(Z.stab)[ii]
+        has_stab <- is.finite(zstab_ii)
+        if (any(has_stab)) {
+          v[ii][has_stab] <- v[ii][has_stab] * zstab_ii[has_stab]
+        }
+      }
     }
   }
 
@@ -2779,6 +2802,7 @@ fit_models <- function(DT,
   y_hat <- paste0(y_name, ".hat")
   w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
   w_var_hat <- if (!is.null(w_name)) paste0(w_name, ".var.hat") else NULL
+  w_stab_hat <- if (!is.null(w_name)) paste0(w_name, ".stab") else NULL
 
   if (forest_type == "causal") {
     stopifnot(!is.null(w_name), w_name %in% names(DT))
@@ -2839,6 +2863,12 @@ fit_models <- function(DT,
 
   wvarhat_all <- if (!is.null(w_var_hat) && w_var_hat %in% names(DT)) {
     as.numeric(DT[[w_var_hat]])
+  } else {
+    NULL
+  }
+
+  wstabhat_all <- if (!is.null(w_stab_hat) && w_stab_hat %in% names(DT)) {
+    as.numeric(DT[[w_stab_hat]])
   } else {
     NULL
   }
@@ -3094,6 +3124,7 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx1],
         Z.hat = what_all[idx1],
         Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx1],
+        Z.stab = if (is.null(wstabhat_all)) NULL else wstabhat_all[idx1],
         tau = p1,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx1],
@@ -3113,6 +3144,7 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx2],
         Z.hat = what_all[idx2],
         Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx2],
+        Z.stab = if (is.null(wstabhat_all)) NULL else wstabhat_all[idx2],
         tau = p2,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx2],
@@ -3909,13 +3941,22 @@ crv1_mean <- function(score,
   ## only -- AIPW (doubly.robust=TRUE) or the singly-robust score under
   ## target="all". `Z.hat` (hence `e` in make_scores_vec()'s notation) is
   ## only ever mean-shifted ONCE, at whatever `sample`/`margins` level
-  ## normalize.Z operated on -- not re-shifted to have zero residual within
-  ## an adaptively-selected leaf/subgroup nested inside that level, or
+  ## stabilize.scores operated on -- not re-shifted to have zero residual
+  ## within an adaptively-selected leaf/subgroup nested inside that level, or
   ## within a "global"/margin cell computed at a finer grouping than
-  ## normalize.Z used. That's exactly the finite-sample bias `center=TRUE`
+  ## stabilize.scores used. That's exactly the finite-sample bias `center=TRUE`
   ## exists to remove for the OLS-equivalent score (see its own comment
   ## block above) -- this reproduces the same fix for the AIPW/plain-FWL
   ## score, WITHOUT dropping the tau baseline the way `center=TRUE` does.
+  ##
+  ## NOTE: this additive re-shift is still exactly right for continuous-Z
+  ## rows (stabilize.scores' own design-side correction for them is also
+  ## additive). For binary rows, though, the design-side correction is now
+  ## the Hajek/self-normalized-IPW rescaling of v = e(1-e) (see
+  ## montest.R's stabilize.scores block and make_scores_vec()'s `Z.stab`),
+  ## not an additive shift -- so this local re-centering is not yet the
+  ## matching subgroup-level analogue of that for binary rows. Left as a
+  ## known follow-up rather than addressed here.
   ##
   ## Recentering e by this group's own weighted mean of resid_treat
   ## (V = Z-e) is algebraically equivalent to substituting e' = e + Vbar

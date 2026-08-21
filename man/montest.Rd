@@ -13,7 +13,7 @@ montest(
   condition = NULL,
   inner.folds = NULL,
   crossfit = NULL,
-  normalize.Z = TRUE,
+  stabilize.scores = TRUE,
   aipw.clip = 0.001,
   drop_singletons = TRUE,
   drop_novar_Z = TRUE,
@@ -85,19 +85,35 @@ cross-fitting nuisance functions and, optionally, forest predictions. Set to
 
 \item{crossfit}{Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.}
 
-\item{normalize.Z}{Logical, default TRUE; if \code{TRUE}, the estimated conditional mean of the instrument
-(\code{Z.hat}) is mean-shifted within each sample/margin group so its group-average residual is exactly
-zero, correcting finite-sample/cross-fitting bias. Applies regardless of representation (binary or
-continuous) or fixed effects. Additionally, for a binary instrument estimated \emph{without} fixed effects
-(which requires \code{Z.hat} to behave as a valid probability), \code{Z.hat} is also clipped to
-\code{[aipw.clip, 1-aipw.clip]}. With fixed effects, \code{Z.hat} is instead always built as an FE mean
-plus a fitted FE-residual, an unconstrained recombination with no such guarantee even for a genuinely
-binary instrument -- so that case is scored via the continuous/fitted-variance representation instead,
-where \code{Z.hat} is used only additively and never needs to be clipped, and the fitted conditional
-variance \eqn{v(X)} (see \code{aipw.clip}) is used in its place.}
+\item{stabilize.scores}{Logical, default TRUE; applies a finite-sample stabilization
+to the estimated instrument nuisance, using whichever correction is appropriate for
+the representation actually in use:
+\itemize{
+\item Continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE},
+or any binary instrument estimated \emph{with} fixed effects -- see \code{aipw.clip}):
+\code{Z.hat} is mean-shifted within each sample/margin group so its group-average
+residual is exactly zero, correcting finite-sample/cross-fitting bias in the
+conditional-mean estimate itself. There is no IPW/arm structure for a continuous
+instrument to self-normalize, so this additive correction is the only one available.
+\item Binary representation, estimated \emph{without} fixed effects: \code{Z.hat} is
+clipped to \code{[aipw.clip, 1-aipw.clip]} (as before), but is otherwise left alone --
+instead, the closed-form conditional variance \eqn{v(X)=e(X)(1-e(X))} used in the score
+is rescaled per row by a Hajek/self-normalized-IPW constant: \eqn{c_1=}
+mean(1/e(X)) over treated rows and \eqn{c_0=}mean(1/(1-e(X))) over control rows,
+each computed within the same sample/margin group, so that
+mean(1/(e(X)*c_1))=1 exactly among treated rows and mean(1/((1-e(X))*c_0))=1 exactly
+among control rows. This targets the IPW weight \eqn{Z/e(X)-(1-Z)/(1-e(X))} that the
+score actually uses, rather than \code{Z.hat} itself -- a multiplicative correction on
+the scale the score is built on, replacing what used to be an additive mean-shift of
+\code{Z.hat} for this representation. Not applied when \code{doubly.robust=FALSE} and
+\code{target="overlap"} (see \code{target}), since that path already uses each row's own
+empirical variance instead of the closed form, and needs \code{Z.hat} untouched to
+reproduce the classical FWL/OLS coefficient exactly.
+}}
 
 \item{aipw.clip}{Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
-scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
+scores when augmented inverse-probability weighted scores are constructed and when stabilizing
+binary-instrument scores (see \code{stabilize.scores}).
 Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
 binary instrument estimated with fixed effects), to floor the fitted conditional-variance nuisance \eqn{v(X)}
 at \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
@@ -133,10 +149,11 @@ in \code{D} (or \code{Y}) is not dropped, since such a cell still contributes a 
 zero-covariance data point to the classical estimator (correctly diluting a
 heterogeneous effect toward its population average) rather than being uninformative.}
 
-\item{recenter_test}{Logical, default TRUE. \code{normalize.Z} mean-shifts \code{Z.hat}
+\item{recenter_test}{Logical, default TRUE. \code{stabilize.scores} corrects \code{Z.hat}
+(continuous representation) or the IPW weight built from it (binary representation)
 only once, at whatever \code{sample}/\code{margins} level it operates on -- not
 separately within an adaptively-found leaf/subgroup nested inside that level, or within
-a "global" cell computed at a finer grouping than \code{normalize.Z} used. When
+a "global" cell computed at a finer grouping than \code{stabilize.scores} used. When
 \code{TRUE}, the FINAL (test-side and global) score average for AIPW
 (\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} is
 locally re-centered instead -- the propensity/treatment-residual term is re-demeaned

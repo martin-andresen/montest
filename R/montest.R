@@ -68,18 +68,34 @@
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
-#' @param normalize.Z Logical, default TRUE; if \code{TRUE}, the estimated conditional mean of the instrument
-#'   (\code{Z.hat}) is mean-shifted within each sample/margin group so its group-average residual is exactly
-#'   zero, correcting finite-sample/cross-fitting bias. Applies regardless of representation (binary or
-#'   continuous) or fixed effects. Additionally, for a binary instrument estimated \emph{without} fixed effects
-#'   (which requires \code{Z.hat} to behave as a valid probability), \code{Z.hat} is also clipped to
-#'   \code{[aipw.clip, 1-aipw.clip]}. With fixed effects, \code{Z.hat} is instead always built as an FE mean
-#'   plus a fitted FE-residual, an unconstrained recombination with no such guarantee even for a genuinely
-#'   binary instrument -- so that case is scored via the continuous/fitted-variance representation instead,
-#'   where \code{Z.hat} is used only additively and never needs to be clipped, and the fitted conditional
-#'   variance \eqn{v(X)} (see \code{aipw.clip}) is used in its place.
+#' @param stabilize.scores Logical, default TRUE; applies a finite-sample stabilization
+#'   to the estimated instrument nuisance, using whichever correction is appropriate for
+#'   the representation actually in use:
+#'   \itemize{
+#'     \item Continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE},
+#'       or any binary instrument estimated \emph{with} fixed effects -- see \code{aipw.clip}):
+#'       \code{Z.hat} is mean-shifted within each sample/margin group so its group-average
+#'       residual is exactly zero, correcting finite-sample/cross-fitting bias in the
+#'       conditional-mean estimate itself. There is no IPW/arm structure for a continuous
+#'       instrument to self-normalize, so this additive correction is the only one available.
+#'     \item Binary representation, estimated \emph{without} fixed effects: \code{Z.hat} is
+#'       clipped to \code{[aipw.clip, 1-aipw.clip]} (as before), but is otherwise left alone --
+#'       instead, the closed-form conditional variance \eqn{v(X)=e(X)(1-e(X))} used in the score
+#'       is rescaled per row by a Hajek/self-normalized-IPW constant: \eqn{c_1=}
+#'       mean(1/e(X)) over treated rows and \eqn{c_0=}mean(1/(1-e(X))) over control rows,
+#'       each computed within the same sample/margin group, so that
+#'       mean(1/(e(X)*c_1))=1 exactly among treated rows and mean(1/((1-e(X))*c_0))=1 exactly
+#'       among control rows. This targets the IPW weight \eqn{Z/e(X)-(1-Z)/(1-e(X))} that the
+#'       score actually uses, rather than \code{Z.hat} itself -- a multiplicative correction on
+#'       the scale the score is built on, replacing what used to be an additive mean-shift of
+#'       \code{Z.hat} for this representation. Not applied when \code{doubly.robust=FALSE} and
+#'       \code{target="overlap"} (see \code{target}), since that path already uses each row's own
+#'       empirical variance instead of the closed form, and needs \code{Z.hat} untouched to
+#'       reproduce the classical FWL/OLS coefficient exactly.
+#'   }
 #' @param aipw.clip Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
-#'   scores when augmented inverse-probability weighted scores are constructed and when normalizing propensity scores.
+#'   scores when augmented inverse-probability weighted scores are constructed and when stabilizing
+#'   binary-instrument scores (see \code{stabilize.scores}).
 #'   Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
 #'   binary instrument estimated with fixed effects), to floor the fitted conditional-variance nuisance \eqn{v(X)}
 #'   at \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
@@ -112,10 +128,11 @@
 #'   in \code{D} (or \code{Y}) is not dropped, since such a cell still contributes a genuine
 #'   zero-covariance data point to the classical estimator (correctly diluting a
 #'   heterogeneous effect toward its population average) rather than being uninformative.
-#' @param recenter_test Logical, default TRUE. \code{normalize.Z} mean-shifts \code{Z.hat}
+#' @param recenter_test Logical, default TRUE. \code{stabilize.scores} corrects \code{Z.hat}
+#'   (continuous representation) or the IPW weight built from it (binary representation)
 #'   only once, at whatever \code{sample}/\code{margins} level it operates on -- not
 #'   separately within an adaptively-found leaf/subgroup nested inside that level, or within
-#'   a "global" cell computed at a finer grouping than \code{normalize.Z} used. When
+#'   a "global" cell computed at a finer grouping than \code{stabilize.scores} used. When
 #'   \code{TRUE}, the FINAL (test-side and global) score average for AIPW
 #'   (\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} is
 #'   locally re-centered instead -- the propensity/treatment-residual term is re-demeaned
@@ -302,7 +319,7 @@
 #' @export
 
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 normalize.Z=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,recenter_test=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
+                 stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,recenter_test=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
@@ -433,8 +450,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   )
 
   ## Computed early (needs only doubly.robust/target, both already resolved)
-  ## because it also gates the propensity clip in the normalize.Z block
-  ## below, in addition to the v(X) block further down: whenever
+  ## because it also gates the propensity clip/stabilization in the
+  ## stabilize.scores block below, in addition to the v(X) block further
+  ## down: whenever
   ## doubly.robust = FALSE & target == "overlap", binary-Z rows use the
   ## row-level empirical (Z-Z.hat)^2 instead of the closed-form e*(1-e),
   ## and that path needs an UNCLIPPED Z.hat to actually reproduce the
@@ -800,7 +818,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   n_dropped_novar_Z <- 0L
 
   if (has_FE && isTRUE(drop_singletons)) {
-    idx_singleton <- drop_fe_singletons(data, FE_expr, placeholder_y = D, weight = weight)
+    idx_singleton <- drop_fe_singletons(data, FE_expr, placeholder_y = D)
     n_dropped_singletons <- length(idx_singleton)
 
     if (n_dropped_singletons > 0L) {
@@ -1193,25 +1211,40 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
 
   ## ---------------------------------------------------------------------
-  ## Mean-shift correction applies regardless of FE/representation -- it just
-  ## corrects finite-sample/cross-fitting bias in a conditional-mean estimate
-  ## (mean(Z-Z.hat)=0 within group), which is equally meaningful for binary
-  ## and continuous Z.hat. The [0,1] probability clip only makes sense for
-  ## the binary/closed-form-variance representation, so it's restricted to
-  ## z_is_linear_raw != TRUE rows, and further gated on:
-  ##   - !has_FE: under has_FE, binary representation is handled instead by
-  ##     validate_and_clip() inside make_scores_vec(), conditional on
-  ##     doubly.robust/target (see the v(X) block below).
-  ##   - !need_ols_v: whenever doubly.robust = FALSE & target == "overlap",
-  ##     binary rows use the row-level empirical (Z-Z.hat)^2 instead of
-  ##     e*(1-e) (again, see the v(X) block below), which needs Z.hat
-  ##     UNCLIPPED to actually reproduce the classical FWL/OLS coefficient
-  ##     it's meant to match -- clipping it here, before make_scores_vec()
-  ##     even runs, would silently defeat that regardless of what
-  ##     make_scores_vec() itself does.
+  ## stabilize.scores applies whichever correction fits the representation
+  ## actually in use:
+  ##   - Continuous representation (z_use_linear_score == TRUE -- a genuinely
+  ##     multivalued instrument, linearZ = TRUE, or any binary instrument
+  ##     estimated WITH fixed effects, which always uses this representation
+  ##     regardless of the instrument's true support): Z.hat is mean-shifted
+  ##     within each sample/margin group so its group-average residual is
+  ##     exactly zero, correcting finite-sample/cross-fitting bias in the
+  ##     conditional-mean estimate itself. There is no IPW/arm structure for
+  ##     a continuous instrument to self-normalize, so this remains the only
+  ##     correction available for these rows.
+  ##   - Binary/closed-form representation (z_use_linear_score == FALSE,
+  ##     which only ever happens when !has_FE): Z.hat is clipped to
+  ##     [aipw.clip, 1-aipw.clip] as before, but is NOT mean-shifted --
+  ##     instead, the score's actual IPW weight Z/e(X)-(1-Z)/(1-e(X)) is
+  ##     stabilized multiplicatively (Hajek/self-normalized IPW) via a
+  ##     per-row constant folded into make_scores_vec()'s v = e(1-e) (see
+  ##     `Z.stab` there): c1 = mean(1/e(X)) over treated rows, c0 =
+  ##     mean(1/(1-e(X))) over control rows, each computed within the same
+  ##     sample/margin group used below -- so that mean(1/(e*c1)) = 1 exactly
+  ##     among treated rows and mean(1/((1-e)*c0)) = 1 exactly among control
+  ##     rows. This targets the scale the score actually divides by, rather
+  ##     than e(X) itself -- a strictly tighter, better-targeted correction
+  ##     than the old additive mean-shift, which is dropped for these rows
+  ##     rather than kept alongside it.
+  ##   - need_ols_v rows (doubly.robust = FALSE & target == "overlap") are
+  ##     excluded from the binary correction entirely (see the `!need_ols_v`
+  ##     gate below): they use their own row-level empirical (Z-Z.hat)^2 as v
+  ##     instead of the closed form (see the v(X) block below), which needs
+  ##     Z.hat UNCLIPPED and UNSTABILIZED to reproduce the classical FWL/OLS
+  ##     coefficient exactly.
   ## ---------------------------------------------------------------------
 
-  if (isTRUE(normalize.Z)) {
+  if (isTRUE(stabilize.scores)) {
     z_col <- as.character(Z)[1L]
     zhat_col <- paste0(z_col, ".hat")
 
@@ -1230,8 +1263,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     stopifnot(z_col %in% names(data))
     stopifnot(zhat_col %in% names(data))
 
+    ## Continuous representation only -- see comment block above. Binary
+    ## rows (z_use_linear_score == FALSE) are stabilized instead, below.
     data[
-      ,
+      z_use_linear_score == TRUE,
       (zhat_col) := {
         z_val <- get(z_col)
         zh_val <- get(zhat_col)
@@ -1258,19 +1293,45 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
           label = "propensity e(X) for binary-Z rows"
         )
       ]
+
+      ## Hajek/self-normalized IPW stabilization -- see comment block above.
+      ## `zstab_col` carries, per row, c1 (treated rows) or c0 (control rows):
+      ## the constant make_scores_vec() multiplies into v = e(1-e) so the
+      ## score's IPW weight self-normalizes to exactly 1 within its own arm.
+      ## fit_models() auto-discovers this column by name (paste0(w_name,
+      ## ".stab")), the same convention already used for Z.var.hat.
+      zstab_col <- paste0(z_col, ".stab")
+      data[, (zstab_col) := NA_real_]
+
+      arm_col <- ".__z_arm__"
+      data[z_is_linear_raw != TRUE, (arm_col) := as.numeric(get(z_col) > 0.5)]
+
+      data[
+        z_is_linear_raw != TRUE,
+        (zstab_col) := {
+          e_val <- get(zhat_col)
+          wt_val <- if (!is.null(weight)) get(weight) else rep(1, .N)
+          r <- ifelse(get(arm_col) > 0.5, 1 / e_val, 1 / (1 - e_val))
+          stats::weighted.mean(r, w = wt_val, na.rm = TRUE)
+        },
+        by = c(by_norm, arm_col)
+      ]
+
+      data[, (arm_col) := NULL]
     }
   }
 
   ## `need_ols_v` rows deliberately leave the binary-Z propensity unclipped
-  ## (see the block above) -- clipping it would distort the point estimate
-  ## away from the exact classical FWL/OLS coefficient this path exists to
-  ## reproduce, and the score only ever uses it additively, so nothing
-  ## numerically requires it. But doubly.robust=FALSE's consistency argument
-  ## still requires Z.hat to be the TRUE conditional mean of Z given X, and a
-  ## value outside (0,1) is direct proof that fails for that row -- a real
-  ## risk of bias in the resulting estimate, not just a numerical curiosity.
-  ## So: warn (never clip, never error) whenever this happens, independent of
-  ## `normalize.Z`/`has_FE`, since the concern is unrelated to either.
+  ## and unstabilized (see the block above) -- clipping/stabilizing it would
+  ## distort the point estimate away from the exact classical FWL/OLS
+  ## coefficient this path exists to reproduce, and the score only ever uses
+  ## it additively, so nothing numerically requires it. But
+  ## doubly.robust=FALSE's consistency argument still requires Z.hat to be
+  ## the TRUE conditional mean of Z given X, and a value outside (0,1) is
+  ## direct proof that fails for that row -- a real risk of bias in the
+  ## resulting estimate, not just a numerical curiosity. So: warn (never
+  ## clip, never error) whenever this happens, independent of
+  ## `stabilize.scores`/`has_FE`, since the concern is unrelated to either.
   if (need_ols_v) {
     zhat_vals <- data[[zhat]]
     is_binary_row <- data[["z_is_linear_raw"]] != TRUE
@@ -1331,8 +1392,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   z_use_lin_any <- any(data$z_use_linear_score, na.rm = TRUE)
   need_v_hat <- z_use_lin_any &&
     (isTRUE(doubly.robust) || identical(target, "all"))
-  ## need_ols_v was already computed early (before the normalize.Z
-  ## block), since it also gates the propensity clip there.
+  ## need_ols_v was already computed early (before the stabilize.scores
+  ## block), since it also gates the propensity clip/stabilization there.
 
   if (need_v_hat || need_ols_v) {
     ## `data[[Z]]`/`data[[zhat]]` (plain `[[`, evaluated here, not inside a
