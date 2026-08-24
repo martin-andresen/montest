@@ -17,7 +17,6 @@ montest(
   aipw.clip = 0.001,
   drop_singletons = TRUE,
   drop_novar_Z = TRUE,
-  recenter_test = TRUE,
   weight = NULL,
   cluster = NULL,
   seed = 10101,
