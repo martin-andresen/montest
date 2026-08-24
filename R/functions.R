@@ -2324,21 +2324,33 @@ estimate_conditional_mean <- function(DT,
     y_sp_hat <- paste0(y_name, ".sp_hat")
 
     if (has_X) {
+      ## crossfit_hat()'s `margins` controls how it groups its internal
+      ## computation. For mode = "within" that should include sample_var
+      ## (the OOB/inner-fold fit is legitimately done separately per sample
+      ## half). For mode = "across" it must NOT include sample_var: the
+      ## across-mode logic itself needs both halves visible in the same
+      ## group to fit on one and predict the other -- pre-splitting by
+      ## sample_var here means every group only ever contains one side of
+      ## that split, so neither the "fit half 1, predict half 2" branch nor
+      ## its reverse can ever fire, and the resulting hat column comes back
+      ## entirely NA.
+      xfit_mode <- ifelse(
+        (!is.null(crossfit_label) &&
+           crossfit_label %in% crossfit &&
+           is.null(foldname)),
+        "across",
+        "within"
+      )
+
       crossfit_hat(
         DT,
         i = i,
         y_name = y_for_rf,
         x_names = x_names,
         folds = foldname,
-        margins = by_sp,
+        margins = if (identical(xfit_mode, "across")) by else by_sp,
         weight_name = weight,
-        mode = ifelse(
-          (!is.null(crossfit_label) &&
-             crossfit_label %in% crossfit &&
-             is.null(foldname)),
-          "across",
-          "within"
-        ),
+        mode = xfit_mode,
         forest_opts = forest_opts,
         hat_suffix = ".sp_hat"
       )
