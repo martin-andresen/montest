@@ -93,6 +93,22 @@
 #'       empirical variance instead of the closed form, and needs \code{Z.hat} untouched to
 #'       reproduce the classical FWL/OLS coefficient exactly.
 #'   }
+#'   Both corrections are computed once, at whatever \code{sample}/\code{margins} level
+#'   \code{stabilize.scores} operates on -- not separately within an adaptively-found
+#'   leaf/subgroup nested inside that level, or within a "global" cell computed at a finer
+#'   grouping. When \code{TRUE}, the FINAL (test-side and global) score average for AIPW
+#'   (\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} redoes
+#'   whichever correction applies -- the additive mean-shift, or the Hajek rescaling --
+#'   using only that specific cell's own rows, the same finite-sample-bias correction
+#'   \code{doubly.robust=FALSE & target="overlap"} already gets via its own (more thorough)
+#'   centered/with-intercept construction (see \code{target}). This only re-corrects the
+#'   propensity/IPW-weight term -- it does NOT re-estimate the causal forest's plug-in CATE
+#'   prediction (\code{tau}) for that cell; if \code{tau}'s own average over exactly the rows
+#'   selected into a subgroup carries local bias (e.g. from adaptive selection correlating
+#'   which rows land there with their predicted effect), this does not correct for that.
+#'   Never applied to the training-side adaptive search itself, only to the final evaluation,
+#'   and never to cells that already use the \code{target="overlap" & doubly.robust=FALSE}
+#'   centered path.
 #' @param aipw.clip Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when stabilizing
 #'   binary-instrument scores (see \code{stabilize.scores}).
@@ -128,23 +144,6 @@
 #'   in \code{D} (or \code{Y}) is not dropped, since such a cell still contributes a genuine
 #'   zero-covariance data point to the classical estimator (correctly diluting a
 #'   heterogeneous effect toward its population average) rather than being uninformative.
-#' @param recenter_test Logical, default TRUE. \code{stabilize.scores} corrects \code{Z.hat}
-#'   (continuous representation) or the IPW weight built from it (binary representation)
-#'   only once, at whatever \code{sample}/\code{margins} level it operates on -- not
-#'   separately within an adaptively-found leaf/subgroup nested inside that level, or within
-#'   a "global" cell computed at a finer grouping than \code{stabilize.scores} used. When
-#'   \code{TRUE}, the FINAL (test-side and global) score average for AIPW
-#'   (\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} is
-#'   locally re-centered instead -- the propensity/treatment-residual term is re-demeaned
-#'   using only that specific cell's own rows, the same finite-sample-bias correction
-#'   \code{doubly.robust=FALSE & target="overlap"} already gets via its own (more thorough)
-#'   centered/with-intercept construction (see \code{target}). This only re-centers the
-#'   propensity term -- it does NOT re-estimate the causal forest's plug-in CATE prediction
-#'   (\code{tau}) for that cell; if \code{tau}'s own average over exactly the rows selected
-#'   into a subgroup carries local bias (e.g. from adaptive selection correlating which rows
-#'   land there with their predicted effect), this does not correct for that. Never applied
-#'   to the training-side adaptive search itself, only to the final evaluation, and never to
-#'   cells that already use the \code{target="overlap" & doubly.robust=FALSE} centered path.
 #' @param weight Optional character scalar naming a nonnegative weight variable.
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing cannot be combined with cluster.
@@ -319,7 +318,7 @@
 #' @export
 
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,recenter_test=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
+                 stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
@@ -2729,14 +2728,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   resid_treat_arg <- if (resid_cols_exist) ".resid_treat" else NULL
   resid_outcome_arg <- if (resid_cols_exist) ".resid_outcome" else NULL
 
-  ## `recenter_test`'s narrower fix (see its own docs): reuses the same
-  ## `.resid_treat`/`.resid_outcome` columns above, plus `scores_v` (`v`,
-  ## always populated alongside them by the same make_scores_vec() call)
-  ## and, for CART_test() only, `pred` as the tau source (forest_test()
+  ## `stabilize.scores`'s narrower test-side fix (see its own docs): reuses
+  ## the same `.resid_treat`/`.resid_outcome` columns above, plus `scores_v`
+  ## (`v`, always populated alongside them by the same make_scores_vec()
+  ## call) and, for CART_test() only, `pred` as the tau source (forest_test()
   ## already defaults its own `pred` argument to "pred", so no separate
-  ## argument is needed there).
+  ## argument is needed there). `recenter_binary_arg` picks which of the two
+  ## corrections gets redone locally, matching whichever one is actually in
+  ## use for these rows -- reuses `z_use_lin_any` (see `need_v_hat` above),
+  ## since the continuous/binary representation choice is a single
+  ## montest()-call-level constant, never a per-row one (see
+  ## `stabilize.scores`'s docs).
   v_arg <- if (resid_cols_exist) "scores_v" else NULL
   tau_arg <- if (resid_cols_exist) "pred" else NULL
+  recenter_propensity_arg <- isTRUE(stabilize.scores)
+  recenter_binary_arg <- !z_use_lin_any
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
@@ -2760,8 +2766,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_test,v=v_arg)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_test,tau=tau_arg,v=v_arg)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg)
+  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg)
 
   ## Xmeans/Xmeans_all/XSD (when present) are keyed on the internal
   ## `__xf_raw_*`/`__xf_res_*` forest-feature columns from

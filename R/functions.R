@@ -207,6 +207,7 @@ CART_test <- function(
     resid_outcome = NULL,
     sample_weight = NULL,
     recenter_propensity = FALSE,
+    recenter_binary = FALSE,
     tau = NULL,
     v = NULL
 ) {
@@ -246,15 +247,19 @@ CART_test <- function(
     )
   }
 
-  ## `recenter_propensity`/`tau`/`v`: the narrower test-side fix for jobs
-  ## that are NOT centered (see crv1_mean()'s own docs for the full
-  ## rationale) -- re-centers only the propensity/treatment-residual term
-  ## while keeping the AIPW/FWL plug-in tau baseline as-is. Reuses
-  ## `resid_treat_col`/`resid_outcome_col` from the centering machinery
-  ## above (same columns, different formula), plus two new column names:
-  ## `tau` (the causal forest's own per-row CATE prediction, i.e. `pred`)
-  ## and `v` (the per-row fitted/closed-form conditional variance, i.e.
-  ## `scores_v`).
+  ## `recenter_propensity`/`recenter_binary`/`tau`/`v`: the narrower
+  ## test-side fix for jobs that are NOT centered (see crv1_mean()'s own
+  ## docs for the full rationale) -- re-centers only the propensity/
+  ## treatment-residual term while keeping the AIPW/FWL plug-in tau baseline
+  ## as-is. `recenter_binary` is a single scalar for the whole call (Z's
+  ## representation is a montest()-call-level choice, never per-row -- see
+  ## montest.R's stabilize.scores block), selecting whether that re-centering
+  ## is the additive mean-shift (continuous) or the Hajek/self-normalized-IPW
+  ## rescaling (binary/closed-form). Reuses `resid_treat_col`/
+  ## `resid_outcome_col` from the centering machinery above (same columns,
+  ## different formula), plus two new column names: `tau` (the causal
+  ## forest's own per-row CATE prediction, i.e. `pred`) and `v` (the per-row
+  ## fitted/closed-form conditional variance, i.e. `scores_v`).
   tau_col <- if (is.null(tau)) NULL else as.character(tau)
   v_col <- if (is.null(v)) NULL else as.character(v)
   can_recenter <- isTRUE(recenter_propensity) &&
@@ -640,7 +645,7 @@ CART_test <- function(
       if (isTRUE(can_recenter) && all(rp_not_centered, na.rm = FALSE)) {
         o <- crv1_mean(
           score, w, cl, rank_adj = rank_adj, w_sandwich = if (!is.null(sandwich_col)) w_sandwich else NULL,
-          recenter_propensity = TRUE,
+          recenter_propensity = TRUE, recenter_binary = recenter_binary,
           resid_treat = rp_resid_treat, resid_outcome = rp_resid_outcome,
           tau = rp_tau, v = rp_v
         )
@@ -1094,7 +1099,7 @@ CART_test <- function(
       if (isTRUE(can_recenter)) {
         o <- crv1_mean(
           y, w, cl, rank_adj = rank_adj, w_sandwich = w_sandwich,
-          recenter_propensity = TRUE,
+          recenter_propensity = TRUE, recenter_binary = recenter_binary,
           resid_treat = as.numeric(data[[resid_treat_col]])[idx_keep_all],
           resid_outcome = as.numeric(data[[resid_outcome_col]])[idx_keep_all],
           tau = as.numeric(data[[tau_col]])[idx_keep_all],
@@ -3701,6 +3706,7 @@ forest_test <- function(
     resid_outcome = NULL,
     sample_weight = NULL,
     recenter_propensity = FALSE,
+    recenter_binary = FALSE,
     v = NULL
 ) {
   screen <- match.arg(screen)
@@ -3770,6 +3776,7 @@ forest_test <- function(
       resid_outcome = resid_outcome,
       sample_weight = sample_weight,
       recenter_propensity = recenter_propensity,
+      recenter_binary = recenter_binary,
       v = v
     )
   }
@@ -3924,6 +3931,7 @@ crv1_mean <- function(score,
                       resid_treat = NULL,
                       sample_weight = NULL,
                       recenter_propensity = FALSE,
+                      recenter_binary = FALSE,
                       resid_outcome = NULL,
                       tau = NULL,
                       v = NULL) {
@@ -3933,55 +3941,75 @@ crv1_mean <- function(score,
     "recenter_propensity must be a single non-missing logical" =
       is.logical(recenter_propensity) && length(recenter_propensity) == 1L &&
       !is.na(recenter_propensity),
+    "recenter_binary must be a single non-missing logical" =
+      is.logical(recenter_binary) && length(recenter_binary) == 1L &&
+      !is.na(recenter_binary),
     "`center` and `recenter_propensity` cannot both be TRUE -- `center` already re-centers both the treatment and outcome residual (and drops the tau baseline entirely); `recenter_propensity` is the narrower AIPW/FWL-preserving fix for when a plug-in tau baseline is still wanted" =
       !(isTRUE(center) && isTRUE(recenter_propensity))
   )
 
   ## `recenter_propensity`: for the uncentered (through-origin) score path
   ## only -- AIPW (doubly.robust=TRUE) or the singly-robust score under
-  ## target="all". `Z.hat` (hence `e` in make_scores_vec()'s notation) is
-  ## only ever mean-shifted ONCE, at whatever `sample`/`margins` level
-  ## stabilize.scores operated on -- not re-shifted to have zero residual
-  ## within an adaptively-selected leaf/subgroup nested inside that level, or
-  ## within a "global"/margin cell computed at a finer grouping than
-  ## stabilize.scores used. That's exactly the finite-sample bias `center=TRUE`
-  ## exists to remove for the OLS-equivalent score (see its own comment
-  ## block above) -- this reproduces the same fix for the AIPW/plain-FWL
-  ## score, WITHOUT dropping the tau baseline the way `center=TRUE` does.
+  ## target="all". `stabilize.scores` corrects the instrument nuisance only
+  ## ONCE, at whatever `sample`/`margins` level it operated on -- not
+  ## re-corrected within an adaptively-selected leaf/subgroup nested inside
+  ## that level, or within a "global"/margin cell computed at a finer
+  ## grouping than `stabilize.scores` used. That's exactly the finite-sample
+  ## bias `center=TRUE` exists to remove for the OLS-equivalent score (see
+  ## its own comment block above) -- this reproduces the same fix for the
+  ## AIPW/plain-FWL score, WITHOUT dropping the tau baseline the way
+  ## `center=TRUE` does. `recenter_binary` selects WHICH of
+  ## `stabilize.scores`'s two corrections gets redone locally, matching
+  ## whichever one was used at the design/global level for these rows (see
+  ## montest.R's `stabilize.scores` block -- the two are mutually exclusive
+  ## there, so this is a single call-level choice, not a per-row one):
   ##
-  ## NOTE: this additive re-shift is still exactly right for continuous-Z
-  ## rows (stabilize.scores' own design-side correction for them is also
-  ## additive). For binary rows, though, the design-side correction is now
-  ## the Hajek/self-normalized-IPW rescaling of v = e(1-e) (see
-  ## montest.R's stabilize.scores block and make_scores_vec()'s `Z.stab`),
-  ## not an additive shift -- so this local re-centering is not yet the
-  ## matching subgroup-level analogue of that for binary rows. Left as a
-  ## known follow-up rather than addressed here.
-  ##
-  ## Recentering e by this group's own weighted mean of resid_treat
-  ## (V = Z-e) is algebraically equivalent to substituting e' = e + Vbar
-  ## into make_scores_vec()'s score formula everywhere e appears -- not
-  ## just adding a constant to the existing `score` column, since V also
-  ## appears (via resid_outcome = Y-m-tau*V) inside the AIPW correction's
-  ## own numerator. Working through that substitution:
+  ## `recenter_binary = FALSE` (continuous representation): recentering `e`
+  ## by this group's own weighted mean of resid_treat (V = Z-e) is
+  ## algebraically equivalent to substituting e' = e + Vbar into
+  ## make_scores_vec()'s score formula everywhere e appears -- not just
+  ## adding a constant to the existing `score` column, since V also appears
+  ## (via resid_outcome = Y-m-tau*V) inside the AIPW correction's own
+  ## numerator. Working through that substitution:
   ##   score' = tau + (V-Vbar)/v * (resid_outcome + tau*Vbar)
   ## which reduces to (V-Vbar)/v * resid_outcome when tau=0 (singly-robust,
-  ## doubly.robust=FALSE & target="all"). This is a pure per-row
-  ## recomputation of `score` -- everything downstream (the through-origin
-  ## weighted average and its cluster sandwich) is exactly the existing
-  ## code, unchanged. One extra local parameter (Vbar) is estimated here,
-  ## same as center=TRUE's local intercept, so rank_adj is bumped by 1.
+  ## doubly.robust=FALSE & target="all").
   ##
-  ## Known limitation (deliberately not addressed here): this only
-  ## recenters the propensity/treatment-residual term. The `tau` baseline
-  ## itself (the causal forest's plug-in CATE prediction) is NOT locally
-  ## re-estimated for this subgroup/cell -- if `tau`'s own average over
-  ## these specific rows carries local bias (e.g. from adaptive selection
-  ## correlating which rows land here with their predicted effect), this
-  ## does not correct for it. Fixing that would mean either refitting an
-  ## outcome model locally (small, noisy, and in tension with honest/
-  ## out-of-bag estimation) or dropping the plug-in baseline entirely for
-  ## AIPW too (i.e. reusing `center=TRUE`'s construction, at the cost of
+  ## `recenter_binary = TRUE` (binary/closed-form representation): the
+  ## design-side correction there is multiplicative Hajek/self-normalized-
+  ## IPW rescaling of v = e(1-e) (make_scores_vec()'s `Z.stab`), not an
+  ## additive shift to e -- so the local analogue rescales v again instead.
+  ## g = V/v is already exactly the per-row IPW weight the score divides by
+  ## (Z/e-(1-Z)/(1-e), after whatever design-side stabilization already
+  ## went into v): treated rows (V=1-e>0) have g=1/(e*c_global), control
+  ## rows (V=-e<0) have g=-1/((1-e)*c_global). A fresh local constant --
+  ## c_local = mean(g) over this cell's own treated rows, c_local =
+  ## -mean(g) over its own control rows -- folded multiplicatively into v
+  ## (v' = v*c_local, so g' = g/c_local) makes mean(g') exactly 1 among this
+  ## cell's own treated rows and exactly -1 among its own control rows,
+  ## mirroring the population identity E[Z/e]=1, E[(1-Z)/(1-e)]=1 locally
+  ## rather than only at whichever group `stabilize.scores` originally used.
+  ## `V` and `U` (`resid_outcome`) are untouched here -- unlike the additive
+  ## case, only the divisor changes, so no compensating shift is needed in
+  ## the outcome term:
+  ##   score' = tau + (V/(v*c_local)) * resid_outcome
+  ##
+  ## Both branches are a pure per-row recomputation of `score` --
+  ## everything downstream (the through-origin weighted average and its
+  ## cluster sandwich) is exactly the existing code, unchanged. One extra
+  ## local parameter (Vbar, or c_local) is estimated here, same as
+  ## center=TRUE's local intercept, so rank_adj is bumped by 1.
+  ##
+  ## Known limitation (deliberately not addressed here, either branch): this
+  ## only recenters the propensity/treatment-residual term. The `tau`
+  ## baseline itself (the causal forest's plug-in CATE prediction) is NOT
+  ## locally re-estimated for this subgroup/cell -- if `tau`'s own average
+  ## over these specific rows carries local bias (e.g. from adaptive
+  ## selection correlating which rows land here with their predicted
+  ## effect), this does not correct for it. Fixing that would mean either
+  ## refitting an outcome model locally (small, noisy, and in tension with
+  ## honest/out-of-bag estimation) or dropping the plug-in baseline entirely
+  ## for AIPW too (i.e. reusing `center=TRUE`'s construction, at the cost of
   ## losing AIPW's outcome-model robustness at exactly this step).
   if (isTRUE(recenter_propensity)) {
     stopifnot(
@@ -4006,13 +4034,37 @@ crv1_mean <- function(score,
 
     w_rp <- if (is.null(w)) rep(1.0, n_rp) else as.numeric(w)
     ok_rp <- is.finite(V_rp) & is.finite(w_rp) & w_rp >= 0
-    Vbar_rp <- if (any(ok_rp)) {
-      stats::weighted.mean(V_rp[ok_rp], w = w_rp[ok_rp])
-    } else {
-      0
-    }
 
-    score <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
+    if (isTRUE(recenter_binary)) {
+      g_rp <- V_rp / v_rp
+      is_treated_rp <- ok_rp & V_rp > 0
+      is_control_rp <- ok_rp & V_rp < 0
+
+      c_local <- rep(1, n_rp)
+
+      if (any(is_treated_rp)) {
+        c1_local <- stats::weighted.mean(g_rp[is_treated_rp], w = w_rp[is_treated_rp])
+        if (is.finite(c1_local) && c1_local != 0) {
+          c_local[is_treated_rp] <- c1_local
+        }
+      }
+      if (any(is_control_rp)) {
+        c0_local <- -stats::weighted.mean(g_rp[is_control_rp], w = w_rp[is_control_rp])
+        if (is.finite(c0_local) && c0_local != 0) {
+          c_local[is_control_rp] <- c0_local
+        }
+      }
+
+      score <- tau_rp + (V_rp / (v_rp * c_local)) * U_rp
+    } else {
+      Vbar_rp <- if (any(ok_rp)) {
+        stats::weighted.mean(V_rp[ok_rp], w = w_rp[ok_rp])
+      } else {
+        0
+      }
+
+      score <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
+    }
     rank_adj <- rank_adj + 1
   }
 
@@ -4290,6 +4342,7 @@ forest_test_core <- function(
     resid_outcome = NULL,
     sample_weight = NULL,
     recenter_propensity = FALSE,
+    recenter_binary = FALSE,
     v = NULL
 ) {
 
@@ -5213,7 +5266,7 @@ forest_test_core <- function(
       crv1_mean(
         score, w, cl, rank_adj = rank_adj,
         w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL,
-        recenter_propensity = TRUE,
+        recenter_propensity = TRUE, recenter_binary = recenter_binary,
         resid_treat = resid_treat, resid_outcome = resid_outcome, tau = tau, v = v
       )
     } else {
@@ -5449,7 +5502,8 @@ forest_test_core <- function(
     v_v = if (can_recenter) v_v else NULL,
     center_v = center_v,
     use_centering = use_centering,
-    can_recenter = can_recenter
+    can_recenter = can_recenter,
+    recenter_binary = recenter_binary
   )
 
   Xmeans <- Xmeans_all <- XSD <- NULL
@@ -5602,7 +5656,8 @@ global_means_crv1 <- function(
     v_v = NULL,
     center_v = NULL,
     use_centering = FALSE,
-    can_recenter = FALSE
+    can_recenter = FALSE,
+    recenter_binary = FALSE
 ) {
   stopifnot(data.table::is.data.table(data))
   stopifnot(
@@ -5678,7 +5733,7 @@ global_means_crv1 <- function(
         cl = dt_all$cl,
         rank_adj = rank_adj,
         w_sandwich = if (!is.null(wv_sandwich)) dt_all$w_sandwich else NULL,
-        recenter_propensity = TRUE,
+        recenter_propensity = TRUE, recenter_binary = recenter_binary,
         resid_treat = dt_all$rp_resid_treat, resid_outcome = dt_all$rp_resid_outcome,
         tau = dt_all$rp_tau, v = dt_all$rp_v
       )
@@ -5717,7 +5772,7 @@ global_means_crv1 <- function(
           cl = cl,
           rank_adj = rank_adj,
           w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL,
-          recenter_propensity = TRUE,
+          recenter_propensity = TRUE, recenter_binary = recenter_binary,
           resid_treat = rp_resid_treat, resid_outcome = rp_resid_outcome,
           tau = rp_tau, v = rp_v
         )
