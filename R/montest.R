@@ -2179,54 +2179,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## nuisance fitting instead of after.
   byvars_preQ <- c("sample", margins)
   data[, nQ_preQ := data.table::uniqueN(Q, na.rm = TRUE), by = byvars_preQ]
+  data[, bad_preQ__ := nQ_preQ < 2L]
 
-  if (length(margins) == 0L) {
-    drop_all_preQ <- data[, any(nQ_preQ < 2L, na.rm = TRUE)]
+  res_preQ <- drop_bad_margin_cells(
+    data = data,
+    margins = margins,
+    bad_col = "bad_preQ__",
+    context = ", before nuisance fitting",
+    margin_index = if (exists("margin_index")) margin_index else NULL
+  )
+  data <- res_preQ$data
+  if (exists("margin_index")) margin_index <- res_preQ$margin_index
 
-    if (isTRUE(drop_all_preQ)) {
-      message("Dropping all rows because at least one sample part has no usable variation in Q, before nuisance fitting.")
-      data <- data[0]
-
-      if (exists("margin_index")) {
-        margin_index <- margin_index[0]
-      }
-    }
-
-  } else {
-    bad_preQ <- unique(data[nQ_preQ < 2L, ..margins])
-
-    if (nrow(bad_preQ) > 0L) {
-      if (length(margins) == 1L) {
-        msg <- paste(bad_preQ[[margins]], collapse = ", ")
-        message(
-          "Dropping ", nrow(bad_preQ),
-          " margin cell(s) because at least one sample part has no usable variation in Q, before nuisance fitting: ",
-          msg
-        )
-      } else {
-        bad_labels <- apply(bad_preQ, 1, function(r) {
-          paste(paste(names(r), r, sep = "="), collapse = ", ")
-        })
-        message(
-          "Dropping ", nrow(bad_preQ),
-          " margin cell(s) because at least one sample part has no usable variation in Q, before nuisance fitting:\n",
-          paste("  -", bad_labels, collapse = "\n")
-        )
-      }
-
-      bad_preQ[, drop_preQ__ := TRUE]
-
-      data <- bad_preQ[data, on = margins]
-      data <- data[is.na(drop_preQ__)][, drop_preQ__ := NULL]
-
-      if (exists("margin_index")) {
-        margin_index <- bad_preQ[margin_index, on = margins]
-        margin_index <- margin_index[is.na(drop_preQ__)][, drop_preQ__ := NULL]
-      }
-    }
-  }
-
-  data[, nQ_preQ := NULL]
+  data[, c("nQ_preQ", "bad_preQ__") := NULL]
 
   if (nrow(data) == 0L) {
     stop(
@@ -2391,53 +2356,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## Drop entire margin cells if any sample part / condition cell fails
   ## ------------------------------------------------------------
 
-  if (length(margins) == 0L) {
-    drop_all <- data[, any(bad_Q, na.rm = TRUE)]
-
-    if (isTRUE(drop_all)) {
-      message("Dropping all rows because at least one sample part has no usable variation in Q.")
-      data <- data[0]
-
-      if (exists("margin_index")) {
-        margin_index <- margin_index[0]
-      }
-    }
-
-  } else {
-    bad_margins <- unique(
-      data[bad_Q == TRUE, ..margins]
-    )
-
-    if (nrow(bad_margins) > 0L) {
-      if (length(margins) == 1L) {
-        msg <- paste(bad_margins[[margins]], collapse = ", ")
-        message(
-          "Dropping ", nrow(bad_margins),
-          " margin cell(s) because at least one sample part has no usable variation in Q: ",
-          msg
-        )
-      } else {
-        bad_labels <- apply(bad_margins, 1, function(r) {
-          paste(paste(names(r), r, sep = "="), collapse = ", ")
-        })
-        message(
-          "Dropping ", nrow(bad_margins),
-          " margin cell(s) because at least one sample part has no usable variation in Q:\n",
-          paste("  -", bad_labels, collapse = "\n")
-        )
-      }
-
-      bad_margins[, drop_bad_Q__ := TRUE]
-
-      data <- bad_margins[data, on = margins]
-      data <- data[is.na(drop_bad_Q__)][, drop_bad_Q__ := NULL]
-
-      if (exists("margin_index")) {
-        margin_index <- bad_margins[margin_index, on = margins]
-        margin_index <- margin_index[is.na(drop_bad_Q__)][, drop_bad_Q__ := NULL]
-      }
-    }
-  }
+  res_Q <- drop_bad_margin_cells(
+    data = data,
+    margins = margins,
+    bad_col = "bad_Q",
+    context = "",
+    margin_index = if (exists("margin_index")) margin_index else NULL
+  )
+  data <- res_Q$data
+  if (exists("margin_index")) margin_index <- res_Q$margin_index
 
   if (nrow(data) == 0L) {
     stop(

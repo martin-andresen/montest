@@ -6221,6 +6221,76 @@ binarize_var <- function(data,
 
   dt
 }
+#####drop margin cells with no usable Q variation #######
+## Shared by montest()'s pre-nuisance-fit check (on raw Q) and its
+## post-nuisance-fit check (on residual Q - Q.hat): given a logical column
+## flagging bad rows, drops every row belonging to a margin cell (or sample
+## part, if there are no margins) where the flag is ever TRUE, and mirrors
+## the flag onto margin_index so downstream margin bookkeeping stays in
+## sync. `context` is spliced into the user-facing message (e.g.
+## ", before nuisance fitting") to distinguish which check fired.
+drop_bad_margin_cells <- function(data,
+                                   margins,
+                                   bad_col,
+                                   context = "",
+                                   margin_index = NULL) {
+
+  has_margin_index <- !is.null(margin_index)
+
+  if (length(margins) == 0L) {
+
+    drop_all <- data[, any(get(bad_col), na.rm = TRUE)]
+
+    if (isTRUE(drop_all)) {
+      message(
+        "Dropping all rows because at least one sample part has no usable variation in Q",
+        context, "."
+      )
+      data <- data[0]
+
+      if (has_margin_index) {
+        margin_index <- margin_index[0]
+      }
+    }
+
+  } else {
+
+    bad_cells <- unique(data[get(bad_col) == TRUE, ..margins])
+
+    if (nrow(bad_cells) > 0L) {
+      if (length(margins) == 1L) {
+        msg <- paste(bad_cells[[margins]], collapse = ", ")
+        message(
+          "Dropping ", nrow(bad_cells),
+          " margin cell(s) because at least one sample part has no usable variation in Q",
+          context, ": ", msg
+        )
+      } else {
+        bad_labels <- apply(bad_cells, 1, function(r) {
+          paste(paste(names(r), r, sep = "="), collapse = ", ")
+        })
+        message(
+          "Dropping ", nrow(bad_cells),
+          " margin cell(s) because at least one sample part has no usable variation in Q",
+          context, ":\n",
+          paste("  -", bad_labels, collapse = "\n")
+        )
+      }
+
+      bad_cells[, drop__ := TRUE]
+
+      data <- bad_cells[data, on = margins]
+      data <- data[is.na(drop__)][, drop__ := NULL]
+
+      if (has_margin_index) {
+        margin_index <- bad_cells[margin_index, on = margins]
+        margin_index <- margin_index[is.na(drop__)][, drop__ := NULL]
+      }
+    }
+  }
+
+  list(data = data, margin_index = margin_index)
+}
 #============ Liu and Xie (2019, JASA) cauchy combination test p-value ============#
 #https://pubmed.ncbi.nlm.nih.gov/33012899/
 cct_pvalue <- function(p, w = NULL,eps=1e-15) {
