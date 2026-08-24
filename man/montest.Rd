@@ -109,6 +109,22 @@ the scale the score is built on, replacing what used to be an additive mean-shif
 empirical variance instead of the closed form, and needs \code{Z.hat} untouched to
 reproduce the classical FWL/OLS coefficient exactly.
 }}
+Both corrections are computed once, at whatever \code{sample}/\code{margins} level
+\code{stabilize.scores} operates on -- not separately within an adaptively-found
+leaf/subgroup nested inside that level, or within a "global" cell computed at a finer
+grouping. When \code{TRUE}, the FINAL (test-side and global) score average for AIPW
+(\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} redoes
+whichever correction applies -- the additive mean-shift, or the Hajek rescaling --
+using only that specific cell's own rows, the same finite-sample-bias correction
+\code{doubly.robust=FALSE & target="overlap"} already gets via its own (more thorough)
+centered/with-intercept construction (see \code{target}). This only re-corrects the
+propensity/IPW-weight term -- it does NOT re-estimate the causal forest's plug-in CATE
+prediction (\code{tau}) for that cell; if \code{tau}'s own average over exactly the rows
+selected into a subgroup carries local bias (e.g. from adaptive selection correlating
+which rows land there with their predicted effect), this does not correct for that.
+Never applied to the training-side adaptive search itself, only to the final evaluation,
+and never to cells that already use the \code{target="overlap" & doubly.robust=FALSE}
+centered path.}
 
 \item{aipw.clip}{Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 scores when augmented inverse-probability weighted scores are constructed and when stabilizing
@@ -147,24 +163,6 @@ small nonzero fitted deviation into a cell whose true variance is exactly zero).
 in \code{D} (or \code{Y}) is not dropped, since such a cell still contributes a genuine
 zero-covariance data point to the classical estimator (correctly diluting a
 heterogeneous effect toward its population average) rather than being uninformative.}
-
-\item{recenter_test}{Logical, default TRUE. \code{stabilize.scores} corrects \code{Z.hat}
-(continuous representation) or the IPW weight built from it (binary representation)
-only once, at whatever \code{sample}/\code{margins} level it operates on -- not
-separately within an adaptively-found leaf/subgroup nested inside that level, or within
-a "global" cell computed at a finer grouping than \code{stabilize.scores} used. When
-\code{TRUE}, the FINAL (test-side and global) score average for AIPW
-(\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} is
-locally re-centered instead -- the propensity/treatment-residual term is re-demeaned
-using only that specific cell's own rows, the same finite-sample-bias correction
-\code{doubly.robust=FALSE & target="overlap"} already gets via its own (more thorough)
-centered/with-intercept construction (see \code{target}). This only re-centers the
-propensity term -- it does NOT re-estimate the causal forest's plug-in CATE prediction
-(\code{tau}) for that cell; if \code{tau}'s own average over exactly the rows selected
-into a subgroup carries local bias (e.g. from adaptive selection correlating which rows
-land there with their predicted effect), this does not correct for that. Never applied
-to the training-side adaptive search itself, only to the final evaluation, and never to
-cells that already use the \code{target="overlap" & doubly.robust=FALSE} centered path.}
 
 \item{weight}{Optional character scalar naming a nonnegative weight variable.}
 
