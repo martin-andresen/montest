@@ -1308,9 +1308,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       data[
         z_is_linear_raw != TRUE,
         (zstab_col) := {
+          ## `get(arm_col)` collapses to a length-1 scalar here -- `arm_col`
+          ## is itself one of the `by=` grouping variables, so every row in
+          ## this group already shares the same arm by construction. A
+          ## row-wise `ifelse(get(arm_col) > 0.5, ...)` would silently take
+          ## its length from that length-1 condition (recycling/truncating
+          ## to length 1) instead of from `e_val` -- use a scalar `if` branch
+          ## on the group's single arm value instead.
           e_val <- get(zhat_col)
           wt_val <- if (!is.null(weight)) get(weight) else rep(1, .N)
-          r <- ifelse(get(arm_col) > 0.5, 1 / e_val, 1 / (1 - e_val))
+          r <- if (get(arm_col) > 0.5) 1 / e_val else 1 / (1 - e_val)
           stats::weighted.mean(r, w = wt_val, na.rm = TRUE)
         },
         by = c(by_norm, arm_col)
