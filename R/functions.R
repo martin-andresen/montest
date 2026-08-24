@@ -2550,6 +2550,187 @@ validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
   out
 }
 
+## `stabilize_zhat()`: design-side finite-sample correction of `Z.hat`
+## (extracted so callers other than montest() -- e.g. seqtest -- can drive
+## fit_models()/make_scores_vec() with the same correction, not just
+## montest() itself). Modifies `data` by reference (`:=`) and also returns it
+## invisibly. Requires `data` to already have "sample", "z_use_linear_score",
+## and "z_is_linear_raw" columns (the same stacked-data convention
+## fit_models()/make_scores_vec() already assume), plus `Z` and
+## `paste0(Z,".hat")`.
+##
+## `stabilize.scores` applies whichever correction fits the representation
+## actually in use:
+##   - Continuous representation (z_use_linear_score == TRUE -- a genuinely
+##     multivalued instrument, linearZ = TRUE, or any binary instrument
+##     estimated WITH fixed effects, which always uses this representation
+##     regardless of the instrument's true support): Z.hat is mean-shifted
+##     within each sample/margin group so its group-average residual is
+##     exactly zero, correcting finite-sample/cross-fitting bias in the
+##     conditional-mean estimate itself. There is no IPW/arm structure for
+##     a continuous instrument to self-normalize, so this remains the only
+##     correction available for these rows.
+##   - Binary/closed-form representation (z_use_linear_score == FALSE,
+##     which only ever happens when !has_FE): Z.hat is clipped to
+##     [aipw.clip, 1-aipw.clip] as before, but is NOT mean-shifted --
+##     instead, the score's actual IPW weight Z/e(X)-(1-Z)/(1-e(X)) is
+##     stabilized multiplicatively (Hajek/self-normalized IPW) via a
+##     per-row constant written to a new `paste0(Z,".stab")` column, which
+##     fit_models() auto-discovers by name and folds into
+##     make_scores_vec()'s v = e(1-e) (see `Z.stab` there): c1 =
+##     mean(1/e(X)) over treated rows, c0 = mean(1/(1-e(X))) over control
+##     rows, each computed within the same sample/margin group used below --
+##     so that mean(1/(e*c1)) = 1 exactly among treated rows and
+##     mean(1/((1-e)*c0)) = 1 exactly among control rows. This targets the
+##     scale the score actually divides by, rather than e(X) itself -- a
+##     strictly tighter, better-targeted correction than an additive
+##     mean-shift, which is dropped for these rows rather than kept
+##     alongside it.
+##   - need_ols_v rows (doubly.robust = FALSE & target == "overlap") are
+##     excluded from the binary correction entirely (the `!need_ols_v` gate
+##     below): they use their own row-level empirical (Z-Z.hat)^2 as v
+##     instead of the closed form, which needs Z.hat UNCLIPPED and
+##     UNSTABILIZED to reproduce the classical FWL/OLS coefficient exactly.
+##     Independent of `stabilize.scores`/`has_FE`, these rows still get a
+##     (non-clipping) warning whenever Z.hat strays outside (0,1) -- direct
+##     evidence of nuisance misspecification even though it's left alone.
+stabilize_zhat <- function(data,
+                            Z,
+                            margins = NULL,
+                            parametric = FALSE,
+                            weight = NULL,
+                            aipw.clip = 1e-3,
+                            has_FE = FALSE,
+                            need_ols_v = FALSE,
+                            stabilize.scores = TRUE) {
+  stopifnot(data.table::is.data.table(data))
+
+  z_col <- as.character(Z)[1L]
+  zhat_col <- paste0(z_col, ".hat")
+  zstab_col <- paste0(z_col, ".stab")
+
+  stopifnot(
+    z_col %in% names(data),
+    zhat_col %in% names(data),
+    "z_use_linear_score" %in% names(data),
+    "z_is_linear_raw" %in% names(data)
+  )
+
+  if (isTRUE(stabilize.scores)) {
+    ## Must match the grouping Z.hat was actually fit on
+    ## (estimate_conditional_mean()'s `by_fe` under parametric = TRUE,
+    ## `by_sp` under parametric = FALSE), or this over-corrects: under
+    ## parametric = TRUE, Z.hat is fit in-sample, pooled across "sample"
+    ## halves (feols_partial_out(..., by = margins), no cross-fitting), so
+    ## its residuals already have exactly zero mean within each margin
+    ## group by construction -- forcing a *separate* zero within each
+    ## "sample" half on top of that just adds sampling-noise perturbation,
+    ## with no real cross-fit bias to correct. Under parametric = FALSE,
+    ## Z.hat genuinely is a held-out (cross-fit) prediction structured
+    ## around the "sample" split (crossfit_hat(..., margins = by_sp)),
+    ## where the within-half shift is the correction it's meant for.
+    by_norm <- if (isTRUE(parametric)) unique(margins) else unique(c("sample", margins))
+
+    ## Continuous representation only -- see function-level comment block
+    ## above. Binary rows (z_use_linear_score == FALSE) are stabilized
+    ## instead, below.
+    data[
+      z_use_linear_score == TRUE,
+      (zhat_col) := {
+        z_val <- get(z_col)
+        zh_val <- get(zhat_col)
+        zh_val + mean(z_val - zh_val, na.rm = TRUE)
+      },
+      by = by_norm
+    ]
+
+    if (!has_FE && !need_ols_v) {
+      ## Was a silent pmin/pmax -- clipped the propensity with no warning
+      ## and, worse, no hard-stop for a severely invalid value (e.g. an LPM
+      ## prediction of 1.5), directly contradicting aipw.clip's documented
+      ## guarantee. Routing through validate_and_clip() here (matching
+      ## make_scores_vec()'s own call for the has_FE branch) also protects
+      ## condition="MW"'s later validate_and_clip() call downstream, which
+      ## would otherwise only ever see already-clipped values and could
+      ## never itself detect or report a misspecification.
+      data[
+        z_is_linear_raw != TRUE,
+        (zhat_col) := validate_and_clip(
+          get(zhat_col),
+          hard_lower = 0, hard_upper = 1,
+          floor = aipw.clip, ceiling = 1 - aipw.clip,
+          label = "propensity e(X) for binary-Z rows"
+        )
+      ]
+
+      ## Hajek/self-normalized IPW stabilization -- see function-level
+      ## comment block above. `zstab_col` carries, per row, c1 (treated
+      ## rows) or c0 (control rows): the constant make_scores_vec()
+      ## multiplies into v = e(1-e) so the score's IPW weight
+      ## self-normalizes to exactly 1 within its own arm. fit_models()
+      ## auto-discovers this column by name (paste0(w_name, ".stab")), the
+      ## same convention already used for Z.var.hat.
+      data[, (zstab_col) := NA_real_]
+
+      arm_col <- ".__z_arm__"
+      data[z_is_linear_raw != TRUE, (arm_col) := as.numeric(get(z_col) > 0.5)]
+
+      data[
+        z_is_linear_raw != TRUE,
+        (zstab_col) := {
+          ## `get(arm_col)` collapses to a length-1 scalar here -- `arm_col`
+          ## is itself one of the `by=` grouping variables, so every row in
+          ## this group already shares the same arm by construction. A
+          ## row-wise `ifelse(get(arm_col) > 0.5, ...)` would silently take
+          ## its length from that length-1 condition (recycling/truncating
+          ## to length 1) instead of from `e_val` -- use a scalar `if`
+          ## branch on the group's single arm value instead.
+          e_val <- get(zhat_col)
+          wt_val <- if (!is.null(weight)) get(weight) else rep(1, .N)
+          r <- if (get(arm_col) > 0.5) 1 / e_val else 1 / (1 - e_val)
+          stats::weighted.mean(r, w = wt_val, na.rm = TRUE)
+        },
+        by = c(by_norm, arm_col)
+      ]
+
+      data[, (arm_col) := NULL]
+    }
+  }
+
+  ## `need_ols_v` rows deliberately leave the binary-Z propensity unclipped
+  ## and unstabilized (see above) -- clipping/stabilizing it would distort
+  ## the point estimate away from the exact classical FWL/OLS coefficient
+  ## this path exists to reproduce, and the score only ever uses it
+  ## additively, so nothing numerically requires it. But doubly.robust=FALSE's
+  ## consistency argument still requires Z.hat to be the TRUE conditional
+  ## mean of Z given X, and a value outside (0,1) is direct proof that fails
+  ## for that row -- a real risk of bias in the resulting estimate, not just
+  ## a numerical curiosity. So: warn (never clip, never error) whenever this
+  ## happens, independent of `stabilize.scores`/`has_FE`, since the concern
+  ## is unrelated to either.
+  if (need_ols_v) {
+    zhat_vals <- data[[zhat_col]]
+    is_binary_row <- data[["z_is_linear_raw"]] != TRUE
+    n_bad <- sum(is_binary_row & (zhat_vals < 0 | zhat_vals > 1), na.rm = TRUE)
+
+    if (n_bad > 0L) {
+      warning(sprintf(
+        paste0(
+          "propensity e(X) for binary-Z rows: %d value(s) outside (0,1). ",
+          "These are left unclipped by design (target=\"overlap\" & ",
+          "doubly.robust=FALSE reproduces the classical FWL/OLS coefficient ",
+          "exactly, which needs Z.hat unclipped), but this is direct evidence ",
+          "the propensity model is misspecified for those rows, which can ",
+          "bias the resulting singly-robust estimate."
+        ),
+        n_bad
+      ), call. = FALSE)
+    }
+  }
+
+  invisible(data)
+}
+
 ##SCORES computation
 ## Unified doubly-robust/FWL score:
 ##   score_i = t_i + (W_i-e_i)/v_i * [Y_i - m_i - t_i*(W_i-e_i)]
