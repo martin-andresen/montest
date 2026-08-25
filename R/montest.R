@@ -115,8 +115,12 @@
 #'   Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
 #'   binary instrument estimated with fixed effects), to floor the fitted conditional-variance nuisance \eqn{v(X)}
 #'   at \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
-#'   outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
-#'   that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
+#'   outside \eqn{[0,1]}, or a variance below 0) is clipped to \code{[aipw.clip, 1-aipw.clip]} (or floored at
+#'   \code{aipw.clip} for a variance) and triggers its own warning distinguishing it from an ordinary near-boundary
+#'   clip, since a value actually outside the valid range indicates nuisance misspecification for that row
+#'   specifically -- rather than stopping outright, which would discard every other row's valid result along with
+#'   it. Values merely close to the boundary (already inside the valid range) are clipped with a separate,
+#'   less severe warning.
 #'   Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
 #'   additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
 #'   the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.

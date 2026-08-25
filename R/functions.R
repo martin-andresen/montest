@@ -2523,39 +2523,60 @@ make_X_residualized_from_FE <- function(DT,
 }
 
 ## Validate a nuisance quantity used as a denominator/probability, then clip.
-## Hard-stops on structurally invalid values (propensity outside [0,1],
-## variance below 0) since these indicate nuisance misspecification that
-## should fail loudly rather than be silently patched; clips the rest to
-## [floor, ceiling] and warns if clipping occurred.
+## Structurally invalid values (propensity outside [0,1], variance below 0)
+## indicate nuisance misspecification -- these warn distinctly (naming the
+## hard bound crossed) rather than failing outright, since a handful of
+## boundary-crossing rows out of many is often finite-sample/extreme-draw
+## noise rather than a systematically broken model, and a hard stop discards
+## every other row's valid result along with the bad ones. Values merely
+## close to a valid boundary (inside [hard_lower, hard_upper] but outside
+## [floor, ceiling]) get their own, separately-worded warning, so the two
+## severities are never conflated in the message.
 validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
                               hard_lower = NULL, hard_upper = NULL,
                               label = "value") {
+  invalid <- rep(FALSE, length(x))
+
   if (!is.null(hard_lower)) {
     bad <- is.finite(x) & x < hard_lower
-    if (any(bad, na.rm = TRUE)) {
-      stop(sprintf(
-        "%s: %d value(s) below %g -- likely a nuisance misspecification.",
-        label, sum(bad, na.rm = TRUE), hard_lower
+    n_bad <- sum(bad, na.rm = TRUE)
+    if (n_bad > 0L) {
+      warning(sprintf(
+        paste0(
+          "%s: %d value(s) below %g -- outside the valid range, not merely ",
+          "close to it -- likely a nuisance misspecification. Clipped to %g."
+        ),
+        label, n_bad, hard_lower, if (!is.null(floor)) floor else hard_lower
       ), call. = FALSE)
+      invalid <- invalid | bad
     }
   }
   if (!is.null(hard_upper)) {
     bad <- is.finite(x) & x > hard_upper
-    if (any(bad, na.rm = TRUE)) {
-      stop(sprintf(
-        "%s: %d value(s) above %g -- likely a nuisance misspecification.",
-        label, sum(bad, na.rm = TRUE), hard_upper
+    n_bad <- sum(bad, na.rm = TRUE)
+    if (n_bad > 0L) {
+      warning(sprintf(
+        paste0(
+          "%s: %d value(s) above %g -- outside the valid range, not merely ",
+          "close to it -- likely a nuisance misspecification. Clipped to %g."
+        ),
+        label, n_bad, hard_upper, if (!is.null(ceiling)) ceiling else hard_upper
       ), call. = FALSE)
+      invalid <- invalid | bad
     }
   }
 
   out <- x
   if (!is.null(floor))   out <- pmax(out, floor)
   if (!is.null(ceiling)) out <- pmin(out, ceiling)
+  if (!is.null(hard_lower) && is.null(floor))   out <- pmax(out, hard_lower)
+  if (!is.null(hard_upper) && is.null(ceiling)) out <- pmin(out, hard_upper)
 
-  if (any(out != x, na.rm = TRUE)) {
+  n_near_boundary <- sum(out != x & !invalid, na.rm = TRUE)
+  if (n_near_boundary > 0L) {
     warning(sprintf(
-      "%s: clipped %d value(s).", label, sum(out != x, na.rm = TRUE)
+      "%s: clipped %d value(s) close to the boundary (already within the valid range).",
+      label, n_near_boundary
     ), call. = FALSE)
   }
 
