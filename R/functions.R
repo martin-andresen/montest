@@ -247,15 +247,12 @@ CART_test <- function(
     )
   }
 
-  ## `recenter_propensity`/`recenter_binary`/`tau`/`v`: the narrower
-  ## test-side fix for jobs that are NOT centered (see crv1_mean()'s own
-  ## docs for the full rationale) -- re-centers only the propensity/
-  ## treatment-residual term while keeping the AIPW/FWL plug-in tau baseline
-  ## as-is. `recenter_binary` is a single scalar for the whole call (Z's
-  ## representation is a montest()-call-level choice, never per-row -- see
-  ## montest.R's stabilize.scores block), selecting whether that re-centering
-  ## is the additive mean-shift (continuous) or the Hajek/self-normalized-IPW
-  ## rescaling (binary/closed-form). Reuses `resid_treat_col`/
+  ## `recenter_propensity`/`tau`/`v`: the narrower test-side fix for jobs
+  ## that are NOT centered (see crv1_mean()'s own docs for the full
+  ## rationale) -- re-centers only the propensity/treatment-residual term
+  ## (via an additive mean-shift, the same correction regardless of whether
+  ## Z's representation is continuous or binary/closed-form) while keeping
+  ## the AIPW/FWL plug-in tau baseline as-is. Reuses `resid_treat_col`/
   ## `resid_outcome_col` from the centering machinery above (same columns,
   ## different formula), plus two new column names: `tau` (the causal
   ## forest's own per-row CATE prediction, i.e. `pred`) and `v` (the per-row
@@ -2592,38 +2589,43 @@ validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
 ## fit_models()/make_scores_vec() already assume), plus `Z` and
 ## `paste0(Z,".hat")`.
 ##
-## `stabilize.scores` applies whichever correction fits the representation
-## actually in use:
+## `stabilize.scores` applies the SAME correction -- an additive mean-shift
+## of `Z.hat` within each sample/margin group, forcing its group-average
+## residual to exactly zero -- to every representation. `Z.hat` is the
+## conditional mean of `Z` given X regardless of whether `Z` is continuous
+## or binary; for binary Z, `Z.hat` *is* the propensity e(X), so shifting it
+## corrects exactly the same finite-sample/cross-fitting bias in either
+## case, with no representation-specific machinery needed:
 ##   - Continuous representation (z_use_linear_score == TRUE -- a genuinely
 ##     multivalued instrument, linearZ = TRUE, or any binary instrument
 ##     estimated WITH fixed effects, which always uses this representation
-##     regardless of the instrument's true support): Z.hat is mean-shifted
-##     within each sample/margin group so its group-average residual is
-##     exactly zero, correcting finite-sample/cross-fitting bias in the
-##     conditional-mean estimate itself. There is no IPW/arm structure for
-##     a continuous instrument to self-normalize, so this remains the only
-##     correction available for these rows.
+##     regardless of the instrument's true support): shifted directly, no
+##     further constraint on the result (Z.hat is just a conditional mean,
+##     not itself bounded to (0,1)).
 ##   - Binary/closed-form representation (z_use_linear_score == FALSE,
-##     which only ever happens when !has_FE): Z.hat is clipped to
-##     [aipw.clip, 1-aipw.clip] as before, but is NOT mean-shifted --
-##     instead, the score's actual IPW weight Z/e(X)-(1-Z)/(1-e(X)) is
-##     stabilized multiplicatively (Hajek/self-normalized IPW) via a
-##     per-row constant written to a new `paste0(Z,".stab")` column, which
-##     fit_models() auto-discovers by name and folds into
-##     make_scores_vec()'s v = e(1-e) (see `Z.stab` there): c1 =
-##     mean(1/e(X)) over treated rows, c0 = mean(1/(1-e(X))) over control
-##     rows, each computed within the same sample/margin group used below --
-##     so that mean(1/(e*c1)) = 1 exactly among treated rows and
-##     mean(1/((1-e)*c0)) = 1 exactly among control rows. This targets the
-##     scale the score actually divides by, rather than e(X) itself -- a
-##     strictly tighter, better-targeted correction than an additive
-##     mean-shift, which is dropped for these rows rather than kept
-##     alongside it.
+##     which only ever happens when !has_FE): shifted the same way, then
+##     clipped to [aipw.clip, 1-aipw.clip] (validate_and_clip(), as before)
+##     since e(X) must stay a valid probability -- v = e(1-e) is then
+##     recomputed from this corrected e downstream in make_scores_vec(), so
+##     it automatically reflects the correction with no separate step.
+##     (A previous version of this function instead left e(X) itself
+##     unshifted and multiplicatively rescaled v = e(1-e) by a per-arm
+##     Hajek/self-normalized-IPW constant. That conflated two different
+##     roles: v here is the semiparametric-efficient AIPW/FWL score
+##     denominator -- the scale that makes E[(Z-e)/v * residual] equal the
+##     causal estimand -- not an inverse-probability weight that itself
+##     needs to self-normalize to 1. Rescaling only the denominator, with no
+##     matching adjustment to the score's own aggregation weight, isn't a
+##     valid Hajek ratio -- it silently rescales the *variance* of the
+##     score without shifting its *mean* under the null, deflating the
+##     reported standard error rather than correcting any actual bias. The
+##     additive shift above targets the same finite-sample bias without
+##     changing the score's scale at all.)
 ##   - need_ols_v rows (doubly.robust = FALSE & target == "overlap") are
 ##     excluded from the binary correction entirely (the `!need_ols_v` gate
 ##     below): they use their own row-level empirical (Z-Z.hat)^2 as v
 ##     instead of the closed form, which needs Z.hat UNCLIPPED and
-##     UNSTABILIZED to reproduce the classical FWL/OLS coefficient exactly.
+##     UNSHIFTED to reproduce the classical FWL/OLS coefficient exactly.
 ##     Independent of `stabilize.scores`/`has_FE`, these rows still get a
 ##     (non-clipping) warning whenever Z.hat strays outside (0,1) -- direct
 ##     evidence of nuisance misspecification even though it's left alone.
@@ -2640,7 +2642,6 @@ stabilize_zhat <- function(data,
 
   z_col <- as.character(Z)[1L]
   zhat_col <- paste0(z_col, ".hat")
-  zstab_col <- paste0(z_col, ".stab")
 
   stopifnot(
     z_col %in% names(data),
@@ -2664,9 +2665,7 @@ stabilize_zhat <- function(data,
     ## where the within-half shift is the correction it's meant for.
     by_norm <- if (isTRUE(parametric)) unique(margins) else unique(c("sample", margins))
 
-    ## Continuous representation only -- see function-level comment block
-    ## above. Binary rows (z_use_linear_score == FALSE) are stabilized
-    ## instead, below.
+    ## Continuous representation.
     data[
       z_use_linear_score == TRUE,
       (zhat_col) := {
@@ -2678,6 +2677,21 @@ stabilize_zhat <- function(data,
     ]
 
     if (!has_FE && !need_ols_v) {
+      ## Binary/closed-form representation -- the identical shift, applied
+      ## to the rows the block above didn't reach (z_is_linear_raw != TRUE
+      ## and z_use_linear_score coincide here, since has_FE is FALSE in
+      ## this branch and only has_FE can force the continuous
+      ## representation onto an otherwise-binary row).
+      data[
+        z_is_linear_raw != TRUE,
+        (zhat_col) := {
+          z_val <- get(z_col)
+          zh_val <- get(zhat_col)
+          zh_val + mean(z_val - zh_val, na.rm = TRUE)
+        },
+        by = by_norm
+      ]
+
       ## Was a silent pmin/pmax -- clipped the propensity with no warning
       ## and, worse, no hard-stop for a severely invalid value (e.g. an LPM
       ## prediction of 1.5), directly contradicting aipw.clip's documented
@@ -2695,38 +2709,6 @@ stabilize_zhat <- function(data,
           label = "propensity e(X) for binary-Z rows"
         )
       ]
-
-      ## Hajek/self-normalized IPW stabilization -- see function-level
-      ## comment block above. `zstab_col` carries, per row, c1 (treated
-      ## rows) or c0 (control rows): the constant make_scores_vec()
-      ## multiplies into v = e(1-e) so the score's IPW weight
-      ## self-normalizes to exactly 1 within its own arm. fit_models()
-      ## auto-discovers this column by name (paste0(w_name, ".stab")), the
-      ## same convention already used for Z.var.hat.
-      data[, (zstab_col) := NA_real_]
-
-      arm_col <- ".__z_arm__"
-      data[z_is_linear_raw != TRUE, (arm_col) := as.numeric(get(z_col) > 0.5)]
-
-      data[
-        z_is_linear_raw != TRUE,
-        (zstab_col) := {
-          ## `get(arm_col)` collapses to a length-1 scalar here -- `arm_col`
-          ## is itself one of the `by=` grouping variables, so every row in
-          ## this group already shares the same arm by construction. A
-          ## row-wise `ifelse(get(arm_col) > 0.5, ...)` would silently take
-          ## its length from that length-1 condition (recycling/truncating
-          ## to length 1) instead of from `e_val` -- use a scalar `if`
-          ## branch on the group's single arm value instead.
-          e_val <- get(zhat_col)
-          wt_val <- if (!is.null(weight)) get(weight) else rep(1, .N)
-          r <- if (get(arm_col) > 0.5) 1 / e_val else 1 / (1 - e_val)
-          stats::weighted.mean(r, w = wt_val, na.rm = TRUE)
-        },
-        by = c(by_norm, arm_col)
-      ]
-
-      data[, (arm_col) := NULL]
     }
   }
 
@@ -2791,17 +2773,12 @@ make_scores_vec <- function(Y,
                             Y.hat,
                             Z.hat,
                             Z.var.hat = NULL,
-                            Z.stab = NULL,
                             tau = NULL,
                             doubly.robust = TRUE,
                             z_is_linear = FALSE,
                             weight = NULL,
                             clip = 1e-3) {
   n <- length(Y)
-
-  if (!is.null(Z.stab) && length(Z.stab) != n) {
-    stop("`Z.stab` must have length equal to `Y`.", call. = FALSE)
-  }
 
   if (length(z_is_linear) == 1L) {
     z_is_linear <- rep(z_is_linear, n)
@@ -2877,27 +2854,13 @@ make_scores_vec <- function(Y,
         floor = clip, ceiling = if (!is.null(clip)) 1 - clip else NULL,
         label = "propensity e(X) for binary-Z rows"
       )
+      ## v = e(1-e), the closed-form conditional variance of a Bernoulli(e)
+      ## instrument -- the AIPW/FWL score denominator. `e` here already
+      ## reflects stabilize_zhat()'s additive mean-shift correction (when
+      ## stabilize.scores = TRUE) upstream, so this is automatically
+      ## consistent with that correction; no separate rescaling of v itself
+      ## is needed or applied.
       v[ii] <- e[ii] * (1 - e[ii])
-
-      ## Hajek/self-normalized IPW stabilization (montest.R's
-      ## stabilize.scores, binary representation): `Z.stab[ii]` carries,
-      ## per row, c1 = mean(1/e) over treated rows or c0 = mean(1/(1-e))
-      ## over control rows (computed in montest.R within the same
-      ## sample/margin group this row belongs to). Multiplying it into v
-      ## here is algebraically equivalent to leaving `w_use-e` untouched and
-      ## rescaling the IPW weight Z/e-(1-Z)/(1-e) it forms by 1/c1 (treated)
-      ## or 1/c0 (control): (w_use-e)/(e(1-e)*c1) = (1/e)/c1 for a treated
-      ## row, so that mean_treated(1/(e*c1)) = 1 exactly by construction of
-      ## c1 -- and likewise for control rows/c0. Left at 1 (no-op) for any
-      ## row where `Z.stab` is NA (e.g. `stabilize.scores = FALSE`, or the
-      ## need_ols_v path, which never populates the column at all).
-      if (!is.null(Z.stab)) {
-        zstab_ii <- as.numeric(Z.stab)[ii]
-        has_stab <- is.finite(zstab_ii)
-        if (any(has_stab)) {
-          v[ii][has_stab] <- v[ii][has_stab] * zstab_ii[has_stab]
-        }
-      }
     }
   }
 
@@ -3021,7 +2984,6 @@ fit_models <- function(DT,
   y_hat <- paste0(y_name, ".hat")
   w_hat <- if (!is.null(w_name)) paste0(w_name, ".hat") else NULL
   w_var_hat <- if (!is.null(w_name)) paste0(w_name, ".var.hat") else NULL
-  w_stab_hat <- if (!is.null(w_name)) paste0(w_name, ".stab") else NULL
 
   if (forest_type == "causal") {
     stopifnot(!is.null(w_name), w_name %in% names(DT))
@@ -3082,12 +3044,6 @@ fit_models <- function(DT,
 
   wvarhat_all <- if (!is.null(w_var_hat) && w_var_hat %in% names(DT)) {
     as.numeric(DT[[w_var_hat]])
-  } else {
-    NULL
-  }
-
-  wstabhat_all <- if (!is.null(w_stab_hat) && w_stab_hat %in% names(DT)) {
-    as.numeric(DT[[w_stab_hat]])
   } else {
     NULL
   }
@@ -3343,7 +3299,6 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx1],
         Z.hat = what_all[idx1],
         Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx1],
-        Z.stab = if (is.null(wstabhat_all)) NULL else wstabhat_all[idx1],
         tau = p1,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx1],
@@ -3363,7 +3318,6 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx2],
         Z.hat = what_all[idx2],
         Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx2],
-        Z.stab = if (is.null(wstabhat_all)) NULL else wstabhat_all[idx2],
         tau = p2,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx2],
@@ -4172,59 +4126,40 @@ crv1_mean <- function(score,
   ## bias `center=TRUE` exists to remove for the OLS-equivalent score (see
   ## its own comment block above) -- this reproduces the same fix for the
   ## AIPW/plain-FWL score, WITHOUT dropping the tau baseline the way
-  ## `center=TRUE` does. `recenter_binary` selects WHICH of
-  ## `stabilize.scores`'s two corrections gets redone locally, matching
-  ## whichever one was used at the design/global level for these rows (see
-  ## montest.R's `stabilize.scores` block -- the two are mutually exclusive
-  ## there, so this is a single call-level choice, not a per-row one):
+  ## `center=TRUE` does.
   ##
-  ## `recenter_binary = FALSE` (continuous representation): recentering `e`
-  ## by this group's own weighted mean of resid_treat (V = Z-e) is
-  ## algebraically equivalent to substituting e' = e + Vbar into
-  ## make_scores_vec()'s score formula everywhere e appears -- not just
+  ## Recentering `e` by this group's own weighted mean of resid_treat
+  ## (V = Z-e) is algebraically equivalent to substituting e' = e + Vbar
+  ## into make_scores_vec()'s score formula everywhere e appears -- not just
   ## adding a constant to the existing `score` column, since V also appears
   ## (via resid_outcome = Y-m-tau*V) inside the AIPW correction's own
   ## numerator. Working through that substitution:
   ##   score' = tau + (V-Vbar)/v * (resid_outcome + tau*Vbar)
   ## which reduces to (V-Vbar)/v * resid_outcome when tau=0 (singly-robust,
-  ## doubly.robust=FALSE & target="all").
+  ## doubly.robust=FALSE & target="all"). This is representation-agnostic --
+  ## it only ever shifts V and leaves v as supplied -- so it applies
+  ## identically whether `e`/`v` came from the continuous or the binary/
+  ## closed-form representation upstream (stabilize_zhat()'s design-level
+  ## correction is likewise now a single additive mean-shift of e for both
+  ## representations, so the local and design-level fixes are the same
+  ## correction applied at two nesting levels, not two different ones).
+  ## `recenter_binary` is accepted for call-site compatibility but no longer
+  ## changes this computation -- retained as a formal argument only.
   ##
-  ## `recenter_binary = TRUE` (binary/closed-form representation): the
-  ## design-side correction there is multiplicative Hajek/self-normalized-
-  ## IPW rescaling of v = e(1-e) (make_scores_vec()'s `Z.stab`), not an
-  ## additive shift to e -- so the local analogue rescales v again instead.
-  ## g = V/v is already exactly the per-row IPW weight the score divides by
-  ## (Z/e-(1-Z)/(1-e), after whatever design-side stabilization already
-  ## went into v): treated rows (V=1-e>0) have g=1/(e*c_global), control
-  ## rows (V=-e<0) have g=-1/((1-e)*c_global). A fresh local constant --
-  ## c_local = mean(g) over this cell's own treated rows, c_local =
-  ## -mean(g) over its own control rows -- folded multiplicatively into v
-  ## (v' = v*c_local, so g' = g/c_local) makes mean(g') exactly 1 among this
-  ## cell's own treated rows and exactly -1 among its own control rows,
-  ## mirroring the population identity E[Z/e]=1, E[(1-Z)/(1-e)]=1 locally
-  ## rather than only at whichever group `stabilize.scores` originally used.
-  ## `V` and `U` (`resid_outcome`) are untouched here -- unlike the additive
-  ## case, only the divisor changes, so no compensating shift is needed in
-  ## the outcome term:
-  ##   score' = tau + (V/(v*c_local)) * resid_outcome
-  ##
-  ## Both branches are a pure per-row recomputation of `score` --
-  ## everything downstream (the through-origin weighted average and its
-  ## cluster sandwich) is exactly the existing code, unchanged. One extra
-  ## local parameter (Vbar, or c_local) is estimated here, same as
+  ## One extra local parameter (Vbar) is estimated here, same as
   ## center=TRUE's local intercept, so rank_adj is bumped by 1.
   ##
-  ## Known limitation (deliberately not addressed here, either branch): this
-  ## only recenters the propensity/treatment-residual term. The `tau`
-  ## baseline itself (the causal forest's plug-in CATE prediction) is NOT
-  ## locally re-estimated for this subgroup/cell -- if `tau`'s own average
-  ## over these specific rows carries local bias (e.g. from adaptive
-  ## selection correlating which rows land here with their predicted
-  ## effect), this does not correct for it. Fixing that would mean either
-  ## refitting an outcome model locally (small, noisy, and in tension with
-  ## honest/out-of-bag estimation) or dropping the plug-in baseline entirely
-  ## for AIPW too (i.e. reusing `center=TRUE`'s construction, at the cost of
-  ## losing AIPW's outcome-model robustness at exactly this step).
+  ## Known limitation (deliberately not addressed here): this only recenters
+  ## the propensity/treatment-residual term. The `tau` baseline itself (the
+  ## causal forest's plug-in CATE prediction) is NOT locally re-estimated
+  ## for this subgroup/cell -- if `tau`'s own average over these specific
+  ## rows carries local bias (e.g. from adaptive selection correlating
+  ## which rows land here with their predicted effect), this does not
+  ## correct for it. Fixing that would mean either refitting an outcome
+  ## model locally (small, noisy, and in tension with honest/out-of-bag
+  ## estimation) or dropping the plug-in baseline entirely for AIPW too
+  ## (i.e. reusing `center=TRUE`'s construction, at the cost of losing
+  ## AIPW's outcome-model robustness at exactly this step).
   if (isTRUE(recenter_propensity)) {
     stopifnot(
       "`resid_treat`, `resid_outcome`, `tau`, and `v` are all required when `recenter_propensity = TRUE`" =
@@ -4249,36 +4184,13 @@ crv1_mean <- function(score,
     w_rp <- if (is.null(w)) rep(1.0, n_rp) else as.numeric(w)
     ok_rp <- is.finite(V_rp) & is.finite(w_rp) & w_rp >= 0
 
-    if (isTRUE(recenter_binary)) {
-      g_rp <- V_rp / v_rp
-      is_treated_rp <- ok_rp & V_rp > 0
-      is_control_rp <- ok_rp & V_rp < 0
-
-      c_local <- rep(1, n_rp)
-
-      if (any(is_treated_rp)) {
-        c1_local <- stats::weighted.mean(g_rp[is_treated_rp], w = w_rp[is_treated_rp])
-        if (is.finite(c1_local) && c1_local != 0) {
-          c_local[is_treated_rp] <- c1_local
-        }
-      }
-      if (any(is_control_rp)) {
-        c0_local <- -stats::weighted.mean(g_rp[is_control_rp], w = w_rp[is_control_rp])
-        if (is.finite(c0_local) && c0_local != 0) {
-          c_local[is_control_rp] <- c0_local
-        }
-      }
-
-      score <- tau_rp + (V_rp / (v_rp * c_local)) * U_rp
+    Vbar_rp <- if (any(ok_rp)) {
+      stats::weighted.mean(V_rp[ok_rp], w = w_rp[ok_rp])
     } else {
-      Vbar_rp <- if (any(ok_rp)) {
-        stats::weighted.mean(V_rp[ok_rp], w = w_rp[ok_rp])
-      } else {
-        0
-      }
-
-      score <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
+      0
     }
+
+    score <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
     rank_adj <- rank_adj + 1
   }
 

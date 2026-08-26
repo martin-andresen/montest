@@ -14,10 +14,18 @@
 ##    fe_y_sd) -- an FE-correlated instrument plus an FE-correlated outcome
 ##    confound, i.e. exactly the setting where absorbing FE is load-bearing
 ##    for validity. NULL (default) reproduces the previous FE-free behavior.
-##  z_score_expr: optional string overriding setup "B"'s default linear
-##    z_score formula (0.2*rowSums(X)), evaluated the same way alpha_good
-##    is -- lets a caller plant genuine nonlinearity in Z's true dependence
-##    on X (e.g. to test parametric=TRUE under a misspecified fml.Z).
+##  z_score_expr: optional string overriding setup "B"'s Z-generating
+##    formula, evaluated the same way alpha_good is -- lets a caller plant
+##    genuine nonlinearity in Z's true dependence on X (e.g. to test
+##    parametric=TRUE under a misspecified fml.Z). For K == 1 (binary Z),
+##    it is interpreted as P(Z=1|X) directly (clipped to [eps,1-eps], drawn
+##    via rbinom) -- the same probability-space convention alpha_good
+##    already uses for D -- rather than a latent index perturbed with noise
+##    and quantile-cut, so a linear-probability-model fit of the matching
+##    functional form can recover it exactly. For K > 1 it still falls back
+##    to the original noisy-index/quantile-cut mechanism (0.2*rowSums(X) by
+##    default), since a single probability doesn't generalize to more than
+##    two categories.
 fct_datasim <- function(
     setup, n,
     J = 1, K = 1,
@@ -193,25 +201,44 @@ fct_datasim <- function(
     b <- rep(0, n)
 
   } else if (setup == "B") {
-    z_score <- if (!is.null(z_score_expr)) {
-      eval_inside(z_score_expr, "z_score_expr")
+    if (!is.null(z_score_expr) && K == 1L) {
+      ## Direct probability-space specification (K == 1, binary Z only):
+      ## z_score_expr is evaluated and used *as* P(Z=1|X) itself, the same
+      ## convention alpha_good already uses for D -- not as a latent index
+      ## to be perturbed with noise and quantile-cut. That makes the true
+      ## P(Z=1|X) exactly whatever function of X is written in
+      ## z_score_expr, with no threshold-crossing/probit link between the
+      ## two, so a linear-probability-model fit (parametric = TRUE) using
+      ## the matching functional form can recover it exactly -- letting a
+      ## "correct vs misspecified functional form" comparison isolate
+      ## regressor completeness alone, uncontaminated by a link-function
+      ## mismatch the estimator has no way to get right regardless.
+      p_z <- eval_inside(z_score_expr, "z_score_expr")
+      p_z <- pmin(pmax(p_z, eps), 1 - eps)
+
+      Z <- stats::rbinom(n, size = 1L, prob = p_z)
+
     } else {
-      0.2 * rowSums(X)
+      z_score <- if (!is.null(z_score_expr)) {
+        eval_inside(z_score_expr, "z_score_expr")
+      } else {
+        0.2 * rowSums(X)
+      }
+      z_score <- z_score + rnorm(n)
+
+      br <- unique(quantile(
+        z_score,
+        probs = seq(0, 1, length.out = K + 2),
+        na.rm = TRUE
+      ))
+
+      Z <- as.integer(cut(
+        z_score,
+        breaks = br,
+        include.lowest = TRUE,
+        labels = FALSE
+      )) - 1L
     }
-    z_score <- z_score + rnorm(n)
-
-    br <- unique(quantile(
-      z_score,
-      probs = seq(0, 1, length.out = K + 2),
-      na.rm = TRUE
-    ))
-
-    Z <- as.integer(cut(
-      z_score,
-      breaks = br,
-      include.lowest = TRUE,
-      labels = FALSE
-    )) - 1L
 
     b <- 0.5 * log1p(exp(rowSums(X)))
 
