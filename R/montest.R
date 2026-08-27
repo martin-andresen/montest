@@ -2488,17 +2488,35 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## ------------------------------------------------------------
   ## Target-weighting: `target` no longer changes the score formula (see
   ## make_scores_vec()) -- it only changes the weight fed into the final
-  ## forest_test()/CART_test() moment. target == "overlap" reweights by the
-  ## per-row conditional variance `scores_v` (attached by fit_models() for
-  ## simple/KR/AHS); target == "all" leaves the weight untouched. MW is
-  ## deliberately excluded -- it was never touched by `target` even before
-  ## this refactor (its own plug-in moment doesn't go through
+  ## forest_test()/CART_test() moment, and only for doubly.robust=TRUE
+  ## (AIPW). There, each row's score already has a valid stand-alone
+  ## interpretation as a local-effect estimate (the plug-in `tau` baseline
+  ## plus an orthogonal correction), so target=="all" can legitimately leave
+  ## the weight untouched -- a plain average of those local effects -- while
+  ## target=="overlap" reweights by the per-row conditional variance
+  ## `scores_v` for the variance-weighted average instead.
+  ##
+  ## For doubly.robust=FALSE (the singly-robust/FWL score), there is no such
+  ## baseline: the per-row score is purely (Z-Z.hat)/v*(Y-m), a variance-
+  ## normalized ratio with no meaning as a standalone local effect. Averaging
+  ## it without weighting by v (its own denominator) does not recover any
+  ## valid estimand and is severely anti-conservative in finite samples
+  ## whenever v varies across the tested rows (invisible when Z's propensity
+  ## is flat, real whenever it has genuine covariate-dependent curvature) --
+  ## confirmed by simulation: an otherwise-correct null design showed ~17%
+  ## rejection at a nominal 5% level under target=="all" here, dropping to
+  ## ~5% once weighted by scores_v as target=="overlap" already was. So for
+  ## doubly.robust=FALSE, this reweighting is not a `target` preference at
+  ## all -- it is required for validity regardless of `target`, which is why
+  ## the gate below is on `!isTRUE(doubly.robust)`, not on `target`. MW is
+  ## deliberately excluded either way -- it was never touched by `target`
+  ## even before this refactor (its own plug-in moment doesn't go through
   ## make_scores_vec() at all).
   ## ------------------------------------------------------------
 
   data[, w_eff := if (is.null(weight)) 1 else get(weight)]
 
-  if (identical(target, "overlap") && "scores_v" %in% names(data)) {
+  if ((identical(target, "overlap") || !isTRUE(doubly.robust)) && "scores_v" %in% names(data)) {
     data[
       condition %in% c("simple", "KR", "AHS"),
       w_eff := w_eff * scores_v
@@ -2506,16 +2524,34 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   }
 
   ## ------------------------------------------------------------
-  ## Test-side centering: for need_ols_v rows only (doubly.robust=FALSE &
-  ## target=="overlap"), the through-origin score's ratio structure only
-  ## reproduces classical FWL/OLS at the level `Z.hat` was normalized at --
-  ## an adaptively-found leaf nested inside that level isn't guaranteed to
-  ## have zero mean(Z-Z.hat), so forest_test()/CART_test()'s final held-out
-  ## test uses crv1_mean(..., center=TRUE) instead, re-fitting a with-
-  ## intercept coefficient fresh on each candidate leaf's own rows. See
-  ## crv1_mean()'s `center` argument and montest.R's `need_ols_v`. Applies
-  ## only to the final test-side moment, never to the search/screening
-  ## phase; and only to conditions that actually route through
+  ## Test-side centering: for any doubly.robust=FALSE row -- not just
+  ## need_ols_v's target=="overlap" subset -- the through-origin score's
+  ## ratio structure only reproduces the intended estimand at the level
+  ## `Z.hat` was normalized at: an adaptively-found leaf nested inside that
+  ## level isn't guaranteed to have zero mean(Z-Z.hat), so forest_test()/
+  ## CART_test()'s final held-out test uses crv1_mean(..., center=TRUE)
+  ## instead, re-fitting a with-intercept coefficient fresh on each
+  ## candidate leaf's own rows. See crv1_mean()'s `center` argument.
+  ##
+  ## Originally gated on `need_ols_v` (doubly.robust=FALSE & target==
+  ## "overlap" specifically), matching target=="overlap"'s row-level
+  ## empirical-variance score, which needs exactly this treatment to
+  ## reproduce the classical FWL/OLS coefficient. But target=="all"'s
+  ## singly-robust score (Z-Z.hat)/v*(Y-m) has no doubly-robust `tau`
+  ## baseline either, so it has the identical "not guaranteed zero mean in
+  ## a nested subgroup" exposure -- confirmed by simulation: an otherwise-
+  ## correct null design showed ~14-17% rejection at a nominal 5% level
+  ## under target=="all" here (recenter_propensity's narrower correction,
+  ## the fallback below, is not a substitute -- it neither demeans the
+  ## outcome residual nor uses the empirical variance of the demeaned
+  ## regressor as its denominator, so it does not reproduce the same
+  ## estimator), dropping to ~5% once centering was extended to cover it.
+  ## AIPW (doubly.robust=TRUE) does not need this: its `tau` baseline is
+  ## already a valid stand-alone local-effect estimate, confirmed correctly
+  ## sized under both targets without centering.
+  ##
+  ## Applies only to the final test-side moment, never to the search/
+  ## screening phase; and only to conditions that actually route through
   ## make_scores_vec() (excludes MW, matching the w_eff gate above), and
   ## only when those conditions' raw residual columns were populated.
   ## ------------------------------------------------------------
@@ -2523,7 +2559,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   resid_cols_exist <- all(c(".resid_treat", ".resid_outcome") %in% names(data))
 
   data[, use_centered_test := FALSE]
-  if (need_ols_v && resid_cols_exist) {
+  if (!isTRUE(doubly.robust) && resid_cols_exist) {
     data[
       condition %in% c("simple", "KR", "AHS"),
       use_centered_test := TRUE
