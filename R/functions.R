@@ -4594,7 +4594,7 @@ forest_test_core <- function(
       is.null(sample_weight_col) || sample_weight_col %in% names(data)
     )
   }
-  if (can_recenter) stopifnot(v_col %in% names(data))
+  if (can_recenter || (use_centering && isTRUE(center_inv_v))) stopifnot(v_col %in% names(data))
 
   if (!is.null(cluster)) {
     cluster_col <- as.character(cluster)
@@ -4700,7 +4700,15 @@ forest_test_core <- function(
     NULL
   }
   center_v <- if (use_centering) as.logical(data[[center_col]]) else NULL
-  v_v <- if (can_recenter) as.numeric(data[[v_col]]) else NULL
+  ## Also needed (beyond can_recenter's own use) whenever the centered
+  ## training-side search should weight its ratio by 1/v -- see
+  ## `center_inv_v` below -- independently of whether recenter_propensity
+  ## happens to also be in play.
+  v_v <- if (can_recenter || (use_centering && isTRUE(center_inv_v))) {
+    as.numeric(data[[v_col]])
+  } else {
+    NULL
+  }
 
   clv <- if (!is.null(cluster_col)) {
     as.integer(factor(data[[cluster_col]], exclude = NULL))
@@ -4836,6 +4844,7 @@ forest_test_core <- function(
     sw <- if (use_centering) sample_weight_v[idx] else NULL
     ctr <- if (use_centering) center_v[idx] else NULL
     cell_centered <- use_centering && length(ctr) > 0L && all(ctr)
+    v_local <- if (isTRUE(cell_centered) && isTRUE(center_inv_v)) v_v[idx] else NULL
 
     dt <- data.table::data.table(
       sample = s,
@@ -4849,6 +4858,14 @@ forest_test_core <- function(
     )
     if (isTRUE(cell_centered)) {
       dt[, `:=`(V = V, U = U, sw = sw)]
+      if (isTRUE(center_inv_v)) {
+        if (any(!is.finite(v_local) | v_local <= 0)) {
+          stop("`v` must be finite and strictly positive wherever supplied (center_inv_v training-side weighting).", call. = FALSE)
+        }
+        dt[, rw := sw / v_local]
+      } else {
+        dt[, rw := sw]
+      }
     }
 
     if (!is.null(fe_dt_full)) {
@@ -4899,16 +4916,35 @@ forest_test_core <- function(
       ##
       ## theta(k) = Cov_k(V,U) / Var_k(V), both unnormalized (sums, not
       ## divided by Sw), via the standard streaming/weighted-covariance
-      ## identity Cov_k = S4 - S2*S3/S1, Var_k = S5 - S2^2/S1, where
-      ## S1..S5 are the running (as-of-k) totals of q1..q5. Still a pure
-      ## ratio of sums -- exactly like the through-origin `m := SWY/SW`
-      ## below -- so no per-row division ever occurs here either.
+      ## identity, where S1..S5 are the running (as-of-k) totals of q1..q5.
+      ## Still a pure ratio of sums -- exactly like the through-origin
+      ## `m := SWY/SW` below -- so no per-row division ever occurs here
+      ## either.
+      ##
+      ## q1..q5 (and hence S1..S5, Wg1..Wg5, and the T_pq sandwich terms
+      ## below) are weighted by `rw`, not `sw` directly: rw = sw (target==
+      ## "overlap", the original behavior) or rw = sw/v (target=="all",
+      ## when center_inv_v is set -- see crv1_mean()'s own docs for why
+      ## this reweighting recovers the plain/unweighted-average estimand
+      ## instead of the variance-weighted one). Demeaning, however, must
+      ## stay `sw`-weighted regardless -- matching what the test-side
+      ## crv1_mean(center=TRUE) call does -- so Vbar/Ubar are built from a
+      ## separate, always-sw-weighted Sd1/Sd2/Sd3, not from S1/S2/S3.  With
+      ## Vbar/Ubar no longer equal to S2/S1, S3/S1, the covariance/variance
+      ## identity needs the full (not the S1/S2/S3-collapsed) expansion:
+      ##   Cov_k = S4 - Vbar*S3 - Ubar*S2 + Vbar*Ubar*S1
+      ##   Var_k = S5 - 2*Vbar*S2 + Vbar^2*S1
+      ## which reduces to the original S4-S2*S3/S1, S5-S2^2/S1 exactly when
+      ## rw==sw (Vbar=S2/S1, Ubar=S3/S1 in that case). The downstream T_pq/
+      ## c1..c5 sandwich construction is unchanged either way -- it only
+      ## ever consumes q1..q5, Vbar, Ubar, and m as already-computed inputs,
+      ## regardless of which weight built them.
       dt[, `:=`(
-        q1 = sw,
-        q2 = sw * V,
-        q3 = sw * U,
-        q4 = sw * V * U,
-        q5 = sw * V^2
+        q1 = rw,
+        q2 = rw * V,
+        q3 = rw * U,
+        q4 = rw * V * U,
+        q5 = rw * V^2
       )]
 
       ## Per-cluster running sums of each basic quantity -- same pattern as
@@ -4920,16 +4956,18 @@ forest_test_core <- function(
         Wg4 = cumsum(q4), Wg5 = cumsum(q5)
       ), by = .(sample, cl)]
 
-      ## Global (within-sample) running sums.
+      ## Global (within-sample) running sums -- rw-weighted (S1..S5) plus
+      ## the always-sw-weighted demeaning sums (Sd1..Sd3).
       dt[, `:=`(
         S1 = cumsum(q1), S2 = cumsum(q2), S3 = cumsum(q3),
-        S4 = cumsum(q4), S5 = cumsum(q5)
+        S4 = cumsum(q4), S5 = cumsum(q5),
+        Sd1 = cumsum(sw), Sd2 = cumsum(sw * V), Sd3 = cumsum(sw * U)
       ), by = sample]
 
-      dt[, `:=`(Vbar = S2 / S1, Ubar = S3 / S1)]
+      dt[, `:=`(Vbar = Sd2 / Sd1, Ubar = Sd3 / Sd1)]
       dt[, `:=`(
-        covnum = S4 - S2 * S3 / S1,
-        varden = S5 - S2^2 / S1
+        covnum = S4 - Vbar * S3 - Ubar * S2 + Vbar * Ubar * S1,
+        varden = S5 - 2 * Vbar * S2 + Vbar^2 * S1
       )]
       dt[, m := covnum / varden]
 
