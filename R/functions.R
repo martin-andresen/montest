@@ -3875,7 +3875,8 @@ forest_test <- function(
     sample_weight = NULL,
     recenter_propensity = FALSE,
     recenter_binary = FALSE,
-    v = NULL
+    v = NULL,
+    center_inv_v = FALSE
 ) {
   screen <- match.arg(screen)
 
@@ -3945,7 +3946,8 @@ forest_test <- function(
       sample_weight = sample_weight,
       recenter_propensity = recenter_propensity,
       recenter_binary = recenter_binary,
-      v = v
+      v = v,
+      center_inv_v = center_inv_v
     )
   }
 
@@ -4267,21 +4269,53 @@ crv1_mean <- function(score,
     v_dm <- v_raw - v_bar
     u_dm <- u_raw - u_bar
 
+    ## Optional inverse-conditional-variance weighting (`v`, e.g. Z.hat*(1-
+    ## Z.hat) or the fitted Z.var.hat), for target=="all" under
+    ## doubly.robust=FALSE. Without it (the target=="overlap" case, `v =
+    ## NULL`), this reproduces the plain weighted-OLS/FWL coefficient, which
+    ## is *already* the variance-weighted average of a heterogeneous local
+    ## effect -- that weighting is intrinsic to what a covariance/variance
+    ## ratio computes, not a separate choice. Inserting 1/v as an additional
+    ## per-row weight on the ratio (not on the demeaning step -- v_bar/u_bar
+    ## above still use `sw` alone) algebraically cancels that intrinsic
+    ## Var(Z|X) weighting, recovering the plain (unweighted) average of the
+    ## local effect instead: at the population level, (1/v(X))*v(X) = 1
+    ## identically, so E[(1/v)*Cov(Z,D|X)] = E[delta(X)]. Confirmed by
+    ## simulation to be unbiased and correctly sized with forest-estimated
+    ## nuisances (unlike a per-row score_i = num_i/v_i, plain-averaged --
+    ## see stabilize.scores docs -- this keeps the ratio-of-SUMS structure
+    ## that lets forest regularization bias in v/V/U wash out across rows,
+    ## dividing only once, after summing).
+    if (!is.null(v)) {
+      v_num <- as.numeric(v)
+      if (length(v_num) != length(ok0)) {
+        stop("`v` must be NULL or have the same length as `score`.", call. = FALSE)
+      }
+      v_num <- v_num[ok0]
+      if (any(!is.finite(v_num) | v_num <= 0)) {
+        stop("`v` must be finite and strictly positive wherever supplied.", call. = FALSE)
+      }
+      ratio_w <- sw / v_num
+    } else {
+      ratio_w <- sw
+    }
+
     ## Computed directly from sums of PRODUCTS (v_dm*u_dm, v_dm^2, and the
     ## regression residual v_dm*resid) -- exactly how a real weighted
-    ## OLS-with-intercept fit (lm(U~V, weights=sw)) computes its slope and
-    ## cluster-robust SE, and exactly why "pure" residual-on-residual FWL
-    ## never needs clipping: a row with v_dm_i == 0 contributes exactly zero
-    ## to every sum below, harmlessly. This deliberately does NOT reuse the
-    ## through-origin score/weight machinery below (which forms a per-row
-    ## score_i = U_i/V_i, dividing by that row's own possibly-near-zero
-    ## demeaned regressor) -- that per-row division is what the through-
-    ## origin SR/overlap score's design genuinely needs (it IS a per-unit
-    ## pseudo-outcome elsewhere), but the centered estimator has no per-row
-    ## pseudo-outcome to preserve, so there is nothing division would buy it.
+    ## OLS-with-intercept fit (lm(U~V, weights=ratio_w)) computes its slope
+    ## and cluster-robust SE, and exactly why "pure" residual-on-residual
+    ## FWL never needs clipping: a row with v_dm_i == 0 contributes exactly
+    ## zero to every sum below, harmlessly. This deliberately does NOT reuse
+    ## the through-origin score/weight machinery below (which forms a
+    ## per-row score_i = U_i/V_i, dividing by that row's own possibly-near-
+    ## zero demeaned regressor) -- that per-row division is what the
+    ## through-origin SR/overlap score's design genuinely needs (it IS a
+    ## per-unit pseudo-outcome elsewhere), but the centered estimator has no
+    ## per-row pseudo-outcome to preserve, so there is nothing division
+    ## would buy it.
     dt0 <- data.table::data.table(
-      num = sw * v_dm * u_dm,
-      den = sw * v_dm^2,
+      num = ratio_w * v_dm * u_dm,
+      den = ratio_w * v_dm^2,
       cl = cl_kept
     )
     gb <- dt0[, .(num = sum(num), den = sum(den)), by = cl]
@@ -4298,7 +4332,7 @@ crv1_mean <- function(score,
 
     theta_c <- sum(gb$num) / Wden
     resid <- u_dm - theta_c * v_dm
-    meat <- sw * v_dm * resid
+    meat <- ratio_w * v_dm * resid
 
     dt1 <- data.table::data.table(meat = meat, cl = cl_kept)
     gm <- dt1[, .(m = sum(meat)), by = cl]
@@ -4469,7 +4503,8 @@ forest_test_core <- function(
     sample_weight = NULL,
     recenter_propensity = FALSE,
     recenter_binary = FALSE,
-    v = NULL
+    v = NULL,
+    center_inv_v = FALSE
 ) {
 
   select_keep_ids <- function(cand, choose_by, id_by, alpha) {
@@ -5386,7 +5421,8 @@ forest_test_core <- function(
     if (isTRUE(job_centered)) {
       crv1_mean(
         resid_outcome, cl = cl, rank_adj = rank_adj,
-        center = TRUE, resid_treat = resid_treat, sample_weight = sample_weight
+        center = TRUE, resid_treat = resid_treat, sample_weight = sample_weight,
+        v = if (isTRUE(center_inv_v)) v else NULL
       )
     } else if (isTRUE(can_recenter)) {
       crv1_mean(

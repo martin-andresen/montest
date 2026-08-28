@@ -1217,11 +1217,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   ## ---------------------------------------------------------------------
   ## Design-side finite-sample correction of Z.hat -- see stabilize_zhat()'s
-  ## own docs (functions.R) for the full rationale (mean-shift for the
-  ## continuous representation, Hajek/self-normalized IPW rescaling for the
-  ## binary one) and the need_ols_v exclusion/warning. Factored out of
-  ## montest() so other callers of fit_models()/make_scores_vec() (e.g.
-  ## seqtest) can drive the same correction without duplicating it.
+  ## own docs (functions.R) for the full rationale (an additive mean-shift,
+  ## applied identically to the continuous and binary representations) and
+  ## the need_ols_v exclusion/warning. Factored out of montest() so other
+  ## callers of fit_models()/make_scores_vec() (e.g. seqtest) can drive the
+  ## same correction without duplicating it.
   ## ---------------------------------------------------------------------
 
   stabilize_zhat(
@@ -2592,6 +2592,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   recenter_propensity_arg <- isTRUE(stabilize.scores)
   recenter_binary_arg <- !z_use_lin_any
 
+  ## For doubly.robust=FALSE, the centered (with-intercept OLS/FWL)
+  ## estimator is intrinsically the variance-weighted ("overlap") average of
+  ## a heterogeneous local effect -- that's not a choice, it's what a
+  ## covariance/variance ratio computes. target=="all" instead wants the
+  ## plain (unweighted) average; reweighting the ratio by 1/v (not the
+  ## demeaning step) algebraically cancels that intrinsic weighting -- see
+  ## crv1_mean()'s own docs for the derivation and the simulation evidence
+  ## that this stays correctly sized with forest-estimated nuisances, unlike
+  ## a per-row score-then-plain-average construction. Only meaningful when
+  ## centering is actually in play; harmless (never consulted) otherwise.
+  center_inv_v_arg <- identical(target, "all")
+
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
   if (shrink>0&testtype=="forest") {
@@ -2614,7 +2626,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg)
+  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
   if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg)
 
   ## Xmeans/Xmeans_all/XSD (when present) are keyed on the internal
