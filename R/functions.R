@@ -2420,44 +2420,37 @@ make_X_residualized_from_FE <- function(DT,
                                         prefix = "__x",
                                         by = NULL,
                                         weight = NULL,
-                                        fixest_opts = list()) {
+                                        fixest_opts = list(),
+                                        fe_search_raw = FALSE) {
   stopifnot(data.table::is.data.table(DT))
 
-  if (is.null(x_expr) || identical(x_expr, quote(1))) {
-    return(list(
-      x_names = NULL,
-      raw_names = NULL,
-      resid_names = NULL,
-      clean_names = NULL,
-      has_FE = !is.null(fe_expr)
-    ))
-  }
+  empty_ret <- function() list(
+    x_names = NULL, raw_names = NULL, resid_names = NULL,
+    clean_names = NULL, has_FE = !is.null(fe_expr), n_raw_fe = 0L
+  )
+
+  if (is.null(x_expr) || identical(x_expr, quote(1))) return(empty_ret())
 
   by <- unique(as.character(by %||% character()))
   by <- by[by %in% names(DT)]
 
-  ## 1. Build raw model matrix from formula RHS.
+  ## 1. Build raw model matrix from formula RHS. Keep the term -> column map
+  ## (`assign`) so we can tell which columns come from a variable that is
+  ## also in the FE part.
   fml_x <- stats::as.formula(
     call("~", x_expr),
     env = parent.frame()
   )
 
-  mm <- stats::model.matrix(fml_x, data = DT)
+  mm_full     <- stats::model.matrix(fml_x, data = DT)
+  assign_full <- attr(mm_full, "assign")
+  term_labels <- attr(stats::terms(fml_x), "term.labels")
 
-  ## Drop intercept if present.
-  if ("(Intercept)" %in% colnames(mm)) {
-    mm <- mm[, setdiff(colnames(mm), "(Intercept)"), drop = FALSE]
-  }
+  keep_col <- colnames(mm_full) != "(Intercept)"
+  mm       <- mm_full[, keep_col, drop = FALSE]
+  col_term <- assign_full[keep_col]     # 1-based index into term_labels, per column
 
-  if (ncol(mm) == 0L) {
-    return(list(
-      x_names = NULL,
-      raw_names = NULL,
-      resid_names = NULL,
-      clean_names = NULL,
-      has_FE = !is.null(fe_expr)
-    ))
-  }
+  if (ncol(mm) == 0L) return(empty_ret())
 
   ## `clean_names` is the un-prefixed, human-readable counterpart of
   ## raw_names/resid_names below (same make.names() call, so always aligned
@@ -2478,16 +2471,42 @@ make_X_residualized_from_FE <- function(DT,
       raw_names = raw_names,
       resid_names = raw_names,
       clean_names = clean_names,
-      has_FE = FALSE
+      has_FE = FALSE,
+      n_raw_fe = 0L
     ))
   }
 
-  ## 3. If FE exist, residualize each model-matrix column from FE.
+  ## Which columns come from a term whose variables are ALL fixed effects?
+  ## Residualizing an FE indicator (or the FE itself) on its own FE gives
+  ## exactly zero, so such a column is a useless forest feature. With
+  ## `fe_search_raw = TRUE` (the heterogeneity-search caller) we instead keep
+  ## it RAW: the causal forest can then split on FE level while Y, D and Z
+  ## are still fully residualized on the whole FE elsewhere for
+  ## identification. Nuisance-estimation callers leave `fe_search_raw =
+  ## FALSE` -- their forests should not see the raw FE (already handled by
+  ## the FE-mean construction) -- and such columns are simply dropped.
+  fe_vars <- all.vars(fe_expr)
+  is_fe_col <- vapply(col_term, function(ti) {
+    if (is.na(ti) || ti < 1L || ti > length(term_labels)) return(FALSE)
+    tv <- all.vars(str2lang(term_labels[ti]))
+    length(tv) > 0L && all(tv %in% fe_vars)
+  }, logical(1L))
+
+  keep_raw <- isTRUE(fe_search_raw) & is_fe_col
+  drop_col <- (!isTRUE(fe_search_raw)) & is_fe_col
+
+  ## 3. Residualize the non-FE columns; keep the FE columns raw (or drop).
   resid_names <- paste0(prefix, "_res_", clean_names)
+  x_names <- character(0)
 
   for (jj in seq_along(raw_names)) {
-    out_j <- resid_names[jj]
+    if (drop_col[jj]) next
+    if (keep_raw[jj]) {
+      x_names <- c(x_names, raw_names[jj])
+      next
+    }
 
+    out_j <- resid_names[jj]
     po <- feols_partial_out(
       DT = DT,
       y = raw_names[jj],
@@ -2499,23 +2518,30 @@ make_X_residualized_from_FE <- function(DT,
       keep = "resid",
       fixest_opts = fixest_opts
     )
-
-    ## Depending on your feols_partial_out() return convention:
-    ## if po$resid is the created residual column, copy/rename it.
     if (!identical(po$resid, out_j)) {
       DT[, (out_j) := get(po$resid)]
     }
+    x_names <- c(x_names, out_j)
   }
 
-  ## Optional: drop raw model-matrix columns after residualizing.
-  DT[, (raw_names) := NULL]
+  ## Drop the raw model-matrix columns that were residualized or dropped;
+  ## keep the raw FE columns we are using as search features.
+  drop_raw <- raw_names[!keep_raw]
+  drop_raw <- drop_raw[drop_raw %in% names(DT)]
+  if (length(drop_raw)) DT[, (drop_raw) := NULL]
+
+  ## x_names is the subset actually used (resid for non-FE columns, raw for
+  ## kept FE columns, nothing for dropped FE columns); align clean_names to
+  ## it 1-1 for the rename-back in montest().
+  clean_used <- clean_names[!drop_col]
 
   list(
-    x_names = resid_names,
+    x_names = x_names,
     raw_names = raw_names,
     resid_names = resid_names,
-    clean_names = clean_names,
-    has_FE = TRUE
+    clean_names = clean_used,
+    has_FE = TRUE,
+    n_raw_fe = sum(keep_raw)
   )
 }
 

@@ -620,6 +620,53 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     if ((length(cluster)!=1)|(!(cluster %in% colnames(data)))) {
       stop("Argument cluster must be the name of a single column in data")
     }
+
+    ## Clustering on a fixed effect that is ALSO used as a heterogeneity-
+    ## search feature (e.g. `Y ~ X + factor(FE1) | FE1 | D ~ Z` with
+    ## cluster = "FE1") is incoherent: the cluster-respecting sample split
+    ## puts every level of that FE entirely in one half, so a forest that
+    ## keys on specific levels in the training half has nothing to predict
+    ## on in the held-out half -- the split no longer protects against
+    ## overfitting. Drop the terms built from that FE from the search (it
+    ## stays absorbed for identification) and warn.
+    fe_search_vars <- if (has_FE) {
+      intersect(all.vars(X_expr_forest), all.vars(FE_expr))
+    } else character(0)
+    if (cluster %in% fe_search_vars) {
+      tl <- attr(
+        stats::terms(stats::as.formula(call("~", X_expr_forest))),
+        "term.labels"
+      )
+      tl_keep <- tl[!vapply(
+        tl, function(s) cluster %in% all.vars(str2lang(s)), logical(1L)
+      )]
+      X_expr_forest <- if (length(tl_keep)) {
+        str2lang(paste(tl_keep, collapse = " + "))
+      } else {
+        quote(1)
+      }
+      has_X_expr_forest <- !is.null(X_expr_forest) &&
+        !identical(X_expr_forest, quote(1)) &&
+        length(all.vars(X_expr_forest)) > 0L
+      warning(
+        "`cluster` = \"", cluster, "\" is also used as a heterogeneity-search ",
+        "feature in the X part of `fml`. Clustering on a fixed effect puts each ",
+        "of its levels wholly in one sample half, so a forest that splits on ",
+        "those levels cannot be validated on the held-out half. Dropping it ",
+        "from the search (it remains absorbed for identification). To search ",
+        "within its levels, do not cluster on it.",
+        call. = FALSE
+      )
+      if (!has_X_expr_forest) {
+        stop(
+          "After removing the clustered fixed effect from the search, `fml` has ",
+          "no covariates left for the forest/CART subset search. Add at least ",
+          "one non-FE covariate to the X part, or do not cluster on the FE you ",
+          "want to search within.",
+          call. = FALSE
+        )
+      }
+    }
   } else clvar=NA_character_
 
   if ((length(Z)!=1)|(!(Z %in% colnames(data)))) {
@@ -1139,14 +1186,22 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   if (has_X_expr_forest) {
 
+    ## fe_search_raw = TRUE: any term in the main X part built purely from
+    ## FE variables (e.g. `factor(FE1)` when `FE1` is also in the FE slot) is
+    ## kept RAW as a categorical split feature for the heterogeneity search,
+    ## instead of being residualized on its own FE (which zeroes it). Y, D
+    ## and Z are still fully residualized on the whole FE for identification;
+    ## only the forest's *split features* see the raw FE. Lets the search
+    ## localize a violation to specific FE levels.
     X_forest_info <- make_X_residualized_from_FE(
-      DT          = data,
-      x_expr      = X_expr_forest,
-      fe_expr     = FE_expr,
-      prefix      = "__xf",
-      by          = margins,
-      weight      = weight,
-      fixest_opts = Rparameters
+      DT            = data,
+      x_expr        = X_expr_forest,
+      fe_expr       = FE_expr,
+      prefix        = "__xf",
+      by            = margins,
+      weight        = weight,
+      fixest_opts   = Rparameters,
+      fe_search_raw = TRUE
     )
 
     X_forest <- X_forest_info$x_names
@@ -1171,14 +1226,23 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## residualized *values* (feols_partial_out() only ever extracts residuals/
   ## fitted, never SEs), but there's no need to assume that here when it can
   ## just be checked.
+  ## ...but only when the forest feature set is the plain FE-residualized X.
+  ## If the search kept raw FE columns (fe_search_raw above), those must NOT
+  ## leak into the nuisance forests -- the FE is already handled there by the
+  ## FE-mean construction -- so the nuisances rebuild their own clean X.
+  forest_has_raw_fe <- !is.null(X_forest_info) &&
+    isTRUE(X_forest_info$n_raw_fe > 0L)
+
   X_names_reuse_for_Z <- if (
     !isTRUE(parametric) &&
+      !forest_has_raw_fe &&
       identical(X_expr_Z, X_expr_forest) &&
       identical(Rparameters, Zparameters)
   ) X_forest_info$x_names else NULL
 
   X_names_reuse_for_Q <- if (
     !isTRUE(parametric) &&
+      !forest_has_raw_fe &&
       identical(X_expr_Q, X_expr_forest) &&
       identical(Rparameters, Qparameters)
   ) X_forest_info$x_names else NULL

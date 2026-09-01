@@ -14,6 +14,18 @@
 ##    fe_y_sd) -- an FE-correlated instrument plus an FE-correlated outcome
 ##    confound, i.e. exactly the setting where absorbing FE is load-bearing
 ##    for validity. NULL (default) reproduces the previous FE-free behavior.
+##  fe_d_strength/fe_zd_corr: setup "A". fe_d_strength is the sd of a
+##    group-level shift added to D's latent index; fe_zd_corr is its
+##    correlation with the group's own Z-shift. It is recycled to length 2
+##    -- element 1 drives FE1, element 2 drives FE2 -- so a single FE
+##    dimension can be made adversarial while the other stays benign (e.g.
+##    fe_d_strength = c(0.6, 0) hits FE1 only). With fe_zd_corr < 0, FE
+##    groups where Z = 1 is more common get a systematically LOWER baseline
+##    P(D = 1): the first stage stays strictly positive within every group,
+##    but the FE-marginal first stage E[D|Z=1] - E[D|Z=0] can turn negative
+##    (a Simpson-type artifact that absorbing that FE removes).
+##    fe_d_strength = 0 (default) = no D-side FE shift, i.e. previous
+##    behavior.
 ##  z_score_expr: optional string overriding setup "B"'s Z-generating
 ##    formula, evaluated the same way alpha_good is -- lets a caller plant
 ##    genuine nonlinearity in Z's true dependence on X (e.g. to test
@@ -40,8 +52,12 @@ fct_datasim <- function(
     min_cell_prob = 0.02,
     nFE1 = NULL,
     nFE2 = NULL,
+    fe1_balanced = FALSE,
+    fe2_balanced = FALSE,
     fe_z_strength = 0.75,
     fe_y_sd = 1,
+    fe_d_strength = 0,
+    fe_zd_corr = 0,
     z_score_expr = NULL,
     return_design = FALSE
 ) {
@@ -71,14 +87,19 @@ fct_datasim <- function(
   ## singleton/near-singleton groups occurs -- giving montest's
   ## drop_singletons/drop_novar_Z options something real to do, rather than
   ## requiring an unrealistically large nFE1/nFE2 to ever see a singleton.
+  ## `fe1_balanced`/`fe2_balanced = TRUE` overrides this with a uniform draw
+  ## (roughly equal group sizes) -- appropriate when the FE stands in for an
+  ## ordinal grouping like cohort or year, where levels are of similar size.
   FE1 <- if (has_FE1) {
-    sample.int(nFE1, n, replace = TRUE, prob = (seq_len(nFE1))^(-1))
+    pr <- if (isTRUE(fe1_balanced)) NULL else (seq_len(nFE1))^(-1)
+    sample.int(nFE1, n, replace = TRUE, prob = pr)
   } else {
     NULL
   }
 
   FE2 <- if (has_FE2) {
-    sample.int(nFE2, n, replace = TRUE, prob = (seq_len(nFE2))^(-1))
+    pr <- if (isTRUE(fe2_balanced)) NULL else (seq_len(nFE2))^(-1)
+    sample.int(nFE2, n, replace = TRUE, prob = pr)
   } else {
     NULL
   }
@@ -181,6 +202,24 @@ fct_datasim <- function(
 
       z_score <- z_score + rnorm(n)
 
+      ## Group-level shift in D's latent index, correlated (via fe_zd_corr)
+      ## with the group's own Z-shift -- see the fe_d_strength / fe_zd_corr
+      ## note in the header. fe_d_strength is recycled to length 2:
+      ## element 1 drives FE1, element 2 drives FE2 (so a single dimension
+      ## can be made adversarial while the other stays benign). All-zero =>
+      ## `b` below is exactly the previous rep(0, n).
+      fed <- rep_len(fe_d_strength, 2L)
+
+      shift_from <- function(zshift, nlev, strength) {
+        if (strength == 0) return(numeric(nlev))
+        zstd <- zshift / fe_z_strength
+        strength * (fe_zd_corr * zstd +
+          sqrt(max(0, 1 - fe_zd_corr^2)) * stats::rnorm(nlev))
+      }
+
+      fe1_d_shift <- shift_from(fe1_z_shift, nFE1, fed[1])
+      fe2_d_shift <- if (has_FE2) shift_from(fe2_z_shift, nFE2, fed[2]) else NULL
+
       br <- unique(quantile(
         z_score,
         probs = seq(0, 1, length.out = K + 2),
@@ -198,7 +237,13 @@ fct_datasim <- function(
       Z <- sample(0:K, n, replace = TRUE)
     }
 
-    b <- rep(0, n)
+    b <- if (has_FE1) {
+      bb <- fe1_d_shift[FE1]
+      if (has_FE2) bb <- bb + fe2_d_shift[FE2]
+      bb
+    } else {
+      rep(0, n)
+    }
 
   } else if (setup == "B") {
     if (!is.null(z_score_expr) && K == 1L) {
