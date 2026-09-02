@@ -2034,13 +2034,25 @@ feols_partial_out <- function(DT,
     ))
   }
 
-  fml_for <- function(lhs) {
-    lhs_q <- paste0("`", gsub("`", "``", lhs), "`")   # backtick-quote so leading "_" etc. can't break the parser
-    if (has_fe) {
-      stats::as.formula(paste0(lhs_q, " ~ ", rhs_txt, " | ", deparse1(fe_expr)))
-    } else {
-      stats::as.formula(paste0(lhs_q, " ~ ", rhs_txt))
-    }
+  ## fixest >= 0.12 re-parses the formula LHS internally via str2lang(), which
+  ## chokes on a non-syntactic name (e.g. the "__xf_raw_*" residualization
+  ## columns) even when it is backtick-quoted in the formula text. Fit against
+  ## a syntactic alias column instead, and copy the target values into it per
+  ## fit. `alias_lhs` is chosen not to collide with any existing column or any
+  ## variable entering the RHS / FE part.
+  rhs_fe_vars <- unique(c(
+    all.vars(rhs_expr),
+    if (has_fe) all.vars(fe_expr) else character()
+  ))
+  alias_lhs <- "po_lhs_alias"
+  while (alias_lhs %in% names(DT) || alias_lhs %in% rhs_fe_vars) {
+    alias_lhs <- paste0(alias_lhs, "_")
+  }
+
+  fml_alias <- if (has_fe) {
+    stats::as.formula(paste0(alias_lhs, " ~ ", rhs_txt, " | ", deparse1(fe_expr)))
+  } else {
+    stats::as.formula(paste0(alias_lhs, " ~ ", rhs_txt))
   }
 
   idx_list <- if (!length(by)) {
@@ -2054,13 +2066,12 @@ feols_partial_out <- function(DT,
 
     for (j in seq_along(y)) {
       lhs <- y[j]
-      fml <- fml_for(lhs)
 
       ## feols() drops any row with NA in a variable entering the formula
       ## (or a NA/non-positive weight) and returns residuals()/fitted()
       ## only for the rows it kept. Filter to those rows up front so the
       ## length lines up with what we assign back into DT.
-      vars_needed <- intersect(all.vars(fml), names(dsub))
+      vars_needed <- intersect(c(lhs, rhs_fe_vars), names(dsub))
       keep_row <- stats::complete.cases(dsub[, ..vars_needed])
       if (!is.null(weight)) {
         keep_row <- keep_row & !is.na(dsub[[weight]]) & dsub[[weight]] > 0
@@ -2069,8 +2080,10 @@ feols_partial_out <- function(DT,
       dsub_j <- dsub[keep_row]
       ii_j   <- ii[keep_row]
 
+      data.table::set(dsub_j, j = alias_lhs, value = dsub_j[[lhs]])
+
       args <- c(
-        list(fml = fml, data = dsub_j, notes = FALSE, warn = FALSE),
+        list(fml = fml_alias, data = dsub_j, notes = FALSE, warn = FALSE),
         fixest_opts
       )
 
@@ -2108,7 +2121,7 @@ feols_partial_out <- function(DT,
 ## new singleton in another.
 ##
 ## fixest already implements exactly this (iterative, multi-way-aware)
-## algorithm via `fixef.rm = "singletons"`, so it is reused here rather than
+## algorithm via `fixef.rm = "singleton"`, so it is reused here rather than
 ## re-implemented: fit a throwaway regression of `placeholder_y` (any real
 ## numeric column already in `data` -- singleton status depends only on FE
 ## structure, never on the LHS values) on the FE alone, and read off which
@@ -2117,7 +2130,7 @@ feols_partial_out <- function(DT,
 ## removal]; it only affects inference" -- so this is purely a degrees-of-
 ## freedom correction, dropped upfront here rather than left for downstream
 ## df logic (fe_rank()/fe_rank_adj) to infer on its own.
-## No `weight` parameter: singleton status (fixef.rm = "singletons") is a
+## No `weight` parameter: singleton status (fixef.rm = "singleton") is a
 ## purely structural property -- how many rows share a given FE level --
 ## and is unaffected by weights, confirmed empirically (identical output
 ## with weight = NULL, arbitrary positive weights, and near-zero weights on
@@ -2127,7 +2140,9 @@ drop_fe_singletons <- function(data, fe_expr, placeholder_y) {
   lhs_q <- paste0("`", gsub("`", "``", placeholder_y), "`")
   fml <- stats::as.formula(paste0(lhs_q, " ~ 1 | ", deparse1(fe_expr)))
 
-  fit <- fixest::feols(fml, data = data, fixef.rm = "singletons", notes = FALSE, warn = FALSE)
+  ## fixest's documented value is the singular "singleton" (plural "singletons"
+  ## is rejected outright by fixest >= 0.12).
+  fit <- fixest::feols(fml, data = data, fixef.rm = "singleton", notes = FALSE, warn = FALSE)
 
   removed <- fit$obs_selection$obsRemoved
   if (is.null(removed)) integer() else -removed
