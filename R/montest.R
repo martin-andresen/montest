@@ -1869,7 +1869,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
         } else {
           ## For interior treatment values there is no binary-LATEtest analogue.
           ## If joint=FALSE is meant to be "singleton-style", use singleton sets.
-          A_list <- all_subsets(Ysup, min_size = 1L, max_size = 1L)
+          A_list <- unique(c(
+            all_subsets(Ysup, min_size = 1L, max_size = 1L),
+            lapply(Ysup, function(y) setdiff(Ysup, y))
+          ))
         }
 
       } else if (dv == min(Dsup)) {
@@ -2211,7 +2214,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
     data[
       condition == "KR" & dval > dmin,
-      Q := as.numeric(get(Dcol) == dval) -
+      Q := as.numeric(get(Dcol) >= dval) -
         as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
       by = .(dval, yval)
     ]
