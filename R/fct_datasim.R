@@ -38,6 +38,7 @@
 ##    to the original noisy-index/quantile-cut mechanism (0.2*rowSums(X) by
 ##    default), since a single probability doesn't generalize to more than
 ##    two categories.
+#' @export
 fct_datasim <- function(
     setup, n,
     J = 1, K = 1,
