@@ -196,6 +196,14 @@
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
 #'   \code{"sample"}, \code{"all"}, and \code{"none"}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#' @param local Logical, default \code{TRUE}. If \code{FALSE}, the local (subgroup) search is skipped entirely:
+#'   there is no sample split (\code{sample} is 1 for all observations), no \code{forest_test}/CART search, and the
+#'   estimates are computed globally within each margin cell, using the same centering / re-centering as the local
+#'   test-side moment. These global estimates are stored in \code{$results} (with \code{train = FALSE}) and feed
+#'   \code{$minp}; \code{$global}, \code{$grid}, \code{$Xmeans}, \code{$shares} are \code{NULL}. \code{pool} still works
+#'   (\code{"sample"} is moot), \code{select}, \code{shrink}, \code{testtype}, \code{screen}, \code{gridpoints} and the CART
+#'   tuning parameters have no role. Outer cross-fitting is unavailable, so nuisances use out-of-bag predictions (or
+#'   \code{inner.folds}). With \code{doubly.robust = FALSE} no causal forest is fit at all.
 #' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
@@ -328,7 +336,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,
+                 doubly.robust=NULL,local=TRUE,
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
 ){
@@ -474,6 +482,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   } else {
     crossfit <- match.arg(crossfit, c("Z", "Q", "C", "Y"), several.ok = TRUE)
   }
+  stopifnot(is.logical(local), length(local) == 1L, !is.na(local))
+  select_given <- !missing(select)
+  if (!local) {
+    ## No sample split: cross-fitting across the two outer halves is not
+    ## possible, so nuisances fall back to OOB predictions (or to the inner
+    ## folds if `inner.folds` is given, which are unaffected by the split).
+    if (is.null(inner.folds) && length(crossfit)) {
+      message("local = FALSE: no outer sample split, so `crossfit` has no effect without `inner.folds`; out-of-bag predictions are used.")
+      crossfit <- character()
+    }
+    if (shrink > 0) {
+      warning("`shrink` has no effect when local = FALSE (no subgroup search); ignoring.", call. = FALSE)
+      shrink <- 0
+    }
+  }
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
@@ -587,6 +610,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   else if (sum(select=="none")==1) select=c()
   else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample"),several.ok=TRUE)
   else select="condition"
+
+  if (!local) {
+    ## `select` has no role without a local search and `sample` is moot.
+    if (select_given && length(select) > 0L) warning("`select` has no effect when local = FALSE; ignoring.", call. = FALSE)
+    select <- character()
+    pool <- setdiff(pool, "sample")
+  }
 
   if ("sample" %in% intersect(pool,select)) {
     stop("Sample cannot appear in both pool and select. Adaptive selection or pooling across sample halves might invalidate sample splitting.")
@@ -771,7 +801,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   need_linear_D <- has_linear_conditions && linearD
 
   ##Validate select/pool choices for CART
-  if (identical(testtype, "CART")) {
+  if (identical(testtype, "CART") && local) {
     if (is.null(pool)) pool <- character()
     if (is.null(select)) select <- character()
 
@@ -909,9 +939,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   n=nrow(data)
   if (is.null(cluster)==FALSE) {
     G <- data.table::uniqueN(data[[cluster]])
-    if (G<=2*minsize) stop("Number of clusters is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
+    if (G<=(if (local) 2 else 1)*minsize) stop("Number of clusters is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
   } else {
-    if (n<=2*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
+    if (n<=(if (local) 2 else 1)*minsize) stop("Number of observations is smaller than 2x minsize. There is not enough data to split the sample and test in a large enough sample. Reconsider specification or reduce minsize.")
     G=NA
     }
   obs=c(N=n,G=G)
@@ -948,7 +978,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       )
     }
   }
-  make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=strat)
+  if (local) {
+    make_group_folds(data,K = 2,cluster_name = cluster, fold_col = "sample",verbose = FALSE,diag_prefix=NULL,strat_col=strat)
+  } else {
+    ## No sample split: every observation is in sample 1.
+    data[, sample := 1L]
+  }
 
   ##OPTIONAL INNER SPLIT
   if (is.null(inner.folds)==FALSE) {
@@ -2460,7 +2495,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     data[, (helper_cols_Q) := NULL]
   }
 
-  time=rbind(time,"Estimate nuisance for outcomes Q"=proc.time())
+  time=rbind(time,"Estimate nuisance for pseudo-outcomes Q"=proc.time())
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
   if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuisances - use OOB for forest.
@@ -2493,7 +2528,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       verbose = FALSE,
 
       doubly.robust = doubly.robust,
-      z_linear_score_name = "z_use_linear_score"
+      z_linear_score_name = "z_use_linear_score",
+      fit_forest = isTRUE(local) || isTRUE(doubly.robust)
     )
   }
 
@@ -2524,7 +2560,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       verbose = FALSE,
 
       doubly.robust = doubly.robust,
-      z_linear_score_name = "z_use_linear_score"
+      z_linear_score_name = "z_use_linear_score",
+      fit_forest = isTRUE(local) || isTRUE(doubly.robust)
     )
   }
 
@@ -2535,7 +2572,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     i_mw <- which(data$condition == "MW")
     data[i_mw, scores := Q]
 
-    if (testtype == "forest") {
+    if (testtype == "forest" && local) {
       fit_models(
         DT = data,
         i = i_mw,
@@ -2673,7 +2710,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
-  if (shrink>0&testtype=="forest") {
+  if (shrink>0&testtype=="forest"&local) {
     shrink_te_crossfit(
     data        = data,
     pred        = "pred",
@@ -2693,8 +2730,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
 
-  if ("forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if ("CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg)
+  if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
+  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg)
 
   ## Xmeans/Xmeans_all/XSD (when present) are keyed on the internal
   ## `__xf_raw_*`/`__xf_res_*` forest-feature columns from
@@ -2741,16 +2779,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       for (m in c("holm","hochberg","BH","BY")) {
         res$results[train==FALSE,paste0("p.",m):=p.adjust(replace(p.raw, is.na(p.raw), 1),method=m)]
       }
-      byv=c("sample",margins)[!c("sample",margins) %in% pool]
+      byv=c(if (local) "sample",margins)[!c(if (local) "sample",margins) %in% pool]
       res$minwhere=res$results[train == FALSE & is.finite(p.raw)][which.min(p.raw), ..byv]
       res$minp=apply(res$results[train==FALSE,c("p.raw","p.holm","p.hochberg","p.BH","p.BY")],2,min)
       res$minp=c(res$minp,p.CCT=cct_pvalue(replace(res$results[train==FALSE,p.raw],is.na(res$results[train==FALSE,p.raw]),1)))
     }
 
-    res$global[,p.raw:=pnorm(t)]
-    if (nrow(res$global)>1) {
-      for (m in c("holm","hochberg","BH","BY")) {
-        res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+    if (!is.null(res$global)) {
+      res$global[,p.raw:=pnorm(t)]
+      if (nrow(res$global)>1) {
+        for (m in c("holm","hochberg","BH","BY")) {
+          res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
+        }
       }
     }
 

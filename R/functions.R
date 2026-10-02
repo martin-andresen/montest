@@ -614,16 +614,18 @@ CART_test <- function(
       dtg[, cl := .I]
     }
 
-    ## `global` has no center=TRUE support at all (pre-existing, untouched
-    ## here) -- so a would-be-centered (need_ols_v) cell is left exactly as
-    ## before. `recenter_propensity` only ever applies to cells that are
-    ## NOT eligible for centering, so it never displaces that path.
-    if (isTRUE(can_recenter)) {
+    ## Centered cells use the same with-intercept crv1_mean(center=TRUE) as
+    ## the test side (CART's test side uses no 1/v reweighting either).
+    ## `recenter_propensity` only ever applies to cells that are NOT
+    ## eligible for centering, so it never displaces that path.
+    if (isTRUE(can_recenter) || isTRUE(use_centering)) {
       dtg[, `:=`(
         rp_resid_treat = as.numeric(df_cell[[resid_treat_col]]),
         rp_resid_outcome = as.numeric(df_cell[[resid_outcome_col]]),
-        rp_tau = as.numeric(df_cell[[tau_col]]),
-        rp_v = as.numeric(df_cell[[v_col]]),
+        rp_tau = if (isTRUE(can_recenter)) as.numeric(df_cell[[tau_col]]) else NA_real_,
+        rp_v = if (isTRUE(can_recenter)) as.numeric(df_cell[[v_col]]) else NA_real_,
+        rp_sw = if (!is.null(sample_weight_col)) as.numeric(df_cell[[sample_weight_col]]) else 1.0,
+        rp_center = if (use_centering) as.logical(df_cell[[center_col]]) else FALSE,
         rp_not_centered = if (use_centering) !as.logical(df_cell[[center_col]]) else TRUE
       )]
     }
@@ -639,7 +641,12 @@ CART_test <- function(
         fe_rank_adj = fe_rank_adj
       )
 
-      if (isTRUE(can_recenter) && all(rp_not_centered, na.rm = FALSE)) {
+      if (isTRUE(use_centering) && all(rp_center, na.rm = FALSE)) {
+        o <- crv1_mean(
+          rp_resid_outcome, cl = cl, rank_adj = rank_adj,
+          center = TRUE, resid_treat = rp_resid_treat, sample_weight = rp_sw
+        )
+      } else if (isTRUE(can_recenter) && all(rp_not_centered, na.rm = FALSE)) {
         o <- crv1_mean(
           score, w, cl, rank_adj = rank_adj, w_sandwich = if (!is.null(sandwich_col)) w_sandwich else NULL,
           recenter_propensity = TRUE, recenter_binary = recenter_binary,
@@ -2963,9 +2970,17 @@ fit_models <- function(DT,
                        shrink = FALSE,
                        verbose = FALSE,
                        doubly.robust = TRUE,
-                       z_linear_score_name = "z_use_linear_score") {
+                       z_linear_score_name = "z_use_linear_score",
+                       fit_forest = TRUE) {
 
   stopifnot(is.logical(doubly.robust), length(doubly.robust) == 1L, !is.na(doubly.robust))
+  stopifnot(is.logical(fit_forest), length(fit_forest) == 1L, !is.na(fit_forest))
+  ## The forest only supplies the CATE baseline `tau`, which the
+  ## doubly.robust=FALSE score does not use (make_scores_vec sets t=0).
+  if (!fit_forest && (isTRUE(doubly.robust) || identical(forest_type, "regression"))) {
+    stop("`fit_forest = FALSE` requires doubly.robust = FALSE and forest_type = \"causal\".",
+         call. = FALSE)
+  }
 
   stopifnot(data.table::is.data.table(DT))
   forest_type <- match.arg(forest_type)
@@ -3262,7 +3277,7 @@ fit_models <- function(DT,
     idx1 <- idx_g[sample_all[idx_g] == 1L]
     idx2 <- idx_g[sample_all[idx_g] == 2L]
 
-    fit1 <- if (length(idx1)) {
+    fit1 <- if (fit_forest && length(idx1)) {
       build_forest_idx(
         forest_type,
         idx1,
@@ -3272,7 +3287,7 @@ fit_models <- function(DT,
       NULL
     }
 
-    fit2 <- if (length(idx2)) {
+    fit2 <- if (fit_forest && length(idx2)) {
       build_forest_idx(
         forest_type,
         idx2,
@@ -3282,7 +3297,15 @@ fit_models <- function(DT,
       NULL
     }
 
-    if (is.null(folds_all)) {
+    na_res <- function(n) list(
+      pred = rep(NA_real_, n), var = if (shrink) rep(NA_real_, n) else NULL
+    )
+
+    if (!fit_forest) {
+      ## No forest: CATE predictions stay NA (and are unused downstream).
+      res1 <- na_res(length(idx1))
+      res2 <- na_res(length(idx2))
+    } else if (is.null(folds_all)) {
       res1 <- if (!is.null(fit1) && length(idx1)) {
         predict_oob_with_optional_var(fit1, length(idx1))
       } else {
@@ -3312,13 +3335,14 @@ fit_models <- function(DT,
     res1_o <- if (!is.null(fit2) && length(idx1)) {
       predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
     } else {
-      list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      ## Opposite sample empty (local = FALSE) or no forest: NA, unused.
+      na_res(length(idx1))
     }
 
     res2_o <- if (!is.null(fit1) && length(idx2)) {
       predict_with_optional_var(fit1, X_all[rid[idx2], , drop = FALSE])
     } else {
-      list(pred = numeric(), var = if (shrink) numeric() else NULL)
+      na_res(length(idx2))
     }
 
     p1   <- res1$pred
@@ -3340,7 +3364,7 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx1],
         Z.hat = what_all[idx1],
         Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx1],
-        tau = p1,
+        tau = if (fit_forest) p1 else NULL,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx1],
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],
@@ -3359,7 +3383,7 @@ fit_models <- function(DT,
         Y.hat = yhat_all[idx2],
         Z.hat = what_all[idx2],
         Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx2],
-        tau = p2,
+        tau = if (fit_forest) p2 else NULL,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx2],
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],
@@ -5737,14 +5761,16 @@ forest_test_core <- function(
     x_rank_vars = x_rank_vars,
     weight_col = weight_col,
     wv_sandwich = wv_sandwich,
-    resid_treat_v = if (can_recenter) resid_treat_v else NULL,
-    resid_outcome_v = if (can_recenter) resid_outcome_v else NULL,
+    resid_treat_v = if (can_recenter || use_centering) resid_treat_v else NULL,
+    resid_outcome_v = if (can_recenter || use_centering) resid_outcome_v else NULL,
     tau_v = if (can_recenter) predv else NULL,
-    v_v = if (can_recenter) v_v else NULL,
+    v_v = v_v,
     center_v = center_v,
     use_centering = use_centering,
     can_recenter = can_recenter,
-    recenter_binary = recenter_binary
+    recenter_binary = recenter_binary,
+    sample_weight_v = sample_weight_v,
+    center_inv_v = center_inv_v
   )
 
   Xmeans <- Xmeans_all <- XSD <- NULL
@@ -5898,7 +5924,9 @@ global_means_crv1 <- function(
     center_v = NULL,
     use_centering = FALSE,
     can_recenter = FALSE,
-    recenter_binary = FALSE
+    recenter_binary = FALSE,
+    sample_weight_v = NULL,
+    center_inv_v = FALSE
 ) {
   stopifnot(data.table::is.data.table(data))
   stopifnot(
@@ -5942,51 +5970,59 @@ global_means_crv1 <- function(
     dt_all[, (by_cols) := data[, .SD, .SDcols = by_cols]]
   }
 
-  ## `global` has no center=TRUE support at all (pre-existing, untouched
-  ## here) -- so a would-be-centered (need_ols_v) cell is left exactly as
-  ## before. `recenter_propensity` only ever applies to cells that are
-  ## NOT eligible for centering, so it never displaces that path. See
-  ## CART_test()'s global_means_one_cell() for the same pattern.
-  if (isTRUE(can_recenter)) {
-    dt_all[, `:=`(
-      rp_resid_treat = resid_treat_v,
-      rp_resid_outcome = resid_outcome_v,
-      rp_tau = tau_v,
-      rp_v = v_v,
-      rp_not_centered = if (isTRUE(use_centering)) !as.logical(center_v) else TRUE
-    )]
+  ## Same final-moment logic as forest_test_core()'s run_test_moment():
+  ## centered (with-intercept) fit when every row of the group is eligible,
+  ## else the narrower recenter_propensity fix (only for cells NOT eligible
+  ## for centering), else the plain through-origin moment.
+  has_aux <- isTRUE(can_recenter) || isTRUE(use_centering)
+  dt_all[, `:=`(
+    rp_resid_treat = if (has_aux) resid_treat_v else NA_real_,
+    rp_resid_outcome = if (has_aux) resid_outcome_v else NA_real_,
+    rp_tau = if (isTRUE(can_recenter)) tau_v else NA_real_,
+    rp_v = if (!is.null(v_v)) v_v else NA_real_,
+    rp_sw = if (!is.null(sample_weight_v)) sample_weight_v else 1.0,
+    rp_center = if (isTRUE(use_centering)) as.logical(center_v) else FALSE
+  )]
+
+  rank_for_rows <- function(rowid,cl_vals) {
+    rank_adj_total(
+      data = data, idx = rowid, fe_expr = fe_expr, x_vars = x_rank_vars,
+      weight_col = weight_col, cluster_vals = cl_vals, fe_rank_adj = fe_rank_adj
+    )
   }
 
-    rank_for_rows <- function(rowid,cl_vals) {
-      rank_adj_total(
-        data = data, idx = rowid, fe_expr = fe_expr, x_vars = x_rank_vars,
-        weight_col = weight_col, cluster_vals = cl_vals, fe_rank_adj = fe_rank_adj
+  run_moment <- function(score, w, w_sandwich, cl, rank_adj,
+                         rp_resid_treat, rp_resid_outcome, rp_tau, rp_v, rp_sw, rp_center) {
+    if (isTRUE(use_centering) && all(rp_center, na.rm = FALSE)) {
+      crv1_mean_fun(
+        rp_resid_outcome, cl = cl, rank_adj = rank_adj,
+        center = TRUE, resid_treat = rp_resid_treat, sample_weight = rp_sw,
+        v = if (isTRUE(center_inv_v)) rp_v else NULL
+      )
+    } else if (isTRUE(can_recenter)) {
+      crv1_mean_fun(
+        score = score, w = w, cl = cl, rank_adj = rank_adj,
+        w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL,
+        recenter_propensity = TRUE, recenter_binary = recenter_binary,
+        resid_treat = rp_resid_treat, resid_outcome = rp_resid_outcome,
+        tau = rp_tau, v = rp_v
+      )
+    } else {
+      crv1_mean_fun(
+        score = score, w = w, cl = cl, rank_adj = rank_adj,
+        w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
       )
     }
+  }
 
   if (length(by_cols) == 0L) {
     rank_adj <- rank_for_rows(dt_all$rowid,clv)
 
-    if (isTRUE(can_recenter) && all(dt_all$rp_not_centered, na.rm = FALSE)) {
-      o <- crv1_mean_fun(
-        score = dt_all$score,
-        w = dt_all$w,
-        cl = dt_all$cl,
-        rank_adj = rank_adj,
-        w_sandwich = if (!is.null(wv_sandwich)) dt_all$w_sandwich else NULL,
-        recenter_propensity = TRUE, recenter_binary = recenter_binary,
-        resid_treat = dt_all$rp_resid_treat, resid_outcome = dt_all$rp_resid_outcome,
-        tau = dt_all$rp_tau, v = dt_all$rp_v
-      )
-    } else {
-      o <- crv1_mean_fun(
-        score = dt_all$score,
-        w = dt_all$w,
-        cl = dt_all$cl,
-        rank_adj = rank_adj,
-        w_sandwich = if (!is.null(wv_sandwich)) dt_all$w_sandwich else NULL
-      )
-    }
+    o <- run_moment(
+      dt_all$score, dt_all$w, dt_all$w_sandwich, dt_all$cl, rank_adj,
+      dt_all$rp_resid_treat, dt_all$rp_resid_outcome, dt_all$rp_tau,
+      dt_all$rp_v, dt_all$rp_sw, dt_all$rp_center
+    )
 
     global_dt <- data.table::data.table(
       train = FALSE,
@@ -6006,26 +6042,10 @@ global_means_crv1 <- function(
     global_dt <- dt_all[, {
       rank_adj <- rank_for_rows(rowid,clv)
 
-      if (isTRUE(can_recenter) && all(rp_not_centered, na.rm = FALSE)) {
-        o <- crv1_mean_fun(
-          score = score,
-          w = w,
-          cl = cl,
-          rank_adj = rank_adj,
-          w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL,
-          recenter_propensity = TRUE, recenter_binary = recenter_binary,
-          resid_treat = rp_resid_treat, resid_outcome = rp_resid_outcome,
-          tau = rp_tau, v = rp_v
-        )
-      } else {
-        o <- crv1_mean_fun(
-          score = score,
-          w = w,
-          cl = cl,
-          rank_adj = rank_adj,
-          w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
-        )
-      }
+      o <- run_moment(
+        score, w, w_sandwich, cl, rank_adj,
+        rp_resid_treat, rp_resid_outcome, rp_tau, rp_v, rp_sw, rp_center
+      )
 
       data.table::data.table(
         train = FALSE,
@@ -6047,6 +6067,90 @@ global_means_crv1 <- function(
   }
 
   global_dt
+}
+
+## local = FALSE: no sample split and no subgroup search -- just the global
+## (per margin-cell) estimates, via the same final-moment logic
+## (centered / recenter_propensity / plain) forest_test_core() uses on the
+## test side. Returns the same list shape as forest_test()/CART_test(), with
+## the global table as `results` (and no grid/Xmeans/shares/global).
+global_test <- function(
+    data,
+    cluster = NULL,
+    weight = NULL,
+    scores = "scores",
+    pred = "pred",
+    margins = NULL,
+    pool = NULL,
+    fe_expr = NULL,
+    fe_rank_adj = !is.null(fe_expr),
+    x_rank_vars = character(0),
+    sandwich = NULL,
+    center = NULL,
+    resid_treat = NULL,
+    resid_outcome = NULL,
+    sample_weight = NULL,
+    recenter_propensity = FALSE,
+    recenter_binary = FALSE,
+    v = NULL,
+    center_inv_v = FALSE
+) {
+  stopifnot(data.table::is.data.table(data))
+  if (is.null(margins)) margins <- character()
+  if (is.null(pool)) pool <- character()
+  margins <- as.character(margins)
+  by_cols <- setdiff(margins, as.character(pool))
+
+  n <- nrow(data)
+  weight_col <- if (is.null(weight)) NULL else as.character(weight)
+  center_col <- if (is.null(center)) NULL else as.character(center)
+  use_centering <- !is.null(center_col) && !is.null(resid_treat) && !is.null(resid_outcome)
+  can_recenter <- isTRUE(recenter_propensity) && !is.null(resid_treat) &&
+    !is.null(resid_outcome) && !is.null(v)
+  need_v <- can_recenter || (use_centering && isTRUE(center_inv_v))
+
+  wv <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
+  wv[!is.finite(wv)] <- 0
+
+  clv <- if (!is.null(cluster)) {
+    as.integer(factor(data[[cluster]], exclude = NULL))
+  } else {
+    seq_len(n)
+  }
+
+  global <- global_means_crv1(
+    data = data,
+    scorev = as.numeric(data[[scores]]),
+    wv = wv,
+    clv = clv,
+    by_cols = by_cols,
+    crv1_mean_fun = crv1_mean,
+    fe_expr = fe_expr,
+    fe_rank_adj = fe_rank_adj,
+    x_rank_vars = x_rank_vars,
+    weight_col = weight_col,
+    wv_sandwich = if (!is.null(sandwich)) as.numeric(data[[sandwich]]) else NULL,
+    resid_treat_v = if (can_recenter || use_centering) as.numeric(data[[resid_treat]]) else NULL,
+    resid_outcome_v = if (can_recenter || use_centering) as.numeric(data[[resid_outcome]]) else NULL,
+    tau_v = if (can_recenter) as.numeric(data[[pred]]) else NULL,
+    v_v = if (need_v) as.numeric(data[[v]]) else NULL,
+    center_v = if (use_centering) as.logical(data[[center_col]]) else NULL,
+    use_centering = use_centering,
+    can_recenter = can_recenter,
+    recenter_binary = recenter_binary,
+    sample_weight_v = if (use_centering) {
+      if (!is.null(sample_weight)) as.numeric(data[[sample_weight]]) else rep(1.0, n)
+    } else NULL,
+    center_inv_v = center_inv_v
+  )
+
+  global[, relevant := 1L]
+  global[, sample := NULL]
+
+  list(
+    results = global, grid = NULL, global = NULL,
+    Xmeans = NULL, Xmeans_all = NULL, XSD = NULL
+  )
 }
 
 
