@@ -45,3 +45,5 @@ inst/doc
 newsims.rds
 *.rds
 R/.RDataTmp
+R/farbmachersims.R
+.Rproj.user/shared/notebooks/paths
