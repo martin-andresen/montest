@@ -2,3 +2,4 @@
 ^\.Rproj\.user$
 ^LICENSE\.md$
 ^README\.Rmd$
+usethis::use_build_ignore("sims")

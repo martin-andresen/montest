@@ -1,5 +1,7 @@
 1# montest (development version)
 
+* Added: `local` (default `TRUE`). With `local = FALSE`, the sample split and the local subgroup search (`forest_test()`/`CART_test()`) are skipped entirely and the estimates are computed globally within each margin cell (centered where the local test-side moment is), stored in `$results` and feeding `$minp`. `pool` still applies; `select`/`shrink`/`testtype` have no role; no causal forest is fit when `doubly.robust = FALSE`.
+* Changed: `$global` now uses the same centered (with-intercept) moment as the local test side for `doubly.robust = FALSE` rows, so it can differ slightly from before.
 * Initial CRAN submission.
 * Fixed: with fixed effects (`has_FE`) and a binary instrument, `Z.hat` is
   estimated as an FE mean plus a fitted FE-residual, an unconstrained

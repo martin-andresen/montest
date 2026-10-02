@@ -47,3 +47,6 @@ newsims.rds
 R/.RDataTmp
 R/farbmachersims.R
 .Rproj.user/shared/notebooks/paths
+.Rhistory
+.RData
+sims/farbmachersims.R

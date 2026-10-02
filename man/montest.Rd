@@ -42,6 +42,7 @@ montest(
   linearZ = FALSE,
   target = NULL,
   doubly.robust = NULL,
+  local = TRUE,
   cp = 0,
   maxrankcp = 10L,
   Rparameters = list(),
@@ -84,47 +85,49 @@ cross-fitting nuisance functions and, optionally, forest predictions. Set to
 
 \item{crossfit}{Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.}
 
-\item{stabilize.scores}{Logical, default TRUE; applies a finite-sample stabilization
-to the estimated instrument nuisance, using whichever correction is appropriate for
-the representation actually in use:
-\itemize{
-\item Continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE},
-or any binary instrument estimated \emph{with} fixed effects -- see \code{aipw.clip}):
-\code{Z.hat} is mean-shifted within each sample/margin group so its group-average
-residual is exactly zero, correcting finite-sample/cross-fitting bias in the
-conditional-mean estimate itself. There is no IPW/arm structure for a continuous
-instrument to self-normalize, so this additive correction is the only one available.
-\item Binary representation, estimated \emph{without} fixed effects: \code{Z.hat} is
-clipped to \code{[aipw.clip, 1-aipw.clip]} (as before), but is otherwise left alone --
-instead, the closed-form conditional variance \eqn{v(X)=e(X)(1-e(X))} used in the score
-is rescaled per row by a Hajek/self-normalized-IPW constant: \eqn{c_1=}
-mean(1/e(X)) over treated rows and \eqn{c_0=}mean(1/(1-e(X))) over control rows,
-each computed within the same sample/margin group, so that
-mean(1/(e(X)*c_1))=1 exactly among treated rows and mean(1/((1-e(X))*c_0))=1 exactly
-among control rows. This targets the IPW weight \eqn{Z/e(X)-(1-Z)/(1-e(X))} that the
-score actually uses, rather than \code{Z.hat} itself -- a multiplicative correction on
-the scale the score is built on, replacing what used to be an additive mean-shift of
-\code{Z.hat} for this representation. Not applied when \code{doubly.robust=FALSE} and
-\code{target="overlap"} (see \code{target}), since that path already uses each row's own
-empirical variance instead of the closed form, and needs \code{Z.hat} untouched to
-reproduce the classical FWL/OLS coefficient exactly.
-}}
-Both corrections are computed once, at whatever \code{sample}/\code{margins} level
-\code{stabilize.scores} operates on -- not separately within an adaptively-found
-leaf/subgroup nested inside that level, or within a "global" cell computed at a finer
-grouping. When \code{TRUE}, the FINAL (test-side and global) score average for AIPW
-(\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} redoes
-whichever correction applies -- the additive mean-shift, or the Hajek rescaling --
-using only that specific cell's own rows, the same finite-sample-bias correction
-\code{doubly.robust=FALSE & target="overlap"} already gets via its own (more thorough)
-centered/with-intercept construction (see \code{target}). This only re-corrects the
-propensity/IPW-weight term -- it does NOT re-estimate the causal forest's plug-in CATE
-prediction (\code{tau}) for that cell; if \code{tau}'s own average over exactly the rows
-selected into a subgroup carries local bias (e.g. from adaptive selection correlating
-which rows land there with their predicted effect), this does not correct for that.
-Never applied to the training-side adaptive search itself, only to the final evaluation,
-and never to cells that already use the \code{target="overlap" & doubly.robust=FALSE}
-centered path.}
+\item{stabilize.scores}{Logical, default TRUE; corrects finite-sample/cross-fitting
+  bias in the estimated instrument nuisance \code{Z.hat} by an additive mean-shift --
+  \code{Z.hat <- Z.hat + mean(Z - Z.hat)} within each sample/margin group, forcing the
+  group-average residual to exactly zero -- applied identically regardless of whether
+  \code{Z}'s representation is continuous (a genuinely multivalued instrument,
+  \code{linearZ=TRUE}, or any binary instrument estimated \emph{with} fixed effects) or
+  binary/closed-form (estimated \emph{without} fixed effects). \code{Z.hat} \emph{is} the
+  propensity \eqn{e(X)} for the binary representation, so the same shift corrects the same
+  underlying bias there; the closed-form conditional variance \eqn{v(X)=e(X)(1-e(X))} used
+  in the score is then computed fresh from the corrected \eqn{e(X)}, so it reflects the
+  correction automatically with no separate rescaling step. For the binary representation,
+  \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]} after the shift (as
+  before, since it must remain a valid probability -- see \code{aipw.clip}). Not applied
+  when \code{doubly.robust=FALSE} and \code{target="overlap"} (see \code{target}), since
+  that path already uses each row's own empirical variance instead of the closed form, and
+  needs \code{Z.hat} untouched to reproduce the classical FWL/OLS coefficient exactly.
+
+  (An earlier version of this correction instead left \code{Z.hat} unshifted for the binary
+  representation and rescaled \eqn{v(X)} multiplicatively by a Hajek/self-normalized-IPW
+  constant. That conflated two different roles: \eqn{v(X)} here is the semiparametric-
+  efficient AIPW/FWL score denominator -- the scale that makes the score's expectation equal
+  the causal estimand -- not an inverse-probability weight that itself needs to self-
+  normalize to 1. Rescaling only the score's denominator, with no matching adjustment to the
+  weight used when aggregating scores into the final statistic, is not a valid Hajek ratio;
+  it silently shrank the score's variance without correcting its mean under the null,
+  deflating the reported standard error and inflating the Type-I error rate. The additive
+  shift above targets the same finite-sample bias without changing the score's scale.)
+
+  This design-level shift is computed once, at whatever \code{sample}/\code{margins} level
+  \code{stabilize.scores} operates on -- not separately within an adaptively-found
+  leaf/subgroup nested inside that level, or within a "global" cell computed at a finer
+  grouping. When \code{TRUE}, the FINAL (test-side and global) score average for AIPW
+  (\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} redoes
+  the same additive shift using only that specific cell's own rows, the same finite-
+  sample-bias correction \code{doubly.robust=FALSE & target="overlap"} already gets via its
+  own (more thorough) centered/with-intercept construction (see \code{target}). This only
+  re-corrects the propensity/treatment-residual term -- it does NOT re-estimate the causal
+  forest's plug-in CATE prediction (\code{tau}) for that cell; if \code{tau}'s own average
+  over exactly the rows selected into a subgroup carries local bias (e.g. from adaptive
+  selection correlating which rows land there with their predicted effect), this does not
+  correct for that. Never applied to the training-side adaptive search itself, only to the
+  final evaluation, and never to cells that already use the \code{target="overlap" &
+  doubly.robust=FALSE} centered path.}
 
 \item{aipw.clip}{Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
 scores when augmented inverse-probability weighted scores are constructed and when stabilizing
@@ -132,8 +135,12 @@ binary-instrument scores (see \code{stabilize.scores}).
 Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
 binary instrument estimated with fixed effects), to floor the fitted conditional-variance nuisance \eqn{v(X)}
 at \code{aipw.clip} times a pooled variance scale. In both cases a structurally invalid value (a propensity
-outside \eqn{[0,1]}, or a variance below 0) triggers a hard error rather than being silently clipped, since
-that indicates nuisance misspecification; values merely close to the boundary are clipped with a warning.
+outside \eqn{[0,1]}, or a variance below 0) is clipped to \code{[aipw.clip, 1-aipw.clip]} (or floored at
+\code{aipw.clip} for a variance) and triggers its own warning distinguishing it from an ordinary near-boundary
+clip, since a value actually outside the valid range indicates nuisance misspecification for that row
+specifically -- rather than stopping outright, which would discard every other row's valid result along with
+it. Values merely close to the boundary (already inside the valid range) are clipped with a separate,
+less severe warning.
 Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
 additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
 the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.}
@@ -262,6 +269,15 @@ function's estimation noise, hence the conditional default above. Passing \code{
 overrides this regardless of \code{parametric}; see \code{target} for how the two interact when \code{doubly.robust=FALSE}.
 Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
 \code{"MW"}, which does not use this scoring machinery.}
+
+\item{local}{Logical, default \code{TRUE}. If \code{FALSE}, the local (subgroup) search is skipped entirely:
+there is no sample split (\code{sample} is 1 for all observations), no \code{forest_test}/CART search, and the
+estimates are computed globally within each margin cell, using the same centering / re-centering as the local
+test-side moment. These global estimates are stored in \code{$results} (with \code{train = FALSE}) and feed
+\code{$minp}; \code{$global}, \code{$grid}, \code{$Xmeans}, \code{$shares} are \code{NULL}. \code{pool} still works
+(\code{"sample"} is moot), \code{select}, \code{shrink}, \code{testtype}, \code{screen}, \code{gridpoints} and the CART
+tuning parameters have no role. Outer cross-fitting is unavailable, so nuisances use out-of-bag predictions (or
+\code{inner.folds}). With \code{doubly.robust = FALSE} no causal forest is fit at all.}
 
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}

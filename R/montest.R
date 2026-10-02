@@ -210,6 +210,8 @@
 #' @param Zparameters,Yparameters,Qparameters,Cparameters,Rparameters Named lists of
 #'   additional arguments passed to the underlying estimation routines for different
 #'   nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
+#'   Unless \code{num.trees} is supplied, the nuisance forests (\code{Zparameters}, \code{Yparameters},
+#'   \code{Qparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.
 #' @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
 #'
 #' @details
@@ -1302,7 +1304,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     foldname = foldname,
     crossfit = crossfit,
     crossfit_label = "Z",
-    forest_opts = Zparameters,
+    forest_opts = utils::modifyList(list(num.trees = 500L), Zparameters),
     fixest_opts = Zparameters,
     x_names = X_names_reuse_for_Z,
     x_prefix = "__xz",
@@ -1416,7 +1418,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       foldname = foldname,
       crossfit = crossfit,
       crossfit_label = "Z",
-      forest_opts = Zparameters,
+      forest_opts = utils::modifyList(list(num.trees = 500L), Zparameters),
       fixest_opts = Zparameters,
       x_names = X_names_reuse_for_varZ,
       x_prefix = "__xzv",
@@ -1461,7 +1463,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       foldname = foldname,
       crossfit = crossfit,
       crossfit_label = "Y",
-      forest_opts = Yparameters,
+      forest_opts = utils::modifyList(list(num.trees = 500L), Yparameters),
       fixest_opts = Yparameters,
       x_names = NULL,
       x_prefix = "__xy",
@@ -2343,7 +2345,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       crossfit = crossfit,
       crossfit_label = "Q",
 
-      forest_opts = Qparameters,
+      forest_opts = utils::modifyList(list(num.trees = 500L), Qparameters),
       fixest_opts = Qparameters,
 
       ## Reuse X_forest_info's FE-residualized columns when X_expr_Q is the
@@ -2386,7 +2388,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       crossfit = crossfit,
       crossfit_label = "Q",
 
-      forest_opts = Qparameters,
+      forest_opts = utils::modifyList(list(num.trees = 500L), Qparameters),
       fixest_opts = Qparameters,
 
       x_names = x_names_yres,
@@ -2522,7 +2524,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       weight_name = weight,
       cluster_name = cluster,
 
-      forest_opts = Cparameters,
+      forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
       shrink = (shrink > 0),
       verbose = FALSE,
@@ -2554,7 +2556,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       weight_name = weight,
       cluster_name = cluster,
 
-      forest_opts = Cparameters,
+      forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
       shrink = (shrink > 0),
       verbose = FALSE,
@@ -2583,7 +2585,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
         margins = margins,
         weight_name = weight,
         cluster_name = cluster,
-        forest_opts = Cparameters,
+        forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
         shrink = (shrink > 0)
       )
     }
@@ -2768,6 +2770,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   }
 
   time=rbind(time,"Find promising subset and test"=proc.time())
+  if (!local) rownames(time)[nrow(time)] <- "Construct test results"
 
 
   ################ 7: Multiple hypothesis testing and output #####################
