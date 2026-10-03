@@ -13,8 +13,9 @@
 #'     (D2, Y) tuples in each set and \code{$Ylookup} of the fit decodes them. Requires Y.}
 #'   \item{\code{"FSD"}}{The first stage difference condition
 #'     \eqn{E[D1|Z=1]-E[D1|Z=0] \ge E[D2|Z=1]-E[D2|Z=0]}, tested as the simple first stage condition for the
-#'     constructed treatment D1 - D2, i.e. \code{montest(~ X | FE | D1 - D2 ~ Z, condition = "simple")}.
-#'     Rejected unless D1 and D2 are both binary (and D2 <= D1, so that D1 - D2 is a binary treatment).}
+#'     constructed treatment D1 - D2 (shifted by 1 and scored linearly), i.e.
+#'     \code{montest(~ X | FE | D1 - D2 + 1 ~ Z, condition = "simple", linearD = TRUE)}. D2 need not be
+#'     nested in D1. Rejected unless D1 and D2 are both binary.}
 #' }
 #'
 #' @param fml A formula \code{Y ~ X | FE | D1 + D2 ~ Z}. Y may be omitted (\code{~ X | D1 + D2 ~ Z}) unless
@@ -37,8 +38,8 @@
 seqtest <- function(fml, data, condition = NULL, ...) {
   mc <- match.call()
   dots <- list(...)
-  if (any(c("condition", "fml") %in% names(dots))) {
-    stop("`fml` and `condition` are handled by seqtest() itself.", call. = FALSE)
+  if (any(c("condition", "fml", "linearD") %in% names(dots))) {
+    stop("`fml`, `condition` and `linearD` are handled by seqtest() itself.", call. = FALSE)
   }
 
   data <- data.table::as.data.table(data.table::copy(data))
@@ -100,19 +101,20 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       f <- make_fml(c(D2, Y), as.name(D1))
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = data, condition = "KR"), dots))
     } else {
-      ## FSD: recode both to {0,1} (order preserving), require nesting D2 <= D1
+      ## FSD: recode both to {0,1} (order preserving). D1 - D2 takes values in
+      ## {-1,0,1} (D2 need not be nested in D1) and is scored linearly, so the
+      ## first stage of D1 - D2 is exactly the difference in first stages. The
+      ## +1 shift keeps the support at {0,1,2}: if a sample only contains two of
+      ## the three values, montest's downgrade to a binary treatment then sees
+      ## {0,1} instead of {-1,0}.
       d1 <- as.integer(data[[D1]] == max(data[[D1]], na.rm = TRUE))
       d2 <- as.integer(data[[D2]] == max(data[[D2]], na.rm = TRUE))
-      if (any(d2 > d1, na.rm = TRUE)) {
-        stop("Condition FSD requires D2 <= D1 for everyone (D2 = 1 implies D1 = 1), ",
-             "so that D1 - D2 is a binary treatment.", call. = FALSE)
-      }
       dd <- "Dseq_diff"
       while (dd %in% names(data)) dd <- paste0(dd, "_")
       dat <- data.table::copy(data)
-      dat[, (dd) := d1 - d2]
+      dat[, (dd) := d1 - d2 + 1L]
       f <- make_fml(NULL, as.name(dd))
-      fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat, condition = "simple"), dots))
+      fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat, condition = "simple", linearD = TRUE), dots))
     }
   }
 
