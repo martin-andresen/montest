@@ -18,9 +18,13 @@ Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D
 \item{...}{Further arguments passed unchanged to \code{\link{montest}}.}
 }
 \value{
-An object of class \code{"seqtest"}: a list with \code{fits} (one \code{montest} result per
-  condition, named by condition), \code{minp} (a matrix of minimum p-values, one row per condition)
-  and \code{call}. No correction is made across conditions.
+An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
+  that condition plus \code{condition} and \code{call}. With several conditions, one full
+  \code{montest} object per condition (named \code{KRD}, \code{KRDY}, \code{FSD}, each with its own
+  \code{minp}), plus a top-level \code{minp} (a single named vector) in which the test-sample
+  p-values of all cells of all conditions are corrected as one family (Holm, Hochberg, BH, BY and Cauchy
+  combination), \code{condition} and \code{call}. Pooling or adaptive selection across conditions
+  (\code{pool}/\code{select = "condition"}) is not available; each condition is fit separately.
 }
 \description{
 \code{seqtest()} is a thin wrapper around \code{\link{montest}} for an instrument Z and two

@@ -24,9 +24,13 @@
 #'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary.
 #' @param ... Further arguments passed unchanged to \code{\link{montest}}.
 #'
-#' @return An object of class \code{"seqtest"}: a list with \code{fits} (one \code{montest} result per
-#'   condition, named by condition), \code{minp} (a matrix of minimum p-values, one row per condition)
-#'   and \code{call}. No correction is made across conditions.
+#' @return An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
+#'   that condition plus \code{condition} and \code{call}. With several conditions, one full
+#'   \code{montest} object per condition (named \code{KRD}, \code{KRDY}, \code{FSD}, each with its own
+#'   \code{minp}), plus a top-level \code{minp} (a single named vector) in which the test-sample
+#'   p-values of all cells of all conditions are corrected as one family (Holm, Hochberg, BH, BY and Cauchy
+#'   combination), \code{condition} and \code{call}. Pooling or adaptive selection across conditions
+#'   (\code{pool}/\code{select = "condition"}) is not available; each condition is fit separately.
 #'
 #' @seealso montest
 #' @export
@@ -112,13 +116,43 @@ seqtest <- function(fml, data, condition = NULL, ...) {
     }
   }
 
-  minp <- do.call(rbind, lapply(fits, function(x) x$minp))
-  structure(list(fits = fits, minp = minp, call = mc), class = "seqtest")
+  ## One condition: the montest object itself, plus the call.
+  if (length(fits) == 1L) {
+    fit <- fits[[1L]]
+    names(fit)[names(fit) == "call"] <- "montest_call"
+    return(structure(c(fit, list(condition = condition, call = mc)), class = "seqtest"))
+  }
+
+  ## Several conditions: one full montest object per condition, and a top-level
+  ## minp from correcting the test-sample p-values of ALL cells of ALL conditions
+  ## as one family (same recipe as montest's own minp). Holm, Hochberg, BH and BY
+  ## are valid under the dependence between conditions (same data), as is CCT.
+  praw <- unlist(lapply(fits, function(x) x$results[train == FALSE, p.raw]), use.names = FALSE)
+  praw <- replace(praw, is.na(praw), 1)
+  minp <- c(
+    p.raw = min(praw),
+    vapply(c(holm = "holm", hochberg = "hochberg", BH = "BH", BY = "BY"),
+           function(m) min(stats::p.adjust(praw, method = m)), numeric(1L)),
+    p.CCT = cct_pvalue(praw)
+  )
+  names(minp)[2:5] <- paste0("p.", c("holm", "hochberg", "BH", "BY"))
+
+  structure(c(fits, list(minp = minp, condition = condition, call = mc)), class = "seqtest")
 }
 
 #' @export
 print.seqtest <- function(x, ...) {
-  cat("seqtest: minimum p-values by condition (no correction across conditions)\n")
-  print(signif(x$minp, 4))
+  if (is.null(x$KRD) && is.null(x$KRDY) && is.null(x$FSD)) {
+    cat("seqtest, condition", x$condition, ": minimum p-values\n")
+    print(signif(x$minp, 4))
+  } else {
+    cat("seqtest, conditions", paste(x$condition, collapse = ", "),
+        ": minimum p-values corrected across all cells of all conditions\n")
+    print(signif(x$minp, 4))
+    for (cn in x$condition) {
+      cat("\n", cn, ":\n", sep = "")
+      print(signif(x[[cn]]$minp, 4))
+    }
+  }
   invisible(x)
 }
