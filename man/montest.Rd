@@ -292,7 +292,9 @@ described under \code{aipw.clip}.}
 
 \item{Zparameters, Yparameters, Qparameters, Cparameters, Rparameters}{Named lists of
 additional arguments passed to the underlying estimation routines for different
-nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.}
+nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
+Unless \code{num.trees} is supplied, the nuisance forests (\code{Zparameters}, \code{Yparameters},
+\code{Qparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.}
 }
 \value{
 A named list:

@@ -1851,8 +1851,13 @@ validate_iv <- function(fml, data) {
 
   Y <- if (has_lhs) all.vars(lhs) else NULL
 
-  if (has_lhs && length(Y) != 1L) {
-    errors <- c(errors, "If supplied, the outcome side must contain exactly one variable.")
+  ## Several outcomes may be given as Y1 + Y2 (plain variable names only).
+  if (has_lhs) {
+    lhs_terms <- attr(stats::terms(stats::as.formula(call("~", lhs))), "term.labels")
+    if (length(Y) < 1L || !identical(sort(unique(lhs_terms)), sort(unique(Y))) ||
+        anyDuplicated(Y)) {
+      errors <- c(errors, "If supplied, the outcome side must be one variable or several plain variables joined by +, e.g. Y1 + Y2.")
+    }
   }
 
   if (is.null(iv)) {

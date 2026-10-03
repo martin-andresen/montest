@@ -375,7 +375,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ##Check formula and validate
   v <- validate_iv(fml, data)
 
-  Y <- if (is.null(v$Y)) NULL else as.character(v$Y)[1L]
+  Y <- if (is.null(v$Y)) NULL else as.character(v$Y)
   D <- as.character(v$D)[1L]
   Z <- as.character(v$Z)[1L]
   X_forest <- v$X
@@ -1047,16 +1047,43 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     K=Inf;Zbincol=NULL
   }
 
+  Ybincol <- NULL
+  Ylookup <- NULL
+  Ylabels <- NULL
   if ("KR" %in% condition) { ##bin outcome(s)
-    data <- binarize_var(
-      data    = data,
-      var     = Y,
-      ngroups = Ysubsets,
-      gridtype = gridtypeY,
-      wvar    = wvar,
-      newvar = paste0(Y, ".bin")
-    )
-    Ybincol=paste0(Y,".bin")
+    Ybincols <- paste0(Y, ".bin")
+    for (k in seq_along(Y)) {
+      data <- binarize_var(
+        data    = data,
+        var     = Y[k],
+        ngroups = Ysubsets,
+        gridtype = gridtypeY,
+        wvar    = wvar,
+        newvar = Ybincols[k]
+      )
+    }
+
+    if (length(Y) == 1L) {
+      Ybincol <- Ybincols
+    } else {
+      ## Several outcomes: KR's sets A range over the JOINT support of the
+      ## binned outcomes, so each observed combination gets one integer code
+      ## (stored in a single column used exactly like a single binned Y).
+      ## Ylookup maps code -> component values; Ylabels maps code -> printable
+      ## tuple, e.g. "(D2=0,Y=1)", used for the yval labels of the A-sets.
+      Ybincol <- paste0(paste(Y, collapse = "_"), ".bin")
+      Ylookup <- unique(data[, Ybincols, with = FALSE])
+      data.table::setorderv(Ylookup, Ybincols)
+      Ylookup[, code := seq_len(.N) - 1L]
+      data[Ylookup, (Ybincol) := i.code, on = Ybincols]
+      Ylabels <- stats::setNames(
+        vapply(seq_len(nrow(Ylookup)), function(r) {
+          paste0("(", paste0(Y, "=", unlist(Ylookup[r, Ybincols, with = FALSE]),
+                             collapse = ","), ")")
+        }, character(1L)),
+        as.character(Ylookup$code)
+      )
+    }
     Ysup=sort(unique(data[,get(Ybincol)]));L=length(Ysup)
   }
 
@@ -1459,35 +1486,40 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
   if (any(condition %in% c("MW", "AHS")) && isTRUE(Y.res)) {
 
+    ## With several outcomes each Y is residualized separately; all residuals
+    ## then enter the forest/Q.hat as regressors.
     y_name_rhs <- paste0(Y, ".res")
-    yhat <- paste0(Y, ".hat")
 
-    Y_res_info <- estimate_conditional_mean(
-      DT = data,
-      y_name = Y,
-      x_expr = X_expr_Q,
-      fe_expr = FE_expr,
-      out_hat = yhat,
-      out_resid = y_name_rhs,
-      by = margins,
-      sample_var = "sample",
-      weight = weight,
-      cluster = cluster,
-      parametric = parametric,
-      foldname = foldname,
-      crossfit = crossfit,
-      crossfit_label = "Y",
-      forest_opts = utils::modifyList(list(num.trees = 500L), Yparameters),
-      fixest_opts = Yparameters,
-      x_names = NULL,
-      x_prefix = "__xy",
-      keep_x = FALSE,
-      return_residual = TRUE,
-      partial_out_y_fe = TRUE
-    )
+    for (k in seq_along(Y)) {
+      yhat <- paste0(Y[k], ".hat")
 
-    ## Optional cleanup: keep Y.res, drop nuisance fitted value.
-    data[, (yhat) := NULL]
+      Y_res_info <- estimate_conditional_mean(
+        DT = data,
+        y_name = Y[k],
+        x_expr = X_expr_Q,
+        fe_expr = FE_expr,
+        out_hat = yhat,
+        out_resid = y_name_rhs[k],
+        by = margins,
+        sample_var = "sample",
+        weight = weight,
+        cluster = cluster,
+        parametric = parametric,
+        foldname = foldname,
+        crossfit = crossfit,
+        crossfit_label = "Y",
+        forest_opts = utils::modifyList(list(num.trees = 500L), Yparameters),
+        fixest_opts = Yparameters,
+        x_names = NULL,
+        x_prefix = "__xy",
+        keep_x = FALSE,
+        return_residual = TRUE,
+        partial_out_y_fe = TRUE
+      )
+
+      ## Optional cleanup: keep Y.res, drop nuisance fitted value.
+      data[, (yhat) := NULL]
+    }
 
   } else {
     y_name_rhs <- Y
@@ -1946,7 +1978,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       if (length(A_list)) {
         A_specs[[as.character(dv)]] <- data.table::rbindlist(
           lapply(A_list, function(a) {
-            lbl <- paste0("{", paste(a, collapse = ","), "}")
+            lbl <- paste0("{", paste(if (is.null(Ylabels)) a else Ylabels[as.character(a)], collapse = ","), "}")
             data.table::data.table(
               dval = dv,
               yval = lbl,
@@ -2125,7 +2157,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   # --------------------------------------------------
 
   Dcol <- Dbincol
-  Ycol <- if (!is.null(Y)) paste0(Y, ".bin") else NULL
+  Ycol <- Ybincol
   Zcol <- Z
 
   data[, Q := NA_real_]
@@ -2376,7 +2408,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   }
 
   if (length(i_yres)) {
-    X_expr_Q_yres <- append_to_x_expr(X_expr_Q, y_name_rhs)
+    X_expr_Q_yres <- Reduce(append_to_x_expr, y_name_rhs, X_expr_Q)
 
     ## If parametric = FALSE and you already have X_Q, you can pass
     ## c(X_Q, y_name_rhs). If not, let wrapper build from X_expr_Q_yres.
@@ -2832,7 +2864,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     time = time,
     obs = obs,
     dropped = c(fe_singletons = n_dropped_singletons, novar_Z = n_dropped_novar_Z),
-    margins = margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE]
+    margins = margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE],
+    Ylookup = Ylookup
   ))
   return(out)
 }
