@@ -1012,6 +1012,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       newvar=paste0(D,".bin")
     )
     Dbincol=paste0(D,".bin")
+    ## A two-valued D coded other than 0/1 (e.g. 1/2, or c(-1, 1)) is recoded
+    ## to {0, 1} preserving order: the Q construction and the one-sided
+    ## screen assume a binary bin column is coded 0/1 (D_is_binary__ below).
+    Dsup_raw <- sort(unique(stats::na.omit(data[[Dbincol]])))
+    if (length(Dsup_raw) == 2L && !all(Dsup_raw == c(0, 1))) {
+      data[, (Dbincol) := as.integer(get(Dbincol) == Dsup_raw[2L])]
+    }
     Dsup=sort(unique(data[,get(Dbincol)]));J=length(Dsup)
   } else {
     J=Inf;Dbincol=NULL
