@@ -1035,6 +1035,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       newvar=paste0(Z,".bin")
     )
     Zbincol=paste0(Z,".bin")
+    ## Same as for D: recode a two-valued Z to {0, 1}, preserving order. The
+    ## binary-Z branch below copies Z.bin into Z, and the MW scores and the
+    ## propensity fit assume 0/1.
+    Zsup_raw <- sort(unique(stats::na.omit(data[[Zbincol]])))
+    if (length(Zsup_raw) == 2L && !all(Zsup_raw == c(0, 1))) {
+      data[, (Zbincol) := as.integer(get(Zbincol) == Zsup_raw[2L])]
+    }
     Zsup=sort(unique(data[,get(Zbincol)]));K=length(Zsup)
   } else {
     K=Inf;Zbincol=NULL
