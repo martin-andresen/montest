@@ -3,7 +3,7 @@
 #' \code{seqtest()} is a thin wrapper around \code{\link{montest}} for an instrument Z and two
 #' (sequential) treatments D1 and D2, written \code{Y ~ X | FE | D1 + D2 ~ Z}. It parses the formula,
 #' translates each requested condition into the appropriate \code{montest()} call and passes
-#' all other arguments straight through. The three conditions are
+#' all other arguments straight through. The conditions are
 #' \describe{
 #'   \item{\code{"KRD"}}{The Kwan-Roth conditions with D1 as the treatment and D2 as the only outcome,
 #'     i.e. \code{montest(D2 ~ X | FE | D1 ~ Z, condition = "KR")}.}
@@ -16,18 +16,27 @@
 #'     constructed treatment D1 - D2 (shifted by 1 and scored linearly), i.e.
 #'     \code{montest(~ X | FE | D1 - D2 + 1 ~ Z, condition = "simple", linearD = TRUE)}. D2 need not be
 #'     nested in D1. Rejected unless D1 and D2 are both binary.}
+#'   \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
+#'     i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
+#'     binary and \code{fml} may not contain fixed effects; D1 must be binary (an error otherwise).}
+#'   \item{\code{"MWDY"}}{As \code{"MWD"} with (D2, Y) as outcomes, i.e.
+#'     \code{montest(D2 + Y ~ X | D1 ~ Z, condition = "MW")}; each outcome is residualized separately (see
+#'     \code{Y.res}) and all enter the forest. Requires Y.}
 #' }
 #'
 #' @param fml A formula \code{Y ~ X | FE | D1 + D2 ~ Z}. Y may be omitted (\code{~ X | D1 + D2 ~ Z}) unless
 #'   \code{"KRDY"} is requested, and may contain several variables joined by \code{+}.
 #' @param data A \code{data.frame} or \code{data.table}.
-#' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"FSD"} (or \code{"all"}).
-#'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary.
-#' @param ... Further arguments passed unchanged to \code{\link{montest}}.
+#' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"FSD"}, \code{"MWD"},
+#'   \code{"MWDY"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+#'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
+#'   the MW conditions are never run by default.
+#' @param ... Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
+#'   the margins sequentially).
 #'
 #' @return An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
 #'   that condition plus \code{condition} and \code{call}. With several conditions, one full
-#'   \code{montest} object per condition (named \code{KRD}, \code{KRDY}, \code{FSD}, each with its own
+#'   \code{montest} object per condition (named by condition, each with its own
 #'   \code{minp}), plus a top-level \code{minp} (a single named vector) in which the test-sample
 #'   p-values of all cells of all conditions are corrected as one family (Holm, Hochberg, BH, BY and Cauchy
 #'   combination), \code{condition} and \code{call}. Pooling or adaptive selection across conditions
@@ -66,15 +75,21 @@ seqtest <- function(fml, data, condition = NULL, ...) {
   fsd_ok <- two_valued(data[[D1]]) && two_valued(data[[D2]])
 
   ################ conditions ################
-  allowed <- c("KRD", "KRDY", "FSD")
+  allowed <- c("KRD", "KRDY", "FSD", "MWD", "MWDY")
   if (is.null(condition)) {
     condition <- c("KRD", if (!is.null(Y)) "KRDY", if (fsd_ok) "FSD")
   } else {
     condition <- match.arg(condition, c(allowed, "all"), several.ok = TRUE)
     if ("all" %in% condition) condition <- allowed
   }
-  if ("KRDY" %in% condition && is.null(Y)) {
-    stop("Condition KRDY requires an outcome Y on the left hand side of `fml`.", call. = FALSE)
+  for (cn in intersect(c("KRDY", "MWDY"), condition)) {
+    if (is.null(Y)) {
+      stop("Condition ", cn, " requires an outcome Y on the left hand side of `fml`.", call. = FALSE)
+    }
+  }
+  if (any(c("MWD", "MWDY") %in% condition) && !two_valued(data[[D1]])) {
+    stop("Conditions MWD and MWDY require a binary D1 (", D1, "), but it has ",
+         data.table::uniqueN(data[[D1]], na.rm = TRUE), " distinct values.", call. = FALSE)
   }
   if ("FSD" %in% condition && !fsd_ok) {
     stop("Condition FSD requires both D1 (", D1, ") and D2 (", D2, ") to be binary.", call. = FALSE)
@@ -94,12 +109,11 @@ seqtest <- function(fml, data, condition = NULL, ...) {
 
   fits <- list()
   for (cond in condition) {
-    if (cond == "KRD") {
-      f <- make_fml(D2, as.name(D1))
-      fits[[cond]] <- do.call(montest, c(list(fml = f, data = data, condition = "KR"), dots))
-    } else if (cond == "KRDY") {
-      f <- make_fml(c(D2, Y), as.name(D1))
-      fits[[cond]] <- do.call(montest, c(list(fml = f, data = data, condition = "KR"), dots))
+    if (cond %in% c("KRD", "KRDY", "MWD", "MWDY")) {
+      ## D2 (and Y for the *DY versions) as outcomes, D1 as the treatment
+      f <- make_fml(c(D2, if (grepl("Y$", cond)) Y), as.name(D1))
+      fits[[cond]] <- do.call(montest, c(list(fml = f, data = data,
+                                              condition = substr(cond, 1L, 2L)), dots))
     } else {
       ## FSD: recode both to {0,1} (order preserving). D1 - D2 takes values in
       ## {-1,0,1} (D2 need not be nested in D1) and is scored linearly, so the
@@ -144,7 +158,7 @@ seqtest <- function(fml, data, condition = NULL, ...) {
 
 #' @export
 print.seqtest <- function(x, ...) {
-  if (is.null(x$KRD) && is.null(x$KRDY) && is.null(x$FSD)) {
+  if (length(x$condition) == 1L) {
     cat("seqtest, condition", x$condition, ": minimum p-values\n")
     print(signif(x$minp, 4))
   } else {

@@ -12,15 +12,18 @@ seqtest(fml, data, condition = NULL, ...)
 
 \item{data}{A \code{data.frame} or \code{data.table}.}
 
-\item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"FSD"} (or \code{"all"}).
-Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary.}
+\item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"FSD"}, \code{"MWD"},
+\code{"MWDY"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
+the MW conditions are never run by default.}
 
-\item{...}{Further arguments passed unchanged to \code{\link{montest}}.}
+\item{...}{Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
+the margins sequentially).}
 }
 \value{
 An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
   that condition plus \code{condition} and \code{call}. With several conditions, one full
-  \code{montest} object per condition (named \code{KRD}, \code{KRDY}, \code{FSD}, each with its own
+  \code{montest} object per condition (named by condition, each with its own
   \code{minp}), plus a top-level \code{minp} (a single named vector) in which the test-sample
   p-values of all cells of all conditions are corrected as one family (Holm, Hochberg, BH, BY and Cauchy
   combination), \code{condition} and \code{call}. Pooling or adaptive selection across conditions
@@ -30,7 +33,7 @@ An object of class \code{"seqtest"}. With one condition, the full \code{montest}
 \code{seqtest()} is a thin wrapper around \code{\link{montest}} for an instrument Z and two
 (sequential) treatments D1 and D2, written \code{Y ~ X | FE | D1 + D2 ~ Z}. It parses the formula,
 translates each requested condition into the appropriate \code{montest()} call and passes
-all other arguments straight through. The three conditions are
+all other arguments straight through. The conditions are
 \describe{
   \item{\code{"KRD"}}{The Kwan-Roth conditions with D1 as the treatment and D2 as the only outcome,
     i.e. \code{montest(D2 ~ X | FE | D1 ~ Z, condition = "KR")}.}
@@ -40,8 +43,15 @@ all other arguments straight through. The three conditions are
     (D2, Y) tuples in each set and \code{$Ylookup} of the fit decodes them. Requires Y.}
   \item{\code{"FSD"}}{The first stage difference condition
     \eqn{E[D1|Z=1]-E[D1|Z=0] \ge E[D2|Z=1]-E[D2|Z=0]}, tested as the simple first stage condition for the
-    constructed treatment D1 - D2, i.e. \code{montest(~ X | FE | D1 - D2 ~ Z, condition = "simple")}.
-    Rejected unless D1 and D2 are both binary (and D2 <= D1, so that D1 - D2 is a binary treatment).}
+    constructed treatment D1 - D2 (shifted by 1 and scored linearly), i.e.
+    \code{montest(~ X | FE | D1 - D2 + 1 ~ Z, condition = "simple", linearD = TRUE)}. D2 need not be
+    nested in D1. Rejected unless D1 and D2 are both binary.}
+  \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
+    i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
+    binary and \code{fml} may not contain fixed effects; D1 must be binary (an error otherwise).}
+  \item{\code{"MWDY"}}{As \code{"MWD"} with (D2, Y) as outcomes, i.e.
+    \code{montest(D2 + Y ~ X | D1 ~ Z, condition = "MW")}; each outcome is residualized separately (see
+    \code{Y.res}) and all enter the forest. Requires Y.}
 }
 }
 \seealso{

@@ -43,6 +43,8 @@ montest(
   target = NULL,
   doubly.robust = NULL,
   local = TRUE,
+  stack = TRUE,
+  progress = interactive(),
   cp = 0,
   maxrankcp = 10L,
   Rparameters = list(),
@@ -279,6 +281,20 @@ test-side moment. These global estimates are stored in \code{$results} (with \co
 tuning parameters have no role. Outer cross-fitting is unavailable, so nuisances use out-of-bag predictions (or
 \code{inner.folds}). With \code{doubly.robust = FALSE} no causal forest is fit at all.}
 
+\item{stack}{Logical, default \code{TRUE}. If \code{TRUE} the margin index (condition, dval, yval, equation) is
+crossed with the data and everything is estimated on the stacked data. If \code{FALSE}, the tests are run
+sequentially, one block of the margin index at a time (still stacked across \code{zmargin}), and all train and
+test estimates are appended. Afterwards the selection rule given by \code{select} and \code{screen} is applied
+jointly over all blocks on the training side, and test-sample rows that were not selected are removed, so that
+only pre-selected estimates are reported. This uses much less memory with many margins. With
+\code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} and \code{"sample"} (the default, and
+\code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
+\code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
+because the random number stream differs.}
+
+\item{progress}{Logical, default \code{interactive()}. Show a progress bar over the blocks when
+\code{stack = FALSE}.}
+
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}
 
@@ -363,7 +379,8 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   With a binary treatment and instrument, these conditions collapse to the conditions from Balke and Pearl (1997). Outcome variable Y must be specified.
   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
-  There are a total of (J-1)(K-1) such conditions.
+  This is only allowed for a binary treatment (D with at most 2 support points in the data); an error is
+  thrown otherwise. There are a total of (K-1) such conditions.
   \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
   and exclusion conditional on instrument validity. This is only allowed for a binary treatment and a genuinely
   binary instrument (Z with at most 2 support points in the data -- an arbitrary margin/threshold cut of a

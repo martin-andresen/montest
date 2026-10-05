@@ -179,6 +179,140 @@ shrink_te_crossfit <- function(data,
 
 
 
+## CART choice among candidate leaves of one choice group (shared by CART_test() and the
+## stack = FALSE post-hoc selection). Extracted unchanged from CART_test().
+cart_choose_group_selection <- function(dt_grp, screen, alpha) {
+  dtf <- dt_grp[is.finite(t)]
+
+  empty_out <- data.table::data.table(
+    best_fit_id = NA_integer_,
+    best_train_s = NA_integer_,
+    sel_leaves = list(integer())
+  )
+
+  if (nrow(dtf) == 0L) return(empty_out)
+
+  if (screen == "minimum") {
+    j <- which.min(dtf$t)
+    return(data.table::data.table(
+      best_fit_id = as.integer(dtf$fit_id[j]),
+      best_train_s = as.integer(dtf$train_s[j]),
+      sel_leaves = list(as.integer(dtf$leaf[j]))
+    ))
+  }
+
+  if (screen == "stepdown") {
+    data.table::setorder(dtf, t)
+    p <- stats::pnorm(dtf$t)
+
+    m_keep <- 1L
+
+    if (length(p) >= 2L) {
+      for (m in 2L:length(p)) {
+        holm_ok <- all(p[seq_len(m)] <= alpha / rev(seq_len(m)))
+        if (!holm_ok) break
+        m_keep <- m
+      }
+    }
+
+    keep <- dtf[seq_len(m_keep)]
+
+    return(keep[, .(
+      sel_leaves = list(as.integer(leaf))
+    ), by = .(
+      best_fit_id = fit_id,
+      best_train_s = train_s
+    )])
+  }
+
+  if (screen == "none") {
+    j <- which.min(dtf$t)
+    bf <- as.integer(dtf$fit_id[j])
+    bt <- as.integer(dtf$train_s[j])
+    return(data.table::data.table(
+      best_fit_id = bf,
+      best_train_s = bt,
+      sel_leaves = list(as.integer(dtf[fit_id == bf & train_s == bt, leaf]))
+    ))
+  }
+
+  if (screen == "negative") {
+    thr <- stats::qnorm(alpha / nrow(dtf))
+    keep <- dtf[t <= thr]
+    if (nrow(keep) == 0L) {
+      j <- which.min(dtf$t)
+      return(data.table::data.table(
+        best_fit_id = as.integer(dtf$fit_id[j]),
+        best_train_s = as.integer(dtf$train_s[j]),
+        sel_leaves = list(as.integer(dtf$leaf[j]))
+      ))
+    }
+
+    j <- which.min(keep$t)
+    bf <- as.integer(keep$fit_id[j])
+    bt <- as.integer(keep$train_s[j])
+    return(data.table::data.table(
+      best_fit_id = bf,
+      best_train_s = bt,
+      sel_leaves = list(as.integer(keep[fit_id == bf & train_s == bt, leaf]))
+    ))
+  }
+
+  if (screen == "nonpositive") {
+    thr <- stats::qnorm(1 - alpha / nrow(dtf))
+    keep <- dtf[t < thr]
+    if (nrow(keep) == 0L) {
+      j <- which.min(dtf$t)
+      return(data.table::data.table(
+        best_fit_id = as.integer(dtf$fit_id[j]),
+        best_train_s = as.integer(dtf$train_s[j]),
+        sel_leaves = list(as.integer(dtf$leaf[j]))
+      ))
+    }
+
+    j <- which.min(keep$t)
+    bf <- as.integer(keep$fit_id[j])
+    bt <- as.integer(keep$train_s[j])
+    return(data.table::data.table(
+      best_fit_id = bf,
+      best_train_s = bt,
+      sel_leaves = list(as.integer(keep[fit_id == bf & train_s == bt, leaf]))
+    ))
+  }
+
+  if (screen == "fgk_relevant") {
+    if ("fgk_keep" %in% names(dtf)) {
+      keep <- dtf[fgk_keep == TRUE]
+
+      if (nrow(keep) > 0L) {
+        return(keep[, .(
+          sel_leaves = list(as.integer(leaf))
+        ), by = .(
+          best_fit_id = fit_id,
+          best_train_s = train_s
+        )])
+      }
+    }
+
+    ## Fallback only within the final choice group.
+    ## Therefore if sample/yval/dval are in select, this can become one
+    ## global fallback instead of one fallback per local tree.
+    j <- which.min(dtf$t)
+    data.table::data.table(
+      best_fit_id = as.integer(dtf$fit_id[j]),
+      best_train_s = as.integer(dtf$train_s[j]),
+      sel_leaves = list(as.integer(dtf$leaf[j]))
+    )
+  }
+
+  j <- which.min(dtf$t)
+  data.table::data.table(
+    best_fit_id = as.integer(dtf$fit_id[j]),
+    best_train_s = as.integer(dtf$train_s[j]),
+    sel_leaves = list(as.integer(dtf$leaf[j]))
+  )
+}
+
 CART_test <- function(
     data,
     sample  = "sample",
@@ -209,7 +343,8 @@ CART_test <- function(
     recenter_propensity = FALSE,
     recenter_binary = FALSE,
     tau = NULL,
-    v = NULL
+    v = NULL,
+    defer_selection = FALSE
 ) {
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
@@ -390,137 +525,7 @@ CART_test <- function(
     as.integer(dt_train_leaf$leaf)
   }
 
-  choose_group_selection <- function(dt_grp) {
-    dtf <- dt_grp[is.finite(t)]
-
-    empty_out <- data.table::data.table(
-      best_fit_id = NA_integer_,
-      best_train_s = NA_integer_,
-      sel_leaves = list(integer())
-    )
-
-    if (nrow(dtf) == 0L) return(empty_out)
-
-    if (screen == "minimum") {
-      j <- which.min(dtf$t)
-      return(data.table::data.table(
-        best_fit_id = as.integer(dtf$fit_id[j]),
-        best_train_s = as.integer(dtf$train_s[j]),
-        sel_leaves = list(as.integer(dtf$leaf[j]))
-      ))
-    }
-
-    if (screen == "stepdown") {
-      data.table::setorder(dtf, t)
-      p <- stats::pnorm(dtf$t)
-
-      m_keep <- 1L
-
-      if (length(p) >= 2L) {
-        for (m in 2L:length(p)) {
-          holm_ok <- all(p[seq_len(m)] <= alpha / rev(seq_len(m)))
-          if (!holm_ok) break
-          m_keep <- m
-        }
-      }
-
-      keep <- dtf[seq_len(m_keep)]
-
-      return(keep[, .(
-        sel_leaves = list(as.integer(leaf))
-      ), by = .(
-        best_fit_id = fit_id,
-        best_train_s = train_s
-      )])
-    }
-
-    if (screen == "none") {
-      j <- which.min(dtf$t)
-      bf <- as.integer(dtf$fit_id[j])
-      bt <- as.integer(dtf$train_s[j])
-      return(data.table::data.table(
-        best_fit_id = bf,
-        best_train_s = bt,
-        sel_leaves = list(as.integer(dtf[fit_id == bf & train_s == bt, leaf]))
-      ))
-    }
-
-    if (screen == "negative") {
-      thr <- stats::qnorm(alpha / nrow(dtf))
-      keep <- dtf[t <= thr]
-      if (nrow(keep) == 0L) {
-        j <- which.min(dtf$t)
-        return(data.table::data.table(
-          best_fit_id = as.integer(dtf$fit_id[j]),
-          best_train_s = as.integer(dtf$train_s[j]),
-          sel_leaves = list(as.integer(dtf$leaf[j]))
-        ))
-      }
-
-      j <- which.min(keep$t)
-      bf <- as.integer(keep$fit_id[j])
-      bt <- as.integer(keep$train_s[j])
-      return(data.table::data.table(
-        best_fit_id = bf,
-        best_train_s = bt,
-        sel_leaves = list(as.integer(keep[fit_id == bf & train_s == bt, leaf]))
-      ))
-    }
-
-    if (screen == "nonpositive") {
-      thr <- stats::qnorm(1 - alpha / nrow(dtf))
-      keep <- dtf[t < thr]
-      if (nrow(keep) == 0L) {
-        j <- which.min(dtf$t)
-        return(data.table::data.table(
-          best_fit_id = as.integer(dtf$fit_id[j]),
-          best_train_s = as.integer(dtf$train_s[j]),
-          sel_leaves = list(as.integer(dtf$leaf[j]))
-        ))
-      }
-
-      j <- which.min(keep$t)
-      bf <- as.integer(keep$fit_id[j])
-      bt <- as.integer(keep$train_s[j])
-      return(data.table::data.table(
-        best_fit_id = bf,
-        best_train_s = bt,
-        sel_leaves = list(as.integer(keep[fit_id == bf & train_s == bt, leaf]))
-      ))
-    }
-
-    if (screen == "fgk_relevant") {
-      if ("fgk_keep" %in% names(dtf)) {
-        keep <- dtf[fgk_keep == TRUE]
-
-        if (nrow(keep) > 0L) {
-          return(keep[, .(
-            sel_leaves = list(as.integer(leaf))
-          ), by = .(
-            best_fit_id = fit_id,
-            best_train_s = train_s
-          )])
-        }
-      }
-
-      ## Fallback only within the final choice group.
-      ## Therefore if sample/yval/dval are in select, this can become one
-      ## global fallback instead of one fallback per local tree.
-      j <- which.min(dtf$t)
-      data.table::data.table(
-        best_fit_id = as.integer(dtf$fit_id[j]),
-        best_train_s = as.integer(dtf$train_s[j]),
-        sel_leaves = list(as.integer(dtf$leaf[j]))
-      )
-    }
-
-    j <- which.min(dtf$t)
-    data.table::data.table(
-      best_fit_id = as.integer(dtf$fit_id[j]),
-      best_train_s = as.integer(dtf$train_s[j]),
-      sel_leaves = list(as.integer(dtf$leaf[j]))
-    )
-  }
+  choose_group_selection <- function(dt_grp) cart_choose_group_selection(dt_grp, screen, alpha)
 
   add_key_cols <- function(dt, key_dt, all_margin_names) {
     if (length(all_margin_names) == 0L) return(dt)
@@ -537,11 +542,9 @@ CART_test <- function(
     }
 
     for (cc in all_margin_names) {
+      ## NA is a legitimate level of a margin (e.g. yval is NA for the condition rows that
+      ## have no outcome sets when "simple" is stacked with "KR"); it is carried as such.
       val <- key_dt[[cc]][1]
-      if (is.na(val)) {
-        print(key_dt)
-        stop("add_key_cols(): margin column ", cc, " is NA in key_dt.")
-      }
       dt[, (cc) := val]
     }
 
@@ -972,6 +975,15 @@ CART_test <- function(
         }
       }
 
+      ## Deferred selection (montest(stack = FALSE)): test every locally screened candidate
+      ## leaf; the choice among fit groups is made after all blocks are appended
+      ## (finalize_deferred_selection_cart()).
+      if (isTRUE(defer_selection)) {
+        ts__ <- train_s
+        sel_leaves <- unique(as.integer(leaf_tbl_use[fit_id == g & train_s == ts__, leaf]))
+        chosen <- length(sel_leaves) > 0L
+      }
+
       tl <- data.table::copy(obj$train_leaf)
       tl[, relevant := as.integer(leaf %in% sel_leaves)]
       train_rows[[tr_k <- tr_k + 1L]] <- tl
@@ -1170,6 +1182,7 @@ CART_test <- function(
     global  = global_out
   )
   if (store_trees) out$trees <- trees_list
+  if (isTRUE(defer_selection)) out$leaf_candidates <- leaf_tbl_use
   out
 }
 
@@ -3946,7 +3959,8 @@ forest_test <- function(
     recenter_propensity = FALSE,
     recenter_binary = FALSE,
     v = NULL,
-    center_inv_v = FALSE
+    center_inv_v = FALSE,
+    defer_selection = FALSE
 ) {
   screen <- match.arg(screen)
 
@@ -3962,6 +3976,10 @@ forest_test <- function(
   stopifnot(length(sample_col) == 1L)
 
   adaptive_dims <- intersect(pool, select)
+
+  if (isTRUE(defer_selection) && length(adaptive_dims) > 0L) {
+    stop("Internal error: adaptive pool/select designs are incompatible with deferred selection.")
+  }
 
   if (sample_col %in% adaptive_dims) {
     stop(
@@ -4017,7 +4035,8 @@ forest_test <- function(
       recenter_propensity = recenter_propensity,
       recenter_binary = recenter_binary,
       v = v,
-      center_inv_v = center_inv_v
+      center_inv_v = center_inv_v,
+      defer_selection = defer_selection
     )
   }
 
@@ -4544,6 +4563,381 @@ crv1_mean <- function(score,
 }
 
 
+## Training-side screen over candidate groups ordered by their training t-statistic
+## (smallest = most negative = most promising). Shared by forest_test_core() and the
+## stack = FALSE post-hoc selection.
+select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen = "stepdown") {
+  tt <- dt_grp[[t_col]]
+  ok <- is.finite(tt)
+  if (!any(ok)) return(dt_grp[0])
+
+  d <- data.table::copy(dt_grp[ok])
+  data.table::setorderv(d, t_col)
+
+  if (screen == "none") return(d)
+  if (screen == "minimum") return(d[1L])
+
+  if (screen == "negative") {
+    thr <- stats::qnorm(alpha / nrow(d))
+    keep <- d[get(t_col) <= thr]
+    if (nrow(keep) == 0L) keep <- d[1L]
+    return(keep)
+  }
+
+  if (screen == "nonpositive") {
+    thr <- stats::qnorm(1 - alpha / nrow(d))
+    keep <- d[get(t_col) < thr]
+    if (nrow(keep) == 0L) keep <- d[1L]
+    return(keep)
+  }
+
+  if (screen == "stepdown") {
+    keep_n <- 1L
+    if (nrow(d) >= 2L) {
+      p <- stats::pnorm(d[[t_col]])
+      for (r in 2:nrow(d)) {
+        p_top <- p[seq_len(r)]
+        p_holm <- stats::p.adjust(p_top, method = "holm")
+        if (p_holm[r] <= alpha) keep_n <- r else break
+      }
+    }
+    return(d[seq_len(keep_n)])
+  }
+
+  if (screen == "fgk_relevant") {
+    thr <- stats::qnorm(1 - alpha / nrow(d))
+    keep <- d[get(t_col) < thr]
+
+    ## Fallback at the level at which select_groups_screen()
+    ## is called. Therefore if select includes yval/dval/sample,
+    ## this fallback is global over those dimensions.
+    if (nrow(keep) == 0L) keep <- d[1L]
+
+    return(keep)
+  }
+
+  d[1L]
+}
+
+## Selection among the training cells in `train_all` (needs columns cell_id, sample, t,
+## train_row_id and all margin columns). Returns the selected rows of `train_all`.
+## Extracted unchanged from forest_test_core() so that stack = FALSE can apply the
+## identical rule after the per-block fits have been appended.
+select_train_cells <- function(train_all,
+                               select_margins,
+                               select_sample,
+                               pool_sample,
+                               adjust_cols,
+                               sample_col,
+                               alpha,
+                               screen,
+                               sample_pool_after_margin_select) {
+
+  select_keep_ids <- function(cand, choose_by, id_by, alpha) {
+    choose_by <- intersect(choose_by, names(cand))
+    id_by <- intersect(id_by, names(cand))
+
+    if (length(id_by) == 0L) {
+      stop("No valid id columns found in cand.")
+    }
+
+    if (length(choose_by) == 0L) {
+      out <- select_groups_screen(cand, alpha = alpha, screen = screen)
+      return(unique(out[, .SD, .SDcols = id_by]))
+    }
+
+    ## Columns in choose_by are excluded from .SD by data.table.
+    ## Therefore only ask .SD for id columns that are not also by-columns.
+    id_nonby <- setdiff(id_by, choose_by)
+
+    out <- cand[
+      ,
+      {
+        sel <- select_groups_screen(.SD, alpha = alpha, screen = screen)
+
+        if (length(id_nonby) > 0L) {
+          sel[, .SD, .SDcols = id_nonby]
+        } else {
+          ## Needed when all id_by columns are in choose_by.
+          ## Return one row per selected candidate; data.table will add choose_by.
+          data.table::data.table(.selected_row__ = seq_len(nrow(sel)))
+        }
+      },
+      by = choose_by
+    ]
+
+    if (".selected_row__" %in% names(out)) {
+      out[, .selected_row__ := NULL]
+    }
+
+    unique(out[, .SD, .SDcols = id_by])
+  }
+
+  if (sample_pool_after_margin_select) {
+
+    ## Do NOT select margins using sample-pooled training statistics.
+    ## Select separately by training sample.
+    cand_by <- unique(c(
+      adjust_cols,
+      sample_col,
+      select_margins,
+      "cell_id"
+    ))
+
+    cand <- train_all[
+      ,
+      .(sel_t = mean(t, na.rm = TRUE)),
+      by = cand_by
+    ]
+
+    choose_by <- unique(c(
+      adjust_cols,
+      sample_col
+    ))
+
+    id_by <- cand_by
+
+    keep_ids <- select_keep_ids(
+      cand = cand,
+      choose_by = choose_by,
+      id_by = id_by,
+      alpha = alpha
+    )
+
+    selected_train <- merge(
+      train_all,
+      unique(keep_ids),
+      by = id_by,
+      all = FALSE,
+      sort = FALSE
+    )
+
+  } else {
+
+    agg_by <- unique(c(
+      adjust_cols,
+      sample_col,
+      select_margins,
+      "cell_id"
+    ))
+
+    cand <- train_all[
+      ,
+      .(sel_t = mean(t, na.rm = TRUE)),
+      by = agg_by
+    ]
+
+    choose_by <- c(
+      adjust_cols,
+      if (!select_sample && !pool_sample) sample_col else character()
+    )
+
+    id_by <- unique(c(
+      adjust_cols,
+      sample_col,
+      select_margins,
+      "cell_id"
+    ))
+
+    if (length(choose_by) == 0L) {
+      keep_ids <- select_groups_screen(
+        cand,
+        alpha = alpha,
+        screen = screen
+      )[, .SD, .SDcols = id_by]
+    } else {
+      keep_ids <- cand[
+        ,
+        select_groups_screen(.SD, alpha = alpha, screen = screen),
+        by = choose_by
+      ][, .SD, .SDcols = id_by]
+    }
+
+    selected_train <- merge(
+      train_all,
+      unique(keep_ids),
+      by = id_by,
+      all = FALSE,
+      sort = FALSE
+    )
+  }
+
+  selected_train
+}
+
+## CART version of finalize_deferred_selection(): `res` holds the appended output of every
+## block run with CART_test(defer_selection = TRUE), i.e. all locally screened candidate
+## leaves tested and `leaf_candidates` (the stacked code's leaf_tbl_use) returned. Applies
+## CART_test()'s choice among fit groups jointly over all blocks and keeps the matching
+## train relevance flags / held-out test rows. A training leaf is identified by
+## (margins, sample = training sample, leaf); its test row by (margins, sample = other
+## sample, leaf).
+finalize_deferred_selection_cart <- function(res, margins, select, alpha, screen,
+                                             sample_col = "sample") {
+  select_sample  <- sample_col %in% select
+  select_margins <- intersect(select, margins)
+  final_keep_margins <- setdiff(margins, select_margins)
+
+  lt <- data.table::copy(res$leaf_candidates)
+  lt[, fit_id := if (length(margins) > 0L) {
+    data.table::frankv(lt[, .SD, .SDcols = margins], ties.method = "dense")
+  } else {
+    1L
+  }]
+
+  choice_group_cols <- unique(c(final_keep_margins, if (!select_sample) "train_s"))
+
+  if (length(choice_group_cols) == 0L) {
+    sel_tbl <- cart_choose_group_selection(
+      lt[, .(fit_id, train_s, leaf, t, fgk_keep)], screen, alpha
+    )[, .(best_fit_id, best_train_s, sel_leaves)]
+  } else {
+    sel_tbl <- lt[
+      ,
+      cart_choose_group_selection(.SD[, .(fit_id, train_s, leaf, t, fgk_keep)], screen, alpha),
+      by = choice_group_cols
+    ]
+  }
+
+  sel_tbl <- sel_tbl[is.finite(best_fit_id) & is.finite(best_train_s)]
+  selected <- sel_tbl[, .(leaf = unique(as.integer(unlist(sel_leaves, use.names = FALSE)))),
+                      by = .(fit_id = best_fit_id, train_s = best_train_s)]
+
+  keys <- unique(lt[, .SD, .SDcols = unique(c("fit_id", "train_s", "leaf", margins))])
+  selected <- merge(selected, keys, by = c("fit_id", "train_s", "leaf"), sort = FALSE)
+
+  tr_keys <- selected[, .SD, .SDcols = c(margins, "train_s", "leaf")]
+  data.table::setnames(tr_keys, "train_s", sample_col)
+  te_keys <- data.table::copy(tr_keys)
+  te_keys[, (sample_col) := data.table::fifelse(get(sample_col) == 1L, 2L, 1L)]
+  key_cols <- c(margins, sample_col, "leaf")
+
+  R <- res$results
+  tr <- R[train == TRUE]
+  te <- R[train == FALSE]
+  tr[, relevant := 0L]
+  tr[tr_keys, on = key_cols, relevant := 1L]
+  te_idx <- unique(te[te_keys, on = key_cols, which = TRUE, nomatch = NULL])
+  te <- te[sort(te_idx)]
+
+  if (nrow(te) == 0L) stop("Testing subset is empty (after selection).")
+
+  ## CART_test() returns the test rows first (setorder(results, train)).
+  res$results <- data.table::rbindlist(list(te, tr), use.names = TRUE, fill = TRUE)
+  res$leaf_candidates <- NULL
+  res
+}
+
+## montest(stack = FALSE): `res` holds the appended output of every block, each run with
+## defer_selection = TRUE (all training cells kept, all test rows computed, `train_cells`
+## returned with globally unique cell_id/train_row_id and the global margin columns).
+## Applies the training-side selection jointly over all blocks, exactly as the stacked
+## forest_test_core() would have, and drops the test rows (and Xmeans/shares rows) of
+## everything that was not selected.
+finalize_deferred_selection <- function(res, margins, pool, select, alpha, screen,
+                                        sample_col = "sample") {
+  pool_sample   <- sample_col %in% pool
+  select_sample <- sample_col %in% select
+  pool_margins   <- intersect(pool, margins)
+  select_margins <- intersect(select, margins)
+  cell_cols   <- setdiff(margins, pool_margins)
+  adjust_cols <- setdiff(cell_cols, select_margins)
+
+  sample_pool_after_margin_select <-
+    pool_sample && length(select_margins) > 0L && !select_sample
+
+  tc <- data.table::copy(res$train_cells)
+  tc[, train_row_id := .I]
+
+  selected_train <- select_train_cells(
+    train_all = tc,
+    select_margins = select_margins,
+    select_sample = select_sample,
+    pool_sample = pool_sample,
+    adjust_cols = adjust_cols,
+    sample_col = sample_col,
+    alpha = alpha,
+    screen = screen,
+    sample_pool_after_margin_select = sample_pool_after_margin_select
+  )
+
+  train_out <- data.table::copy(tc)
+  train_out[, relevant := as.integer(train_row_id %in% selected_train$train_row_id)]
+  train_out[, c("cell_id", "train_row_id") := NULL]
+
+  ## Test keys: the opposite sample of each selected training cell.
+  key_cols <- intersect(
+    unique(c(
+      adjust_cols,
+      if (!pool_sample || sample_pool_after_margin_select) sample_col else character(),
+      select_margins
+    )),
+    names(selected_train)
+  )
+  keys <- unique(selected_train[, .SD, .SDcols = key_cols])
+  if (sample_col %in% names(keys)) {
+    keys[, (sample_col) := data.table::fifelse(get(sample_col) == 1L, 2L, 1L)]
+  }
+
+  semi_join <- function(tbl, by) {
+    if (is.null(tbl)) return(NULL)
+    by <- intersect(by, names(tbl))
+    if (length(by) == 0L) return(tbl)
+    idx <- unique(tbl[keys, on = by, which = TRUE, nomatch = NULL])
+    tbl[sort(idx)]
+  }
+
+  test_all <- res$results[train == FALSE]
+
+  if (sample_pool_after_margin_select) {
+    nonsample_key <- setdiff(key_cols, sample_col)
+    common <- if (length(nonsample_key) > 0L) {
+      keys[, .(n = data.table::uniqueN(get(sample_col))), by = nonsample_key][n == 2L, .SD, .SDcols = nonsample_key]
+    } else {
+      NULL
+    }
+    is_common <- function(tbl) {
+      if (is.null(common) || nrow(common) == 0L) return(rep(FALSE, nrow(tbl)))
+      seq_len(nrow(tbl)) %in% tbl[common, on = nonsample_key, which = TRUE, nomatch = NULL]
+    }
+    pooled <- test_all[.test_kind == "pooled"]
+    pooled <- pooled[is_common(pooled)]
+    single <- test_all[.test_kind == "sample"]
+    single <- single[!is_common(single)]
+    single <- semi_join(single, key_cols)
+    test_kept <- data.table::rbindlist(list(pooled, single), use.names = TRUE, fill = TRUE)
+  } else {
+    test_kept <- semi_join(test_all, key_cols)
+  }
+  if (".test_kind" %in% names(test_kept)) test_kept[, .test_kind := NULL]
+
+  if (nrow(test_kept) == 0L) stop("Testing subset is empty (after selection).")
+
+  res$results <- data.table::rbindlist(list(train_out, test_kept), use.names = TRUE, fill = TRUE)
+  res$Xmeans  <- semi_join(res$Xmeans, key_cols)
+  ## shares keeps a row for every key (share_all), with share = 0 where nothing was tested.
+  if (!is.null(res$shares)) {
+    by_sh <- intersect(key_cols, names(res$shares))
+    if (length(by_sh) > 0L) {
+      hit <- unique(res$shares[keys, on = by_sh, which = TRUE, nomatch = NULL])
+      res$shares[setdiff(seq_len(nrow(res$shares)), hit), share := 0]
+    }
+  }
+
+  res$train_cells <- NULL
+  res$sample_pool_after_margin_select <- sample_pool_after_margin_select
+  res$sample_design <- if (sample_pool_after_margin_select) {
+    "pooled_matching_after_sample_specific_margin_selection"
+  } else if (pool_sample) {
+    "pooled"
+  } else if (select_sample) {
+    "selected_then_separate"
+  } else {
+    "separate"
+  }
+  res
+}
+
 forest_test_core <- function(
     data,
     cluster = NULL,
@@ -4574,48 +4968,9 @@ forest_test_core <- function(
     recenter_propensity = FALSE,
     recenter_binary = FALSE,
     v = NULL,
-    center_inv_v = FALSE
+    center_inv_v = FALSE,
+    defer_selection = FALSE
 ) {
-
-  select_keep_ids <- function(cand, choose_by, id_by, alpha) {
-    choose_by <- intersect(choose_by, names(cand))
-    id_by <- intersect(id_by, names(cand))
-
-    if (length(id_by) == 0L) {
-      stop("No valid id columns found in cand.")
-    }
-
-    if (length(choose_by) == 0L) {
-      out <- select_groups_screen(cand, alpha = alpha)
-      return(unique(out[, .SD, .SDcols = id_by]))
-    }
-
-    ## Columns in choose_by are excluded from .SD by data.table.
-    ## Therefore only ask .SD for id columns that are not also by-columns.
-    id_nonby <- setdiff(id_by, choose_by)
-
-    out <- cand[
-      ,
-      {
-        sel <- select_groups_screen(.SD, alpha = alpha)
-
-        if (length(id_nonby) > 0L) {
-          sel[, .SD, .SDcols = id_nonby]
-        } else {
-          ## Needed when all id_by columns are in choose_by.
-          ## Return one row per selected candidate; data.table will add choose_by.
-          data.table::data.table(.selected_row__ = seq_len(nrow(sel)))
-        }
-      },
-      by = choose_by
-    ]
-
-    if (".selected_row__" %in% names(out)) {
-      out[, .selected_row__ := NULL]
-    }
-
-    unique(out[, .SD, .SDcols = id_by])
-  }
 
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
@@ -4729,6 +5084,10 @@ forest_test_core <- function(
     length(select_margins) > 0L &&
     !select_sample
 
+  ## Deferred selection with pooled samples: test sample-specifically AND pooled, so the
+  ## post-hoc screen can pick whichever matches (see the defer branch further below).
+  if (isTRUE(defer_selection) && pool_sample) sample_pool_after_margin_select <- TRUE
+
   pool_before_margins <- pool_margins
   separate_select_margins <- select_margins
   cell_cols <- setdiff(margins, pool_before_margins)
@@ -4790,59 +5149,6 @@ forest_test_core <- function(
   fe_vars_needed <- fe_vars_needed[fe_vars_needed %in% names(data)]
   fe_dt_full <- if (length(fe_vars_needed)) data[, ..fe_vars_needed] else NULL
 
-
-  select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05) {
-    tt <- dt_grp[[t_col]]
-    ok <- is.finite(tt)
-    if (!any(ok)) return(dt_grp[0])
-
-    d <- data.table::copy(dt_grp[ok])
-    data.table::setorderv(d, t_col)
-
-    if (screen == "none") return(d)
-    if (screen == "minimum") return(d[1L])
-
-    if (screen == "negative") {
-      thr <- stats::qnorm(alpha / nrow(d))
-      keep <- d[get(t_col) <= thr]
-      if (nrow(keep) == 0L) keep <- d[1L]
-      return(keep)
-    }
-
-    if (screen == "nonpositive") {
-      thr <- stats::qnorm(1 - alpha / nrow(d))
-      keep <- d[get(t_col) < thr]
-      if (nrow(keep) == 0L) keep <- d[1L]
-      return(keep)
-    }
-
-    if (screen == "stepdown") {
-      keep_n <- 1L
-      if (nrow(d) >= 2L) {
-        p <- stats::pnorm(d[[t_col]])
-        for (r in 2:nrow(d)) {
-          p_top <- p[seq_len(r)]
-          p_holm <- stats::p.adjust(p_top, method = "holm")
-          if (p_holm[r] <= alpha) keep_n <- r else break
-        }
-      }
-      return(d[seq_len(keep_n)])
-    }
-
-    if (screen == "fgk_relevant") {
-      thr <- stats::qnorm(1 - alpha / nrow(d))
-      keep <- d[get(t_col) < thr]
-
-      ## Fallback at the level at which select_groups_screen()
-      ## is called. Therefore if select includes yval/dval/sample,
-      ## this fallback is global over those dimensions.
-      if (nrow(keep) == 0L) keep <- d[1L]
-
-      return(keep)
-    }
-
-    d[1L]
-  }
 
   percentile_indices <- function(w, k) {
     n0 <- length(w)
@@ -5339,97 +5645,23 @@ forest_test_core <- function(
 
 
   selected_train <- train_all
-  has_selection <- (length(select_margins) > 0L) || select_sample
+  ## defer_selection (montest(stack = FALSE)): keep every training cell; the screen is
+  ## applied across all appended blocks afterwards (see finalize_deferred_selection()).
+  has_selection <- !isTRUE(defer_selection) &&
+    ((length(select_margins) > 0L) || select_sample)
 
   if (has_selection) {
-
-     if (sample_pool_after_margin_select) {
-
-      ## Do NOT select margins using sample-pooled training statistics.
-      ## Select separately by training sample.
-      cand_by <- unique(c(
-        adjust_cols,
-        sample_col,
-        select_margins,
-        "cell_id"
-      ))
-
-      cand <- train_all[
-        ,
-        .(sel_t = mean(t, na.rm = TRUE)),
-        by = cand_by
-      ]
-
-      choose_by <- unique(c(
-        adjust_cols,
-        sample_col
-      ))
-
-      id_by <- cand_by
-
-      keep_ids <- select_keep_ids(
-        cand = cand,
-        choose_by = choose_by,
-        id_by = id_by,
-        alpha = alpha
-      )
-
-      selected_train <- merge(
-        train_all,
-        unique(keep_ids),
-        by = id_by,
-        all = FALSE,
-        sort = FALSE
-      )
-
-    } else {
-
-      agg_by <- unique(c(
-        adjust_cols,
-        sample_col,
-        select_margins,
-        "cell_id"
-      ))
-
-      cand <- train_all[
-        ,
-        .(sel_t = mean(t, na.rm = TRUE)),
-        by = agg_by
-      ]
-
-      choose_by <- c(
-        adjust_cols,
-        if (!select_sample && !pool_sample) sample_col else character()
-      )
-
-      id_by <- unique(c(
-        adjust_cols,
-        sample_col,
-        select_margins,
-        "cell_id"
-      ))
-
-      if (length(choose_by) == 0L) {
-        keep_ids <- select_groups_screen(
-          cand,
-          alpha = alpha
-        )[, .SD, .SDcols = id_by]
-      } else {
-        keep_ids <- cand[
-          ,
-          select_groups_screen(.SD, alpha = alpha),
-          by = choose_by
-        ][, .SD, .SDcols = id_by]
-      }
-
-      selected_train <- merge(
-        train_all,
-        unique(keep_ids),
-        by = id_by,
-        all = FALSE,
-        sort = FALSE
-      )
-    }
+    selected_train <- select_train_cells(
+      train_all = train_all,
+      select_margins = select_margins,
+      select_sample = select_sample,
+      pool_sample = pool_sample,
+      adjust_cols = adjust_cols,
+      sample_col = sample_col,
+      alpha = alpha,
+      screen = screen,
+      sample_pool_after_margin_select = sample_pool_after_margin_select
+    )
   }
 
   sample_design <- if (sample_pool_after_margin_select) {
@@ -5663,10 +5895,62 @@ forest_test_core <- function(
     }
   }
 
+  ## Deferred selection with pooled samples: emit both the sample-specific rows and, per
+  ## non-sample key, the raw-pooled row. finalize_deferred_selection() keeps the pooled row
+  ## when both sample directions are selected for the key and the sample-specific
+  ## rows otherwise (same "option 2" rule as below).
+  if (isTRUE(defer_selection) && pool_sample) {
+    pool_key <- intersect(setdiff(test_by, sample_col), names(test_out))
+
+    test_out_pool <- dt_test[, {
+      rank_adj <- rank_adj_total(
+        data = data,
+        idx = rowid,
+        fe_expr = fe_expr,
+        x_vars = x_rank_vars,
+        weight_col = weight_col,
+        cluster_vals = clv,
+        fe_rank_adj = fe_rank_adj
+      )
+
+      o <- run_test_moment(
+        score = score, w = w, w_sandwich = w_sandwich, cl = cl,
+        resid_treat = resid_treat, resid_outcome = resid_outcome,
+        sample_weight = sample_weight, center = center,
+        tau = tau, v = v,
+        rank_adj = rank_adj
+      )
+
+      data.table::data.table(
+        train = FALSE,
+        relevant = 1L,
+        G = o$G,
+        N = o$N,
+        dof_rank = rank_adj,
+        df = o$df,
+        coef = o$coef,
+        stderr = o$se,
+        t = o$t,
+        tau_cutoff = NA_real_,
+        p.raw = stats::pnorm(o$t)
+      )
+    }, by = eval(if (length(pool_key) > 0L) pool_key else NULL)]
+
+    test_out_pool[, (sample_col) := NA_integer_]
+    test_out_pool[, .test_kind := "pooled"]
+    test_out[, .test_kind := "sample"]
+
+    test_out <- data.table::rbindlist(
+      list(test_out, test_out_pool),
+      use.names = TRUE,
+      fill = TRUE
+    )
+  }
+
   ## Now implement option 2:
   ## if both holdout sample directions selected the same non-sample key,
   ## raw-pool those observations; otherwise keep sample-specific rows.
-  if (sample_pool_after_margin_select) {
+  if (sample_pool_after_margin_select && !isTRUE(defer_selection)) {
     pool_key <- setdiff(test_by, sample_col)
     pool_key <- intersect(pool_key, names(test_out))
 
@@ -5904,6 +6188,7 @@ forest_test_core <- function(
 
   if (!is.null(shares)) out$shares <- shares
   if (!store_grid) out$grid <- NULL
+  if (isTRUE(defer_selection)) out$train_cells <- train_all
 
   out
 }

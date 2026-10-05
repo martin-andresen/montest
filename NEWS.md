@@ -1,5 +1,8 @@
 1# montest (development version)
 
+* Added: `stack` (default `TRUE`, the previous behaviour) and `progress`. With `stack = FALSE`, `montest()` no longer crosses the margin index (condition, dval, yval, equation) with the data but tests one block of the margin index at a time (still stacked across `zmargin`), shows a progress bar, appends all train and test estimates, and finally applies the `select`/`screen` rule jointly on the training side, dropping test rows that were not selected. `pool` is restricted to `"zmargin"`/`"sample"`; works with `testtype = "forest"` and `"CART"` and with `local = FALSE`. `seqtest()` passes it through `...`.
+* Fixed: `testtype = 'CART'` stopped with 'margin column yval is NA' whenever several conditions were stacked (e.g. `condition = c('simple', 'KR')`), because `yval` is `NA` for the conditions without outcome sets. `NA` is now treated as an ordinary margin level.
+
 * Added: `local` (default `TRUE`). With `local = FALSE`, the sample split and the local subgroup search (`forest_test()`/`CART_test()`) are skipped entirely and the estimates are computed globally within each margin cell (centered where the local test-side moment is), stored in `$results` and feeding `$minp`. `pool` still applies; `select`/`shrink`/`testtype` have no role; no causal forest is fit when `doubly.robust = FALSE`.
 * Changed: `$global` now uses the same centered (with-intercept) moment as the local test side for `doubly.robust = FALSE` rows, so it can differ slightly from before.
 * Initial CRAN submission.

@@ -204,6 +204,18 @@
 #'   (\code{"sample"} is moot), \code{select}, \code{shrink}, \code{testtype}, \code{screen}, \code{gridpoints} and the CART
 #'   tuning parameters have no role. Outer cross-fitting is unavailable, so nuisances use out-of-bag predictions (or
 #'   \code{inner.folds}). With \code{doubly.robust = FALSE} no causal forest is fit at all.
+#' @param stack Logical, default \code{TRUE}. If \code{TRUE} the margin index (condition, dval, yval, equation) is
+#'   crossed with the data and everything is estimated on the stacked data. If \code{FALSE}, the tests are run
+#'   sequentially, one block of the margin index at a time (still stacked across \code{zmargin}), and all train and
+#'   test estimates are appended. Afterwards the selection rule given by \code{select} and \code{screen} is applied
+#'   jointly over all blocks on the training side, and test-sample rows that were not selected are removed, so that
+#'   only pre-selected estimates are reported. This uses much less memory with many margins. With
+#'   \code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} and \code{"sample"} (the default, and
+#'   \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
+#'   \code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
+#'   because the random number stream differs.
+#' @param progress Logical, default \code{interactive()}. Show a progress bar over the blocks when
+#'   \code{stack = FALSE}.
 #' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
@@ -249,7 +261,8 @@
 #'   With a binary treatment and instrument, these conditions collapse to the conditions from Balke and Pearl (1997). Outcome variable Y must be specified.
 #'   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
 #'   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
-#'   There are a total of (J-1)(K-1) such conditions.
+#'   This is only allowed for a binary treatment (D with at most 2 support points in the data); an error is
+#'   thrown otherwise. There are a total of (K-1) such conditions.
 #'   \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
 #'   and exclusion conditional on instrument validity. This is only allowed for a binary treatment and a genuinely
 #'   binary instrument (Z with at most 2 support points in the data -- an arbitrary margin/threshold cut of a
@@ -338,7 +351,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,local=TRUE,
+                 doubly.robust=NULL,local=TRUE,stack=TRUE,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
 ){
@@ -485,6 +498,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     crossfit <- match.arg(crossfit, c("Z", "Q", "C", "Y"), several.ok = TRUE)
   }
   stopifnot(is.logical(local), length(local) == 1L, !is.na(local))
+  stopifnot(is.logical(stack), length(stack) == 1L, !is.na(stack))
+  stopifnot(is.logical(progress), length(progress) == 1L, !is.na(progress))
   select_given <- !missing(select)
   if (!local) {
     ## No sample split: cross-fitting across the two outer halves is not
@@ -597,6 +612,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   Zsubsets <- check_integer_gt1(Zsubsets, "Zsubsets")
 
   ##VALIDATE POOL/SELECT
+  pool_input <- pool
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
   else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample")
   else if (sum(pool=="none")==1) pool=c()
@@ -622,6 +638,20 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   if ("sample" %in% intersect(pool,select)) {
     stop("Sample cannot appear in both pool and select. Adaptive selection or pooling across sample halves might invalidate sample splitting.")
+  }
+
+  if (!stack) {
+    ## Margins other than zmargin are tested one block at a time, so they cannot be pooled.
+    ## The default and "all" resolve to the poolable dimensions.
+    if (is.null(pool_input) || any(pool_input == "all")) {
+      pool <- intersect(pool, c("zmargin", "sample"))
+    } else if (length(setdiff(pool, c("zmargin", "sample"))) > 0L) {
+      stop("With stack = FALSE, `pool` may only contain \"zmargin\" and \"sample\"; got: ",
+           paste(setdiff(pool, c("zmargin", "sample")), collapse = ", "), ".", call. = FALSE)
+    }
+    if ("zmargin" %in% intersect(pool, select)) {
+      stop("With stack = FALSE, \"zmargin\" cannot appear in both `pool` and `select` (no adaptive design).", call. = FALSE)
+    }
   }
 
   hat_vars <- grep("\\.hat$", names(data), value = TRUE)
@@ -1094,6 +1124,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## the post-binning counts here would let e.g. Zsubsets=2 mask a genuinely
   ## multivalued Z and defeat this guard entirely.
   if (J_true>2&("MW" %in% condition)) stop("Multivalued treatment not supported with condition MW.")
+  if (J_true>2&("AHS" %in% condition)) {
+    stop(
+      "condition = \"AHS\" requires a genuinely binary treatment D (J <= 2 ",
+      "support points in the data); D has ", J_true, " here. Use \"simple\" or ",
+      "\"KR\" for a multivalued treatment.",
+      call. = FALSE
+    )
+  }
   if (K_true>2&("MW" %in% condition)) {
     stop(
       "condition = \"MW\" requires a genuinely binary instrument Z (K <= 2 ",
@@ -2026,6 +2064,39 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
 
 
+  nonredundant_margin_cols <- function(margin_index,
+                                       data,
+                                       exclude = c("Avals", "rowid", "join_dummy__")) {
+    cand <- intersect(names(margin_index), names(data))
+    cand <- setdiff(cand, exclude)
+
+    cand[vapply(cand, function(cc) {
+      x <- data[[cc]]
+
+      ## Keep only if there are at least two actual non-missing values.
+      ## NA versus one real value is not treated as meaningful variation.
+      data.table::uniqueN(x, na.rm = TRUE) >= 2L
+    }, logical(1))]
+  }
+
+  ## A block that ends up with no usable cells signals this condition. With
+  ## stack = TRUE it is an ordinary error (as before); with stack = FALSE the
+  ## block is skipped with a warning and montest() only stops if no block survives.
+  stop_empty_block <- function(..., call. = FALSE) {
+    stop(structure(
+      class = c("montest_empty_block", "error", "condition"),
+      list(message = paste0(...), call = NULL)
+    ))
+  }
+
+  ## ------------------------------------------------------------------
+  ## Everything from here to the end of the forest/CART/global test is run on
+  ## (data, margin_index) as a unit. stack = TRUE: once, on the full margin
+  ## index crossed with the data. stack = FALSE: once per block of
+  ## margin_index rows (see the loop after the function).
+  ## ------------------------------------------------------------------
+  run_block <- function(data, margin_index, defer_selection = FALSE) {
+
   # --------------------------------------------------
   # Cross with zmargin-stacked data
   # --------------------------------------------------
@@ -2059,21 +2130,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   # --------------------------------------------------
   # Define margin variables
   # --------------------------------------------------
-
-  nonredundant_margin_cols <- function(margin_index,
-                                       data,
-                                       exclude = c("Avals", "rowid", "join_dummy__")) {
-    cand <- intersect(names(margin_index), names(data))
-    cand <- setdiff(cand, exclude)
-
-    cand[vapply(cand, function(cc) {
-      x <- data[[cc]]
-
-      ## Keep only if there are at least two actual non-missing values.
-      ## NA versus one real value is not treated as meaningful variation.
-      data.table::uniqueN(x, na.rm = TRUE) >= 2L
-    }, logical(1))]
-  }
 
   margins <- nonredundant_margin_cols(margin_index, data)
 
@@ -2144,7 +2200,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   }
 
   if (nrow(data) == 0L) {
-    stop(
+    stop_empty_block(
       "No remaining margin cells after minsize screening. ",
       "At least one sample half had fewer than minsize observations or clusters.",
       call. = FALSE
@@ -2350,7 +2406,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   data[, c("nQ_preQ", "bad_preQ__") := NULL]
 
   if (nrow(data) == 0L) {
-    stop(
+    stop_empty_block(
       "No remaining variation in Q for any margins. ",
       "Likely identification issue -- does X perfectly explain Z or D?",
       call. = FALSE
@@ -2523,7 +2579,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   if (exists("margin_index")) margin_index <- res_Q$margin_index
 
   if (nrow(data) == 0L) {
-    stop(
+    stop_empty_block(
       "No remaining residual variation for any margins. ",
       "Likely identification issue - does X perfectly explain Z or D?",
       call. = FALSE
@@ -2777,10 +2833,162 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
+  ## stack = FALSE with a selection rule: no selection inside the block; it is applied
+  ## jointly over all blocks afterwards (finalize_deferred_selection()).
+  if (defer_selection) selectmargins <- character()
 
   if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
+  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
+
+  time=rbind(time,"Find promising subset and test"=proc.time())
+  if (!local) rownames(time)[nrow(time)] <- "Construct test results"
+
+  list(res = res, margin_index = margin_index, margins = margins, time = time)
+  } ## end run_block()
+
+  ################ RUN: stacked (once) or block by block #####################
+  if (stack) {
+
+    blk <- run_block(data, margin_index)
+    res <- blk$res
+    margin_index <- blk$margin_index
+    margins <- blk$margins
+    time <- blk$time
+
+  } else {
+
+    ## Blocks: margin_index rows that share every column except zmargin (and the
+    ## list column Avals, which is determined by yval). zmargin stays stacked inside a
+    ## block (Z.hat was estimated per zmargin above), restricted to the zmargins that
+    ## are valid for the block.
+    block_cols <- setdiff(names(margin_index), c("zmargin", "Avals"))
+    margin_index[, block__ := if (length(block_cols) > 0L) .GRP else 1L, by = eval(if (length(block_cols) > 0L) block_cols else NULL)]
+    block_ids <- sort(unique(margin_index$block__))
+
+    ## Margins of the whole call, as the stacked data would have them.
+    margins_all <- nonredundant_margin_cols(margin_index, margin_index,
+                                          exclude = c("Avals", "rowid", "join_dummy__", "block__"))
+
+    poolmargins_all <- pool[pool %in% c(margins_all, "sample")]
+    selectmargins_all <- if (local) select[select %in% c(margins_all, "sample")] else character()
+    defer <- local && length(selectmargins_all) > 0L
+
+    use_bar <- isTRUE(progress) && length(block_ids) > 1L
+    if (use_bar) pb <- utils::txtProgressBar(min = 0, max = length(block_ids), style = 3)
+
+    t0 <- time
+    inc <- NULL
+    prev <- proc.time()
+    blocks <- list()
+    kept_mi <- list()
+    cell_offset <- 0L
+
+    for (bi in seq_along(block_ids)) {
+      mi_b <- data.table::copy(margin_index[block__ == block_ids[bi]])
+      mi_b[, block__ := NULL]
+
+      data_b <- if ("zmargin" %in% names(data) && "zmargin" %in% names(mi_b)) {
+        data[as.numeric(zmargin) %in% as.numeric(mi_b$zmargin)]
+      } else {
+        data.table::copy(data)
+      }
+
+      blk <- tryCatch(
+        run_block(data_b, mi_b, defer_selection = defer),
+        montest_empty_block = function(e) {
+          warning("Skipping margin block (",
+                  paste(block_cols, vapply(block_cols, function(cc) as.character(mi_b[[cc]][1L]), ""), sep = "=", collapse = ", "),
+                  "): ", conditionMessage(e), call. = FALSE)
+          NULL
+        }
+      )
+
+      now <- proc.time()
+      if (!is.null(blk)) {
+        tb <- blk$time
+        new <- tb[(nrow(t0) + 1L):nrow(tb), , drop = FALSE]
+        base <- rbind(prev, new)
+        d <- new - base[-nrow(base), , drop = FALSE]
+        inc <- if (is.null(inc)) d else inc + d
+        now <- tb[nrow(tb), ]
+      }
+      prev <- now
+
+      if (!is.null(blk)) {
+        res_b <- blk$res
+
+        ## Constant (block-level) margin columns that the block's tables lack.
+        consts <- list()
+        for (cc in margins_all) {
+          if (data.table::uniqueN(mi_b[[cc]]) == 1L) consts[[cc]] <- mi_b[[cc]][1L]
+        }
+        attach_consts <- function(tbl) {
+          if (is.null(tbl) || !data.table::is.data.table(tbl)) return(tbl)
+          tbl <- data.table::copy(tbl)
+          for (cc in setdiff(names(consts), names(tbl))) tbl[, (cc) := consts[[cc]]]
+          tbl
+        }
+        for (nm in c("results", "grid", "global", "Xmeans", "Xmeans_all", "XSD", "shares", "train_cells", "leaf_candidates")) {
+          if (!is.null(res_b[[nm]])) res_b[[nm]] <- attach_consts(res_b[[nm]])
+        }
+        if (!is.null(res_b$train_cells)) {
+          res_b$train_cells[, cell_id := cell_id + cell_offset]
+          cell_offset <- max(res_b$train_cells$cell_id)
+        }
+
+        blocks[[length(blocks) + 1L]] <- res_b
+        kept_mi[[length(kept_mi) + 1L]] <- blk$margin_index
+      }
+
+      if (use_bar) utils::setTxtProgressBar(pb, bi)
+    }
+    if (use_bar) close(pb)
+
+    if (length(blocks) == 0L) {
+      stop("No margin block had enough usable observations to test.", call. = FALSE)
+    }
+
+    ## Append the blocks' outputs.
+    bind_all <- function(nm) {
+      parts <- lapply(blocks, function(b) b[[nm]])
+      parts <- parts[!vapply(parts, is.null, logical(1))]
+      if (length(parts) == 0L) NULL else data.table::rbindlist(parts, use.names = TRUE, fill = TRUE)
+    }
+    res <- list(
+      results = bind_all("results"),
+      grid = bind_all("grid"),
+      global = bind_all("global"),
+      Xmeans = bind_all("Xmeans"),
+      Xmeans_all = bind_all("Xmeans_all"),
+      XSD = bind_all("XSD")
+    )
+    if (!is.null(blocks[[1L]]$shares)) res$shares <- bind_all("shares")
+    if (!is.null(blocks[[1L]]$sample_design)) {
+      res$sample_design <- blocks[[1L]]$sample_design
+      res$sample_pool_after_margin_select <- blocks[[1L]]$sample_pool_after_margin_select
+    }
+    if (defer && testtype == "CART") {
+      res$leaf_candidates <- bind_all("leaf_candidates")
+      res <- finalize_deferred_selection_cart(
+        res, margins = margins_all, select = selectmargins_all, alpha = alpha, screen = screen
+      )
+    } else if (defer) {
+      res$train_cells <- bind_all("train_cells")
+      res <- finalize_deferred_selection(
+        res, margins = margins_all, pool = poolmargins_all, select = selectmargins_all,
+        alpha = alpha, screen = screen
+      )
+    }
+
+    margin_index <- data.table::rbindlist(kept_mi, use.names = TRUE, fill = TRUE)
+    margins <- margins_all
+
+    ## Cumulative timing, rebuilt from the per-block increments.
+    cum <- apply(inc, 2L, cumsum)
+    if (is.null(dim(cum))) cum <- matrix(cum, nrow = nrow(inc), dimnames = dimnames(inc))
+    time <- rbind(t0, sweep(cum, 2L, t0[nrow(t0), ], "+"))
+  }
 
   ## Xmeans/Xmeans_all/XSD (when present) are keyed on the internal
   ## `__xf_raw_*`/`__xf_res_*` forest-feature columns from
@@ -2815,8 +3023,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     }
   }
 
-  time=rbind(time,"Find promising subset and test"=proc.time())
-  if (!local) rownames(time)[nrow(time)] <- "Construct test results"
 
 
   ################ 7: Multiple hypothesis testing and output #####################
