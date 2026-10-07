@@ -139,10 +139,10 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       ## Both copies of a unit share a cluster id, so sample splitting keeps them together.
       st_id <- "seq_id__"; st_blk <- "seq_block__"; st_T <- "seq_T__"; st_W <- "seq_W__"
       dat <- data.table::copy(data)
-      dat[, (st_id) := .I]
+      data.table::set(dat, j = st_id, value = seq_len(nrow(dat)))
       recode01 <- function(x) if (two_valued(x)) as.integer(x == max(x, na.rm = TRUE)) else x
-      dat[, (D1) := recode01(get(D1))]
-      dat[, (D2) := recode01(get(D2))]
+      data.table::set(dat, j = D1, value = recode01(dat[[D1]]))
+      data.table::set(dat, j = D2, value = recode01(dat[[D2]]))
       wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
       ybins <- paste0(Y, ".seqbin__")
       for (k in seq_along(Y)) {
@@ -151,15 +151,20 @@ seqtest <- function(fml, data, condition = NULL, ...) {
                             wvar = wvar, newvar = ybins[k])
       }
       ylab <- do.call(paste, c(lapply(seq_along(Y), function(k) paste0(Y[k], "=", dat[[ybins[k]]])), sep = ","))
-      dat[, lab1__ := paste0("(", D2, "=", get(D2), ",", ylab, ")")]
-      dat[, lab2__ := paste0("(", ylab, ")")]
-      lab_levels <- c(unique(dat$lab1__), unique(dat$lab2__))
-      b1 <- data.table::copy(dat)[, `:=`(seq_block__ = 1L, seq_T__ = get(D1),
-                                          seq_W__ = match(lab1__, lab_levels) - 1L)]
-      b2 <- data.table::copy(dat)[, `:=`(seq_block__ = 2L, seq_T__ = get(D2),
-                                          seq_W__ = match(lab2__, lab_levels) - 1L)]
+      ## Columns are assigned with set()/[[ ]] rather than inside `[`, where a user column
+      ## called e.g. D1 or ylab would hide the local variable of that name.
+      lab1 <- paste0("(", D2, "=", dat[[D2]], ",", ylab, ")")
+      lab2 <- paste0("(", ylab, ")")
+      lab_levels <- c(unique(lab1), unique(lab2))
+      b1 <- data.table::copy(dat)
+      data.table::set(b1, j = st_blk, value = 1L)
+      data.table::set(b1, j = st_T, value = dat[[D1]])
+      data.table::set(b1, j = st_W, value = match(lab1, lab_levels) - 1L)
+      b2 <- data.table::copy(dat)
+      data.table::set(b2, j = st_blk, value = 2L)
+      data.table::set(b2, j = st_T, value = dat[[D2]])
+      data.table::set(b2, j = st_W, value = match(lab2, lab_levels) - 1L)
       st <- data.table::rbindlist(list(b1, b2))
-      st[, c("lab1__", "lab2__") := NULL]
       wlookup <- data.table::data.table(code = seq_along(lab_levels) - 1L, label = lab_levels)
       args <- dots
       args$Ysubsets <- NULL
@@ -182,7 +187,7 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       dd <- "Dseq_diff"
       while (dd %in% names(data)) dd <- paste0(dd, "_")
       dat <- data.table::copy(data)
-      dat[, (dd) := d1 - d2 + 1L]
+      data.table::set(dat, j = dd, value = d1 - d2 + 1L)
       f <- make_fml(NULL, as.name(dd))
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat, condition = "simple", linearD = TRUE), dots))
     }

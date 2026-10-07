@@ -227,8 +227,10 @@
 #'   row-aligned copies of each other (same Z, X, sample, cluster and weight in the same row order), \code{Z.hat}
 #'   and the variance nuisance are fitted once, on the first block, and copied to the other blocks; otherwise
 #'   they are fitted on the stacked data (with a message).
-#' @param progress Logical, default \code{interactive()}. Show a progress bar over the blocks when
-#'   \code{stack = FALSE}.
+#' @param progress Logical, default \code{interactive()}. Show text progress bars for the time-consuming steps. With
+#'   \code{stack = TRUE} there is one bar per step (titled like the entries of \code{$time}): the nuisance fits and the
+#'   causal forests, each running over margin cells and sample halves (the Z step only with a multivalued instrument).
+#'   With \code{stack = FALSE} a single bar runs over the margin blocks, covering all steps of each block.
 #' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
@@ -379,9 +381,41 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   time=rbind(start=proc.time())
   if (!is.null(seed)) set.seed(seed)
 
+  ## Labels of the timed steps that also title their progress bars.
+  lbl_Z <- "Stack data for Z margins and estimate nuisance for Z"
+  lbl_Q <- "Estimate nuisance for pseudo-outcomes Q"
+  lbl_C <- "Estimate causal forests"
+  add_time <- function(time, label) {
+    tt <- rbind(proc.time())
+    rownames(tt) <- label
+    rbind(time, tt)
+  }
+  ## Per-step bars only with stack = TRUE; with stack = FALSE one bar runs over the blocks.
+  step_bar <- function(label, always = FALSE) {
+    if (isTRUE(progress) && (always || isTRUE(stack))) label else NULL
+  }
+
 
   ################### 1 CHECK INPUT #####################
   data <- data.table::as.data.table(data.table::copy(data))
+
+  ## Columns whose names coincide with names the package's own code uses inside data.table calls
+  ## are renamed to dot-prefixed aliases for the duration of the call (and mapped back in the
+  ## output); formulas and column-name arguments are rewritten accordingly. See alias_collisions().
+  args_orig <- list(fml = fml, fml.Z = fml.Z, fml.Q = fml.Q, fml.varZ = fml.varZ,
+                    weight = weight, cluster = cluster, block = block)
+  alias_map <- alias_collisions(names(data))
+  if (length(alias_map)) {
+    data.table::setnames(data, names(alias_map), unname(alias_map))
+    fml <- rename_formula(fml, alias_map)
+    fml.Z <- rename_formula(fml.Z, alias_map)
+    fml.Q <- rename_formula(fml.Q, alias_map)
+    fml.varZ <- rename_formula(fml.varZ, alias_map)
+    weight <- alias_name(weight, alias_map)
+    cluster <- alias_name(cluster, alias_map)
+    block <- alias_name(block, alias_map)
+  }
+
   target <- if (is.null(target)) "all" else match.arg(target, c("all", "overlap"))
 
   ## `doubly.robust`'s default depends on `parametric`: AIPW's orthogonality
@@ -1163,7 +1197,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       data[Ylookup, (Ybincol) := i.code, on = Ybincols]
       Ylabels <- stats::setNames(
         vapply(seq_len(nrow(Ylookup)), function(r) {
-          paste0("(", paste0(Y, "=", unlist(Ylookup[r, Ybincols, with = FALSE]),
+          paste0("(", paste0(restore_aliases(Y, alias_map), "=", unlist(Ylookup[r, Ybincols, with = FALSE]),
                              collapse = ","), ")")
         }, character(1L)),
         as.character(Ylookup$code)
@@ -1478,7 +1512,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     x_prefix = "__xz",
     keep_x = TRUE,
     return_residual = FALSE,
-    partial_out_y_fe = TRUE
+    partial_out_y_fe = TRUE,
+    progress_title = if (length(margins) > 0L) step_bar(lbl_Z, always = TRUE)
   )
   if (!is.null(rows_est)) copy_from_ref(zhat)
 
@@ -1594,7 +1629,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       keep_x = FALSE,
       return_residual = FALSE,
       partial_out_y_fe = TRUE,
-      i = if (is.null(rows_est)) which(data$z_use_linear_score) else intersect(rows_est, which(data$z_use_linear_score))
+      i = if (is.null(rows_est)) which(data$z_use_linear_score) else intersect(rows_est, which(data$z_use_linear_score)),
+      progress_title = if (length(margins) > 0L) step_bar(paste0(lbl_Z, " (variance)"), always = TRUE)
     )
     if (!is.null(rows_est)) copy_from_ref(zvarhat)
   }
@@ -1869,7 +1905,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     data[, (helper_cols_Z) := NULL]
   }
 
-  time=rbind(time,"Stack data for Z margins and estimate nuisance for Z"=proc.time())
+  time=add_time(time, lbl_Z)
 
   #######STACK ACROSS MARGINS ##########
 
@@ -2600,7 +2636,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       keep_x = TRUE,
       return_residual = FALSE,
       partial_out_y_fe = TRUE,
-      i = i_base
+      i = i_base,
+      progress_title = step_bar(lbl_Q)
     )
   }
 
@@ -2640,7 +2677,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       keep_x = TRUE,
       return_residual = FALSE,
       partial_out_y_fe = TRUE,
-      i = i_yres
+      i = i_yres,
+      progress_title = step_bar(lbl_Q)
     )
   }
 
@@ -2740,7 +2778,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     data[, (helper_cols_Q) := NULL]
   }
 
-  time=rbind(time,"Estimate nuisance for pseudo-outcomes Q"=proc.time())
+  time=add_time(time, lbl_Q)
 
   ########## ESTIMATE ALL CAUSAL/REGRESSION/IV FORESTS AND  predict in/out of sample ##########
   if (!"C" %in% crossfit) foldname=NULL #Do not crossfit causal forest, just the nuisances - use OOB for forest.
@@ -2774,7 +2812,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
       doubly.robust = doubly.robust,
       z_linear_score_name = "z_use_linear_score",
-      fit_forest = isTRUE(local) || isTRUE(doubly.robust)
+      fit_forest = isTRUE(local) || isTRUE(doubly.robust),
+      progress_title = step_bar(lbl_C)
     )
   }
 
@@ -2806,7 +2845,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
       doubly.robust = doubly.robust,
       z_linear_score_name = "z_use_linear_score",
-      fit_forest = isTRUE(local) || isTRUE(doubly.robust)
+      fit_forest = isTRUE(local) || isTRUE(doubly.robust),
+      progress_title = step_bar(lbl_C)
     )
   }
 
@@ -2829,7 +2869,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
         weight_name = weight,
         cluster_name = cluster,
         forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
-        shrink = (shrink > 0)
+        shrink = (shrink > 0),
+        progress_title = step_bar(lbl_C)
       )
     }
   }
@@ -2969,7 +3010,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   }
 
 
-  time=rbind(time,"Estimate causal forests"=proc.time())
+  time=add_time(time, lbl_C)
 
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
   poolmargins=pool[pool %in% c(margins,"sample")]
@@ -3016,7 +3057,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     defer <- local && length(selectmargins_all) > 0L
 
     use_bar <- isTRUE(progress) && length(block_ids) > 1L
-    if (use_bar) pb <- utils::txtProgressBar(min = 0, max = length(block_ids), style = 3)
+    if (use_bar) {
+      cat("Estimate nuisances, causal forests and test, by margin block\n")
+      pb <- utils::txtProgressBar(min = 0, max = length(block_ids), style = 3)
+    }
 
     t0 <- time
     inc <- NULL
@@ -3143,7 +3187,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   if (!is.null(X_forest_info) && !is.null(X_forest_info$x_names)) {
     reserved <- c("zmargin", "dval", "yval", "condition", "equation", "sample", "block")
     old_nm <- X_forest_info$x_names
-    new_nm <- X_forest_info$clean_names
+    new_nm <- restore_aliases(X_forest_info$clean_names, alias_map)
     bad <- new_nm %in% reserved | duplicated(new_nm) | duplicated(new_nm, fromLast = TRUE)
     if (any(bad)) {
       warning(
@@ -3204,6 +3248,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## expanded/mutated internal working table, not the caller's original
   ## data, and would needlessly bloat the returned object.
   options <- mget(setdiff(names(formals(montest)), "data"), envir = environment())
+  if (length(alias_map)) {
+    ## Report the caller's own names, not the internal aliases.
+    for (nm in c("fml", "fml.Z", "fml.Q", "fml.varZ")) options[nm] <- list(args_orig[[nm]])
+    for (nm in c("weight", "cluster", "block")) {
+      if (is.character(options[[nm]])) options[[nm]] <- restore_aliases(options[[nm]], alias_map)
+    }
+    if (!is.null(Ylookup)) data.table::setnames(Ylookup, restore_aliases(names(Ylookup), alias_map))
+  }
 
   out <- c(res, list(
     call = mc,

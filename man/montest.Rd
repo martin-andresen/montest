@@ -307,8 +307,10 @@ row-aligned copies of each other (same Z, X, sample, cluster and weight in the s
 and the variance nuisance are fitted once, on the first block, and copied to the other blocks; otherwise
 they are fitted on the stacked data (with a message).}
 
-\item{progress}{Logical, default \code{interactive()}. Show a progress bar over the blocks when
-\code{stack = FALSE}.}
+\item{progress}{Logical, default \code{interactive()}. Show text progress bars for the time-consuming steps. With
+\code{stack = TRUE} there is one bar per step (titled like the entries of \code{$time}): the nuisance fits and the
+causal forests, each running over margin cells and sample halves (the Z step only with a multivalued instrument).
+With \code{stack = FALSE} a single bar runs over the margin blocks, covering all steps of each block.}
 
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}
