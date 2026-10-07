@@ -157,6 +157,12 @@
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
 #' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
+#' @param studentize Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the studentized predicted
+#'   treatment effect \code{pred / sqrt(pred_var)} (the causal forest's own predictive variance) instead of on the raw
+#'   prediction, so rows are ranked by the strength of evidence rather than the size of the point estimate. This makes the
+#'   ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
+#'   \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
+#'   Only with \code{local = TRUE} and \code{testtype = "forest"}.
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
@@ -215,8 +221,9 @@
 #'   \code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
 #'   because the random number stream differs.
 #' @param block Optional name of a column in \code{data} indexing independent testing problems that have been stacked
-#'   in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} condition). Only for
-#'   \code{condition = "KR"}. \code{block} becomes a margin like \code{dval} and \code{yval}: the supports of D and
+#'   in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} and \code{"MWDY2"} conditions). Only for
+#'   \code{condition = "KR"} or \code{"MW"} (for \code{"MW"}, outcomes are residualized and the nuisances fitted
+#'   within each block, and Y is not binned). \code{block} becomes a margin like \code{dval} and \code{yval}: the supports of D and
 #'   the outcome, the sets A, the one-sided noncompliance screen and the \code{Q} construction are determined within
 #'   each block, and every cell only uses its own block's rows. \code{pool = "block"} and \code{select = "block"}
 #'   then pool or select across blocks (valid because each cell is a weakly positive implication of the joint null).
@@ -251,7 +258,7 @@
 #'   equations, and test conditions. The outcome variable Q is defined, depending on condition and margins.
 #'   \item Nuisance functions for as \code{Z.hat}, and the outcome \code{Q.hat} are estimated
 #'   \item Separate causal forests of the outcome \code{Q}, on
-#'   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
+#'   the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions; for MW, \code{Y} and \code{X} enter jointly as forest features, see below),
 #'   treatment effects are predicted in and out of sample and scores constructed
 #'   \item Each sample part (optionally within margins, depending on the options in \code{pool}) is sorted
 #'   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
@@ -285,6 +292,7 @@
 #'   statistic uses Z.hat directly as a propensity weight with no AIPW/FWL orthogonalization protecting it).
 #'   \code{linearZ}/\code{linearD} are disallowed in combination with \code{"MW"} for the same reason: its moment
 #'   conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
+#'   Unlike \code{"simple"}, \code{"KR"} and \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search, \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search and the MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW conditions.
 #' }
 #'
 #' \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),
@@ -365,7 +373,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
                  stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
@@ -564,6 +572,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
+  stopifnot(is.logical(studentize), length(studentize) == 1L, !is.na(studentize))
+  if (studentize && (testtype != "forest" || !isTRUE(local))) {
+    warning("`studentize` only applies with local = TRUE and testtype = \"forest\"; ignoring.", call. = FALSE)
+    studentize <- FALSE
+  }
+  need_pvar <- (shrink > 0) || studentize
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
   if (testtype=="CART" && !is.null(gridpoints)) {
     warning(
@@ -664,8 +678,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     if (!is.character(block) || length(block) != 1L || !(block %in% colnames(data))) {
       stop("Argument block must be the name of a single column in data.", call. = FALSE)
     }
-    if (!identical(condition, "KR")) {
-      stop("`block` is only supported for condition = \"KR\".", call. = FALSE)
+    if (!(identical(condition, "KR") || identical(condition, "MW"))) {
+      stop("`block` is only supported for condition = \"KR\" or \"MW\".", call. = FALSE)
     }
     if (is.null(cluster)) {
       stop("`block` requires `cluster`: a unit identifier shared by a unit's rows in all blocks.", call. = FALSE)
@@ -1108,7 +1122,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     ## Binning pools all blocks, which is wrong when they have different D/Y
     ## distributions, so D and Y must be used as they are.
     if (data.table::uniqueN(data[[D]], na.rm = TRUE) > Dsubsets ||
-        (!is.null(Y) && any(vapply(Y, function(yy) data.table::uniqueN(data[[yy]], na.rm = TRUE) > Ysubsets, logical(1L))))) {
+        ("KR" %in% condition && !is.null(Y) && any(vapply(Y, function(yy) data.table::uniqueN(data[[yy]], na.rm = TRUE) > Ysubsets, logical(1L))))) {
       stop("With `block`, D and Y must not need binning: raise Dsubsets/Ysubsets to at least the number of ",
            "distinct values of D/Y in the stacked data.", call. = FALSE)
     }
@@ -1666,7 +1680,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
         fe_expr = FE_expr,
         out_hat = yhat,
         out_resid = y_name_rhs[k],
-        by = margins,
+        by = c(margins, if (has_block) "block"),
         sample_var = "sample",
         weight = weight,
         cluster = cluster,
@@ -2029,7 +2043,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
     tmp <- os_res$threshold[one_sided == FALSE]
 
-    keep <- intersect(c("zmargin", "dmargin", "direction"), names(tmp))
+    keep <- intersect(c("zmargin", "dmargin", "direction", "block"), names(tmp))
     tmp <- tmp[, ..keep]
 
     if ("dmargin" %in% names(tmp)) {
@@ -2807,7 +2821,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
       forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
-      shrink = (shrink > 0),
+      shrink = need_pvar,
       verbose = FALSE,
 
       doubly.robust = doubly.robust,
@@ -2840,7 +2854,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
       forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
-      shrink = (shrink > 0),
+      shrink = need_pvar,
       verbose = FALSE,
 
       doubly.robust = doubly.robust,
@@ -2869,7 +2883,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
         weight_name = weight,
         cluster_name = cluster,
         forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
-        shrink = (shrink > 0),
+        shrink = need_pvar,
         progress_title = step_bar(lbl_C)
       )
     }
@@ -3010,6 +3024,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   }
 
 
+  ## Sort key for the subgroup search: raw prediction, or prediction / forest SE.
+  ## `pred` itself is untouched (it is also the tau baseline for recentering).
+  pred_arg <- NULL
+  pred_o_arg <- NULL
+  if (studentize) {
+    studentize_te(data, pred = "pred", pred_var = "pred_var", pred_o = "pred_o",
+                  pred_o_var = "pred_o_var", margins = margins, sample = "sample",
+                  out_pred = "pred_t", out_pred_o = "pred_o_t")
+    pred_arg <- "pred_t"
+    pred_o_arg <- "pred_o_t"
+  }
+
   time=add_time(time, lbl_C)
 
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
@@ -3020,7 +3046,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   if (defer_selection) selectmargins <- character()
 
   if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
   if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
   time=rbind(time,"Find promising subset and test"=proc.time())

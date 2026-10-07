@@ -31,13 +31,28 @@
 #'   \item{\code{"MWDY"}}{As \code{"MWD"} with (D2, Y) as outcomes, i.e.
 #'     \code{montest(D2 + Y ~ X | D1 ~ Z, condition = "MW")}; each outcome is residualized separately (see
 #'     \code{Y.res}) and all enter the forest. Requires Y.}
+#'   \item{\code{"MWDY2"}}{The intersection of two sets of Mourifie-Wan conditions, mirroring \code{"KRDY2"}: MW with
+#'     D1 as the treatment and (D2, Y) as outcomes (as \code{"MWDY"}), and MW with D2 as the treatment and Y as the
+#'     outcome. The two problems are stacked as blocks of one \code{montest()} call (\code{block = }; cluster = the unit,
+#'     or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"} pool or select across them
+#'     and everything is corrected as one family. The first outcome column is D2 in block 1 and a constant in block 2,
+#'     the Y columns are shared; outcomes are residualized and nuisances fitted within each block, and Y is not binned.
+#'     \code{block} and \code{Dsubsets} may not be passed. D1 and D2 must be binary and D1, D2, Y free of missing
+#'     values. \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and the forest search.}
 #' }
+#'
+#' \strong{How the tests localize.} The Kwan-Roth conditions localize in the conditioning variables (D2, or
+#' (D2, Y)) through the margin cells, which are tested with and without the search (\code{local = FALSE} or
+#' \code{TRUE}); the local versions additionally search for violating subgroups in X within the cells (and can
+#' pool or select across them). The Mourifie-Wan conditions have no cells: the conditioning variables (D2, Y) and
+#' X enter as features of the forest, so the search itself localizes jointly in (D2, X) or (D2, Y, X). Without the
+#' search the statistic reduces to a first-stage test, so a global MW test is not meaningful.
 #'
 #' @param fml A formula \code{Y ~ X | FE | D1 + D2 ~ Z}. Y may be omitted (\code{~ X | D1 + D2 ~ Z}) unless
 #'   \code{"KRDY"} is requested, and may contain several variables joined by \code{+}.
 #' @param data A \code{data.frame} or \code{data.table}.
 #' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"MWD"},
-#'   \code{"MWDY"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+#'   \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 #'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
 #'   the MW conditions are never run by default.
 #' @param ... Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
@@ -84,29 +99,33 @@ seqtest <- function(fml, data, condition = NULL, ...) {
   fsd_ok <- two_valued(data[[D1]]) && two_valued(data[[D2]])
 
   ################ conditions ################
-  allowed <- c("KRD", "KRDY", "KRDY2", "FSD", "MWD", "MWDY")
+  allowed <- c("KRD", "KRDY", "KRDY2", "FSD", "MWD", "MWDY", "MWDY2")
   if (is.null(condition)) {
     condition <- c("KRD", if (!is.null(Y)) "KRDY", if (fsd_ok) "FSD")
   } else {
     condition <- match.arg(condition, c(allowed, "all"), several.ok = TRUE)
     if ("all" %in% condition) condition <- allowed
   }
-  if ("KRDY2" %in% condition) {
+  for (cn in intersect(c("KRDY2", "MWDY2"), condition)) {
     bad_dots <- intersect(c("block", "Dsubsets"), names(dots))
     if (length(bad_dots)) {
-      stop("Condition KRDY2 sets `", paste(bad_dots, collapse = "`, `"), "` itself.", call. = FALSE)
+      stop("Condition ", cn, " sets `", paste(bad_dots, collapse = "`, `"), "` itself.", call. = FALSE)
     }
     if (!is.null(Y) && anyNA(data[, c(D1, D2, Y), with = FALSE])) {
-      stop("Condition KRDY2 requires no missing values in D1, D2 and Y.", call. = FALSE)
+      stop("Condition ", cn, " requires no missing values in D1, D2 and Y.", call. = FALSE)
     }
   }
-  for (cn in intersect(c("KRDY", "KRDY2", "MWDY"), condition)) {
+  if ("MWDY2" %in% condition && !two_valued(data[[D2]])) {
+    stop("Condition MWDY2 requires a binary D2 (", D2, "), but it has ",
+         data.table::uniqueN(data[[D2]], na.rm = TRUE), " distinct values.", call. = FALSE)
+  }
+  for (cn in intersect(c("KRDY", "KRDY2", "MWDY", "MWDY2"), condition)) {
     if (is.null(Y)) {
       stop("Condition ", cn, " requires an outcome Y on the left hand side of `fml`.", call. = FALSE)
     }
   }
-  if (any(c("MWD", "MWDY") %in% condition) && !two_valued(data[[D1]])) {
-    stop("Conditions MWD and MWDY require a binary D1 (", D1, "), but it has ",
+  if (any(c("MWD", "MWDY", "MWDY2") %in% condition) && !two_valued(data[[D1]])) {
+    stop("Conditions MWD, MWDY and MWDY2 require a binary D1 (", D1, "), but it has ",
          data.table::uniqueN(data[[D1]], na.rm = TRUE), " distinct values.", call. = FALSE)
   }
   if ("FSD" %in% condition && !fsd_ok) {
@@ -175,6 +194,32 @@ seqtest <- function(fml, data, condition = NULL, ...) {
                                               Dsubsets = max(4L, data.table::uniqueN(data[[D1]]),
                                                              data.table::uniqueN(data[[D2]]))), args))
       fits[[cond]]$Wlookup <- wlookup
+    } else if (cond == "MWDY2") {
+      ## Two MW problems stacked as blocks of one montest() call:
+      ##   block 1: treatment D1, outcomes (D2, Y)
+      ##   block 2: treatment D2, outcomes (0, Y)
+      ## The first outcome column is D2 in block 1 and a constant in block 2 (D2 is the
+      ## treatment there); the Y columns are shared. Both copies of a unit share a cluster id.
+      st_id <- "seq_id__"; st_blk <- "seq_block__"; st_T <- "seq_T__"; st_O <- "seq_O__"
+      dat <- data.table::copy(data)
+      data.table::set(dat, j = st_id, value = seq_len(nrow(dat)))
+      recode01 <- function(x) as.integer(x == max(x, na.rm = TRUE))
+      data.table::set(dat, j = D1, value = recode01(dat[[D1]]))
+      data.table::set(dat, j = D2, value = recode01(dat[[D2]]))
+      b1 <- data.table::copy(dat)
+      data.table::set(b1, j = st_blk, value = 1L)
+      data.table::set(b1, j = st_T, value = dat[[D1]])
+      data.table::set(b1, j = st_O, value = as.numeric(dat[[D2]]))
+      b2 <- data.table::copy(dat)
+      data.table::set(b2, j = st_blk, value = 2L)
+      data.table::set(b2, j = st_T, value = dat[[D2]])
+      data.table::set(b2, j = st_O, value = 0)
+      st <- data.table::rbindlist(list(b1, b2))
+      args <- dots
+      args$cluster <- if (is.null(dots$cluster)) st_id else dots$cluster
+      f <- make_fml(c(st_O, Y), as.name(st_T))
+      fits[[cond]] <- do.call(montest, c(list(fml = f, data = st, condition = "MW", block = st_blk,
+                                              Dsubsets = 2L), args))
     } else {
       ## FSD: recode both to {0,1} (order preserving). D1 - D2 takes values in
       ## {-1,0,1} (D2 need not be nested in D1) and is scored linearly, so the
@@ -222,6 +267,8 @@ print.seqtest <- function(x, ...) {
   if (length(x$condition) == 1L) {
     cat("seqtest, condition", x$condition, ": minimum p-values\n")
     print(signif(x$minp, 4))
+    cat("\nFull montest output is stored in the object; components: ",
+        paste(setdiff(names(x), c("condition", "call")), collapse = ", "), "\n", sep = "")
   } else {
     cat("seqtest, conditions", paste(x$condition, collapse = ", "),
         ": minimum p-values corrected across all cells of all conditions\n")

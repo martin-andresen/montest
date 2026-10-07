@@ -13,7 +13,7 @@ seqtest(fml, data, condition = NULL, ...)
 \item{data}{A \code{data.frame} or \code{data.table}.}
 
 \item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"MWD"},
-\code{"MWDY"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+\code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
 the MW conditions are never run by default.}
 
@@ -61,7 +61,23 @@ all other arguments straight through. The conditions are
   \item{\code{"MWDY"}}{As \code{"MWD"} with (D2, Y) as outcomes, i.e.
     \code{montest(D2 + Y ~ X | D1 ~ Z, condition = "MW")}; each outcome is residualized separately (see
     \code{Y.res}) and all enter the forest. Requires Y.}
+  \item{\code{"MWDY2"}}{The intersection of two sets of Mourifie-Wan conditions, mirroring \code{"KRDY2"}: MW with
+    D1 as the treatment and (D2, Y) as outcomes (as \code{"MWDY"}), and MW with D2 as the treatment and Y as the
+    outcome. The two problems are stacked as blocks of one \code{montest()} call (\code{block = }; cluster = the unit,
+    or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"} pool or select across them
+    and everything is corrected as one family. The first outcome column is D2 in block 1 and a constant in block 2,
+    the Y columns are shared; outcomes are residualized and nuisances fitted within each block, and Y is not binned.
+    \code{block} and \code{Dsubsets} may not be passed. D1 and D2 must be binary and D1, D2, Y free of missing
+    values. \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and the forest search.}
 }
+}
+\details{
+\strong{How the tests localize.} The Kwan-Roth conditions localize in the conditioning variables (D2, or
+(D2, Y)) through the margin cells, which are tested with and without the search (\code{local = FALSE} or
+\code{TRUE}); the local versions additionally search for violating subgroups in X within the cells (and can
+pool or select across them). The Mourifie-Wan conditions have no cells: the conditioning variables (D2, Y) and
+X enter as features of the forest, so the search itself localizes jointly in (D2, X) or (D2, Y, X). Without the
+search the statistic reduces to a first-stage test, so a global MW test is not meaningful.
 }
 \seealso{
 montest

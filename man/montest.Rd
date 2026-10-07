@@ -38,6 +38,7 @@ montest(
   pool = NULL,
   select = NULL,
   shrink = 0,
+  studentize = FALSE,
   linearD = FALSE,
   linearZ = FALSE,
   target = NULL,
@@ -237,6 +238,13 @@ testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
+\item{studentize}{Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the studentized predicted
+treatment effect \code{pred / sqrt(pred_var)} (the causal forest's own predictive variance) instead of on the raw
+prediction, so rows are ranked by the strength of evidence rather than the size of the point estimate. This makes the
+ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
+\code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
+Only with \code{local = TRUE} and \code{testtype = "forest"}.}
+
 \item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
 multivalued D rather than cut-and-stack. Only meaningful for \code{"simple"} and \code{"AHS"}, whose moment
@@ -294,8 +302,9 @@ only pre-selected estimates are reported. This uses much less memory with many m
 because the random number stream differs.}
 
 \item{block}{Optional name of a column in \code{data} indexing independent testing problems that have been stacked
-in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} condition). Only for
-\code{condition = "KR"}. \code{block} becomes a margin like \code{dval} and \code{yval}: the supports of D and
+in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} and \code{"MWDY2"} conditions). Only for
+\code{condition = "KR"} or \code{"MW"} (for \code{"MW"}, outcomes are residualized and the nuisances fitted
+within each block, and Y is not binned). \code{block} becomes a margin like \code{dval} and \code{yval}: the supports of D and
 the outcome, the sets A, the one-sided noncompliance screen and the \code{Q} construction are determined within
 each block, and every cell only uses its own block's rows. \code{pool = "block"} and \code{select = "block"}
 then pool or select across blocks (valid because each cell is a weakly positive implication of the joint null).
@@ -371,7 +380,7 @@ The rough steps of the montest algorithm is as follows
   equations, and test conditions. The outcome variable Q is defined, depending on condition and margins.
   \item Nuisance functions for as \code{Z.hat}, and the outcome \code{Q.hat} are estimated
   \item Separate causal forests of the outcome \code{Q}, on
-  the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions),
+  the instrument \code{Z} using features \code{X} (and optionally \code{Y} for MW and AHS conditions; for MW, \code{Y} and \code{X} enter jointly as forest features, see below),
   treatment effects are predicted in and out of sample and scores constructed
   \item Each sample part (optionally within margins, depending on the options in \code{pool}) is sorted
   according to treatment effects, and the mean of scores is estimated numerically for all possible cutoffs
@@ -405,6 +414,7 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   statistic uses Z.hat directly as a propensity weight with no AIPW/FWL orthogonalization protecting it).
   \code{linearZ}/\code{linearD} are disallowed in combination with \code{"MW"} for the same reason: its moment
   conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
+  Unlike \code{"simple"}, \code{"KR"} and \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search, \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search and the MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW conditions.
 }
 
 \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),

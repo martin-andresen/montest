@@ -176,6 +176,34 @@ shrink_te_crossfit <- function(data,
   invisible(DT)
 }
 
+## Studentized sort keys: pred / sqrt(pred_var) (own-sample OOB) and
+## pred_o / sqrt(pred_o_var) (opposite-sample forest), written to `out_pred` /
+## `out_pred_o`. Variances are floored at 1% of the positive median within each
+## margin cell x sample (non-finite/zero -> that median) so near-zero forest
+## variances cannot produce infinite keys. Cells with no usable variance fall
+## back to the raw prediction. `pred`/`pred_o` are not modified.
+studentize_te <- function(data, pred, pred_var, pred_o, pred_o_var,
+                          margins = NULL, sample = "sample",
+                          out_pred = "pred_t", out_pred_o = "pred_o_t",
+                          floor_frac = 0.01) {
+  stopifnot(data.table::is.data.table(data))
+  byvars <- c(as.character(margins), as.character(sample))
+  stud <- function(y, v) {
+    ok <- is.finite(v) & v > 0
+    if (!any(ok)) return(y)
+    med <- stats::median(v[ok])
+    v[!ok] <- med
+    y / sqrt(pmax(v, floor_frac * med))
+  }
+  ## Copy the column names to non-column-named locals: inside `[.data.table`'s
+  ## j, a column called "pred" would shadow the argument of the same name.
+  cy <- as.character(pred); cv <- as.character(pred_var)
+  cyo <- as.character(pred_o); cvo <- as.character(pred_o_var)
+  data[, (out_pred) := stud(.SD[[cy]], .SD[[cv]]), by = byvars, .SDcols = c(cy, cv)]
+  data[, (out_pred_o) := stud(.SD[[cyo]], .SD[[cvo]]), by = byvars, .SDcols = c(cyo, cvo)]
+  invisible(data)
+}
+
 
 
 
@@ -3959,6 +3987,8 @@ forest_test <- function(
     sample  = "sample",
     pred    = "pred",
     pred_o  = "pred_o",
+    sort_pred = NULL,
+    sort_pred_o = NULL,
     scores  = "scores",
     x_names = NULL,
     minsize = 50L,
@@ -4035,6 +4065,8 @@ forest_test <- function(
       sample = sample,
       pred = pred,
       pred_o = pred_o,
+      sort_pred = sort_pred,
+      sort_pred_o = sort_pred_o,
       scores = scores,
       x_names = x_names,
       minsize = minsize,
@@ -4968,6 +5000,8 @@ forest_test_core <- function(
     sample  = "sample",
     pred    = "pred",
     pred_o  = "pred_o",
+    sort_pred = NULL,
+    sort_pred_o = NULL,
     scores  = "scores",
     x_names = NULL,
     minsize = 50L,
@@ -5137,6 +5171,10 @@ forest_test_core <- function(
 
   predv   <- as.numeric(data[[pred_col]])
   predov  <- as.numeric(data[[pred_o_col]])
+  ## Sort key for the subgroup search (cutoffs live on this scale). Defaults to
+  ## the raw predictions; `predv` stays the tau baseline for recentering.
+  sortv   <- if (is.null(sort_pred)) predv else as.numeric(data[[as.character(sort_pred)]])
+  sortov  <- if (is.null(sort_pred_o)) predov else as.numeric(data[[as.character(sort_pred_o)]])
   scorev  <- as.numeric(data[[scores_col]])
 
   wv <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
@@ -5224,8 +5262,8 @@ forest_test_core <- function(
 
   run_one_cell_idx <- function(idx, key_dt = NULL, cell_id = NA_integer_) {
     s  <- samp[idx]
-    pr <- predv[idx]
-    po <- predov[idx]
+    pr <- sortv[idx]
+    po <- sortov[idx]
     sc <- scorev[idx]
     w  <- wv[idx]
     wsand <- if (!is.null(wv_sandwich)) wv_sandwich[idx] else w
@@ -6660,7 +6698,7 @@ binarize_var <- function(data,
 
   if (length(unique(vals_nonmiss)) <= ngroups) {
     if (!identical(outvar, var)) {
-      dt[, (outvar) := get(var)]
+      data.table::set(dt, j = outvar, value = dt[[var]])
     }
     return(dt)
   }
@@ -6694,7 +6732,7 @@ binarize_var <- function(data,
     bins <- as.integer(cut(dt[[var]], breaks = breaks)) - 1L
   }
 
-  dt[, (outvar) := bins]
+  data.table::set(dt, j = outvar, value = bins)
 
   dt
 }
@@ -6801,6 +6839,8 @@ cct_pvalue <- function(p, w = NULL,eps=1e-15) {
 ## Named character vector original -> alias for the columns of `data_names` that collide.
 alias_collisions <- function(data_names, reserved = .mt_reserved) {
   hit <- intersect(data_names, reserved)
+  ## Names ending in .hat keep their dedicated 'reserved for internal use' error in montest().
+  hit <- hit[!grepl("[.]hat$", hit)]
   if (!length(hit)) return(character())
   alias <- paste0(".mt_", hit)
   while (any(alias %in% data_names)) alias[alias %in% data_names] <- paste0(alias[alias %in% data_names], "_")
