@@ -10,6 +10,8 @@ montest(
   fml.Z = NULL,
   fml.Q = NULL,
   fml.varZ = NULL,
+  fml.C = NULL,
+  fml.varS = NULL,
   condition = NULL,
   inner.folds = NULL,
   crossfit = NULL,
@@ -39,6 +41,7 @@ montest(
   select = NULL,
   shrink = 0,
   studentize = FALSE,
+  priority = FALSE,
   linearD = FALSE,
   linearZ = FALSE,
   target = NULL,
@@ -57,7 +60,8 @@ montest(
   Zparameters = list(),
   Yparameters = list(),
   Qparameters = list(),
-  Cparameters = list()
+  Cparameters = list(),
+  Sparameters = list()
 )
 }
 \arguments{
@@ -78,6 +82,10 @@ mean -- the two need not use the same covariates (e.g. a more parsimonious varia
 model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
 main X part), so leaving it unset reproduces the previous behavior of reusing the same
 covariates used for \code{Z}'s conditional mean.}
+
+\item{fml.C}{Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml.}
+
+\item{fml.varS}{Optional: A one-sided formula for the covariates of the score-variance model used when \code{priority = TRUE}. Defaults to \code{fml.C}.}
 
 \item{condition}{Character vector selecting which tests to run. Allowed values are any combination of
 \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
@@ -245,6 +253,15 @@ ranking comparable across pooled margins and conditions whose scores differ in s
 \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
 Only with \code{local = TRUE} and \code{testtype = "forest"}.}
 
+\item{priority}{Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the priority
+\code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
+of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
+\code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
+to \code{pred} before dividing. Each outer sample half's own key uses an out-of-bag \code{v(X)} fit on that half only,
+and the key used in the other half uses the \code{v(X)} fit on the search half only. Reported cutoffs
+(\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Cannot be combined with \code{studentize}.
+Only with \code{local = TRUE} and \code{testtype = "forest"}.}
+
 \item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
 multivalued D rather than cut-and-stack. Only meaningful for \code{"simple"} and \code{"AHS"}, whose moment
@@ -332,11 +349,11 @@ all fixed effects are residualized as specified in the FE part of the formula, w
 Nuisance fragility that can arise under \code{parametric=TRUE} (e.g. a linear-probability-model propensity falling outside \eqn{[0,1]}) is caught at score-construction time by the validity checks
 described under \code{aipw.clip}.}
 
-\item{Zparameters, Yparameters, Qparameters, Cparameters, Rparameters}{Named lists of
+\item{Zparameters, Yparameters, Qparameters, Cparameters, Sparameters, Rparameters}{Named lists of
 additional arguments passed to the underlying estimation routines for different
 nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
 Unless \code{num.trees} is supplied, the nuisance forests (\code{Zparameters}, \code{Yparameters},
-\code{Qparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.}
+\code{Qparameters}, \code{Sparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.}
 }
 \value{
 A named list:

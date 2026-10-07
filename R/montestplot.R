@@ -359,7 +359,8 @@ montestplot <- function(object, sample = NULL, margins = NULL, grid = TRUE, numX
 
     plot(
       gp$tau, gp$t, type = "n",
-      xlab = expression(tau), ylab = "t",
+      xlab = if (isTRUE(object$options$priority)) expression(tau / hat(v)) else expression(tau),
+      ylab = "t",
       main = grid_panel$main_title
     )
 

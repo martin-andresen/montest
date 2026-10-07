@@ -22,6 +22,8 @@
 #'   model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
 #'   main X part), so leaving it unset reproduces the previous behavior of reusing the same
 #'   covariates used for \code{Z}'s conditional mean.
+#' @param fml.C Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml.
+#' @param fml.varS Optional: A one-sided formula for the covariates of the score-variance model used when \code{priority = TRUE}. Defaults to \code{fml.C}.
 #' @param fml.Q Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 #' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
 #' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or using semiparametric methods (the default). In the latter case,
@@ -163,6 +165,14 @@
 #'   ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
 #'   \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
 #'   Only with \code{local = TRUE} and \code{testtype = "forest"}.
+#' @param priority Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the priority
+#'   \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
+#'   of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
+#'   \code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
+#'   to \code{pred} before dividing. Each outer sample half's own key uses an out-of-bag \code{v(X)} fit on that half only,
+#'   and the key used in the other half uses the \code{v(X)} fit on the search half only. Reported cutoffs
+#'   (\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Cannot be combined with \code{studentize}.
+#'   Only with \code{local = TRUE} and \code{testtype = "forest"}.
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
@@ -241,11 +251,11 @@
 #' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
-#' @param Zparameters,Yparameters,Qparameters,Cparameters,Rparameters Named lists of
+#' @param Zparameters,Yparameters,Qparameters,Cparameters,Sparameters,Rparameters Named lists of
 #'   additional arguments passed to the underlying estimation routines for different
 #'   nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
 #'   Unless \code{num.trees} is supplied, the nuisance forests (\code{Zparameters}, \code{Yparameters},
-#'   \code{Qparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.
+#'   \code{Qparameters}, \code{Sparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.
 #' @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
 #'
 #' @details
@@ -369,14 +379,14 @@
 #' @seealso montestplot LATEtest
 #' @export
 
-montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
+montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=FALSE,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
-                 Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
+                 Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
 
   ## Captured first, before any argument gets reassigned/resolved below, so
@@ -411,6 +421,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## are renamed to dot-prefixed aliases for the duration of the call (and mapped back in the
   ## output); formulas and column-name arguments are rewritten accordingly. See alias_collisions().
   args_orig <- list(fml = fml, fml.Z = fml.Z, fml.Q = fml.Q, fml.varZ = fml.varZ,
+                    fml.C = fml.C, fml.varS = fml.varS,
                     weight = weight, cluster = cluster, block = block)
   alias_map <- alias_collisions(names(data))
   if (length(alias_map)) {
@@ -419,6 +430,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     fml.Z <- rename_formula(fml.Z, alias_map)
     fml.Q <- rename_formula(fml.Q, alias_map)
     fml.varZ <- rename_formula(fml.varZ, alias_map)
+    fml.C <- rename_formula(fml.C, alias_map)
+    fml.varS <- rename_formula(fml.varS, alias_map)
     weight <- alias_name(weight, alias_map)
     cluster <- alias_name(cluster, alias_map)
     block <- alias_name(block, alias_map)
@@ -451,7 +464,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   FE <- v$FE
 
-  X_expr_forest <- v$X_expr
+  ## `X_expr_main` is the X part of `fml` (default for the nuisance formulas); `X_expr_forest`
+  ## is the covariate set of the causal forest / subgroup search, which `fml.C` can override.
+  X_expr_main <- v$X_expr
+  X_expr_forest <- parse_one_sided_rhs(fml.C, "fml.C")
+  if (is.null(X_expr_forest)) X_expr_forest <- X_expr_main
   FE_expr <- v$FE_expr
   has_FE <- !is.null(FE_expr)
 
@@ -480,16 +497,17 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   X_expr_Z <- parse_one_sided_rhs(fml.Z, "fml.Z")
   X_expr_Q <- parse_one_sided_rhs(fml.Q, "fml.Q")
 
-  if (is.null(X_expr_Z)) X_expr_Z <- X_expr_forest
-  if (is.null(X_expr_Q)) X_expr_Q <- X_expr_forest
+  if (is.null(X_expr_Z)) X_expr_Z <- X_expr_main
+  if (is.null(X_expr_Q)) X_expr_Q <- X_expr_main
 
   has_X_expr_forest <- !is.null(X_expr_forest) && !identical(X_expr_forest, quote(1))
   has_X_expr_Z <- !is.null(X_expr_Z) && !identical(X_expr_Z, quote(1))
   has_X_expr_Q <- !is.null(X_expr_Q) && !identical(X_expr_Q, quote(1))
 
-
-  if (is.null(X_expr_Z)) X_expr_Z <- X_expr_forest
-  if (is.null(X_expr_Q)) X_expr_Q <- X_expr_forest
+  ## `fml.varS` (covariates of the score-variance model behind `priority`) falls back to
+  ## `fml.C`'s covariates when unset -- resolved at its point of use, since `X_expr_forest`
+  ## can still be trimmed below.
+  X_expr_varS <- parse_one_sided_rhs(fml.varS, "fml.varS")
 
   ## `fml.varZ` controls the covariates used for the conditional-variance
   ## nuisance v(X) = Var(Z|X,FE) alone (see the `need_v_hat` block below),
@@ -576,6 +594,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   if (studentize && (testtype != "forest" || !isTRUE(local))) {
     warning("`studentize` only applies with local = TRUE and testtype = \"forest\"; ignoring.", call. = FALSE)
     studentize <- FALSE
+  }
+  ## TODO: remove `studentize` once `priority` has settled.
+  stopifnot(is.logical(priority), length(priority) == 1L, !is.na(priority))
+  if (priority && !isTRUE(local)) priority <- FALSE
+  if (priority && testtype != "forest") {
+    warning("`priority` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
+    priority <- FALSE
+  }
+  if (priority && studentize) {
+    stop("`priority` and `studentize` both rescale the sort key and cannot be combined.", call. = FALSE)
   }
   need_pvar <- (shrink > 0) || studentize
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
@@ -966,13 +994,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   vars_Z      <- all.vars(X_expr_Z)
   vars_varZ   <- all.vars(X_expr_varZ)
   vars_Q      <- all.vars(X_expr_Q)
-  vars_FE     <- if (has_FE) all.vars(FE_expr) else character()
+  vars_varS   <- all.vars(X_expr_varS)
+  vars_FE    <- if (has_FE) all.vars(FE_expr) else character()
 
   allvars <- unique(c(
     vars_forest,
     vars_Z,
     vars_varZ,
     vars_Q,
+    vars_varS,
     vars_FE,
     Y, D, Z,
     weight,
@@ -3008,6 +3038,36 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## centering is actually in play; harmless (never consulted) otherwise.
   center_inv_v_arg <- identical(target, "all")
 
+  ###SCORE-VARIANCE MODEL FOR `priority` (before shrinkage: fit on the unshrunk tau) #######
+  ## v(X) = E[(S - tau(X))^2 | X], estimated within each outer sample half for the half's own
+  ## sort key (OOB) and from the opposite half's data for the other half's key (`across`),
+  ## mirroring pred / pred_o, so the cutoff found in one half never sees the other half's rows.
+  if (priority) {
+    pr_target <- "priority_sq__"
+    pr_v  <- "priority_v__"
+    pr_vo <- "priority_vo__"
+    data[, (pr_target) := (scores - pred)^2]
+    pr_rows <- which(is.finite(data[[pr_target]]))
+    X_expr_pr <- if (is.null(X_expr_varS)) X_expr_forest else X_expr_varS
+    ## Same covariates as the causal forest (the default): reuse its columns.
+    X_names_pr <- if (is.null(X_expr_varS) || identical(X_expr_varS, X_expr_forest)) X_forest else NULL
+    pr_call <- function(out_hat, crossfit_s) {
+      estimate_conditional_mean(
+        DT = data, y_name = pr_target, x_expr = X_expr_pr, fe_expr = FE_expr,
+        out_hat = out_hat, by = margins, sample_var = "sample", weight = weight,
+        cluster = cluster, parametric = FALSE, foldname = NULL,
+        crossfit = crossfit_s, crossfit_label = "S",
+        forest_opts = utils::modifyList(list(num.trees = 500L), Sparameters),
+        fixest_opts = Sparameters, x_names = X_names_pr, x_prefix = "__xs",
+        keep_x = FALSE, return_residual = FALSE, partial_out_y_fe = FALSE,
+        i = pr_rows
+      )
+    }
+    pr_call(pr_v,  character())
+    pr_call(pr_vo, "S")
+    data[, intersect(c(pr_target, paste0(pr_target, ".sp_hat")), names(data)) := NULL]
+  }
+
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
 
   if (shrink>0&testtype=="forest"&local) {
@@ -3034,6 +3094,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
                   out_pred = "pred_t", out_pred_o = "pred_o_t")
     pred_arg <- "pred_t"
     pred_o_arg <- "pred_o_t"
+  }
+  ## `priority`: shrunk (if `shrink`) prediction over the score variance fitted above.
+  if (priority) {
+    priority_te(data, pred = "pred", pred_v = pr_v, pred_o = "pred_o", pred_o_v = pr_vo,
+                margins = margins, sample = "sample",
+                out_pred = "pred_p", out_pred_o = "pred_o_p")
+    data[, c(pr_v, pr_vo) := NULL]
+    pred_arg <- "pred_p"
+    pred_o_arg <- "pred_o_p"
   }
 
   time=add_time(time, lbl_C)
@@ -3276,7 +3345,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   options <- mget(setdiff(names(formals(montest)), "data"), envir = environment())
   if (length(alias_map)) {
     ## Report the caller's own names, not the internal aliases.
-    for (nm in c("fml", "fml.Z", "fml.Q", "fml.varZ")) options[nm] <- list(args_orig[[nm]])
+    for (nm in c("fml", "fml.Z", "fml.Q", "fml.varZ", "fml.C", "fml.varS")) options[nm] <- list(args_orig[[nm]])
     for (nm in c("weight", "cluster", "block")) {
       if (is.character(options[[nm]])) options[[nm]] <- restore_aliases(options[[nm]], alias_map)
     }

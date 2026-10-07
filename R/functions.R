@@ -207,6 +207,31 @@ studentize_te <- function(data, pred, pred_var, pred_o, pred_o_var,
 
 
 
+## Priority sort keys (Neill 2012, JRSS-B): pred / v and pred_o / v_o, where v (own-half OOB)
+## and v_o (fitted on the opposite half) estimate the centered score variance. Written to
+## `out_pred` / `out_pred_o`. As in studentize_te(), variances are floored at 1% of the
+## positive median within each margin cell x sample (non-finite/non-positive -> that median);
+## cells with no usable variance fall back to the raw prediction.
+priority_te <- function(data, pred, pred_v, pred_o, pred_o_v,
+                        margins = NULL, sample = "sample",
+                        out_pred = "pred_p", out_pred_o = "pred_o_p",
+                        floor_frac = 0.01) {
+  stopifnot(data.table::is.data.table(data))
+  byvars <- c(as.character(margins), as.character(sample))
+  scale_by <- function(y, v) {
+    ok <- is.finite(v) & v > 0
+    if (!any(ok)) return(y)
+    med <- stats::median(v[ok])
+    v[!ok] <- med
+    y / pmax(v, floor_frac * med)
+  }
+  cy <- as.character(pred); cv <- as.character(pred_v)
+  cyo <- as.character(pred_o); cvo <- as.character(pred_o_v)
+  data[, (out_pred) := scale_by(.SD[[cy]], .SD[[cv]]), by = byvars, .SDcols = c(cy, cv)]
+  data[, (out_pred_o) := scale_by(.SD[[cyo]], .SD[[cvo]]), by = byvars, .SDcols = c(cyo, cvo)]
+  invisible(data)
+}
+
 ## CART choice among candidate leaves of one choice group (shared by CART_test() and the
 ## stack = FALSE post-hoc selection). Extracted unchanged from CART_test().
 cart_choose_group_selection <- function(dt_grp, screen, alpha) {
