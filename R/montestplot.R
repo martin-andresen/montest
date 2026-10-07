@@ -98,7 +98,7 @@ montestplot <- function(object, sample = NULL, margins = NULL, grid = TRUE, numX
   ## were *not* pooled -- this lets us recover that key structure purely
   ## from the column names actually present, instead of assuming a fixed
   ## layout.
-  DIMS <- c("zmargin", "dval", "yval", "condition", "equation", "sample")
+  DIMS <- c("zmargin", "dval", "yval", "condition", "equation", "sample", "block")
 
   ## `$grid` (and Xmeans/Xmeans_all/XSD/shares) are only ever recorded for
   ## testtype = "forest" results -- CART_test() never builds them. Since

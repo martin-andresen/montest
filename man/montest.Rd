@@ -44,6 +44,7 @@ montest(
   doubly.robust = NULL,
   local = TRUE,
   stack = TRUE,
+  block = NULL,
   progress = interactive(),
   cp = 0,
   maxrankcp = 10L,
@@ -291,6 +292,20 @@ only pre-selected estimates are reported. This uses much less memory with many m
 \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
 \code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
 because the random number stream differs.}
+
+\item{block}{Optional name of a column in \code{data} indexing independent testing problems that have been stacked
+in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} condition). Only for
+\code{condition = "KR"}. \code{block} becomes a margin like \code{dval} and \code{yval}: the supports of D and
+the outcome, the sets A, the one-sided noncompliance screen and the \code{Q} construction are determined within
+each block, and every cell only uses its own block's rows. \code{pool = "block"} and \code{select = "block"}
+then pool or select across blocks (valid because each cell is a weakly positive implication of the joint null).
+Requires \code{cluster} (a unit identifier shared by a unit's rows in all blocks, so that sample splitting
+keeps them together and standard errors of pooled moments account for the duplication), hence
+\code{testtype = "forest"}. D and Y must not need binning (at most \code{Dsubsets}/\code{Ysubsets} distinct
+values in the stacked data) and two-valued treatments should be coded 0/1 in every block. If the blocks are
+row-aligned copies of each other (same Z, X, sample, cluster and weight in the same row order), \code{Z.hat}
+and the variance nuisance are fitted once, on the first block, and copied to the other blocks; otherwise
+they are fitted on the stacked data (with a message).}
 
 \item{progress}{Logical, default \code{interactive()}. Show a progress bar over the blocks when
 \code{stack = FALSE}.}

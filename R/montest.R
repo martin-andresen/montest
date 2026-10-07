@@ -214,6 +214,19 @@
 #'   \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
 #'   \code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
 #'   because the random number stream differs.
+#' @param block Optional name of a column in \code{data} indexing independent testing problems that have been stacked
+#'   in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} condition). Only for
+#'   \code{condition = "KR"}. \code{block} becomes a margin like \code{dval} and \code{yval}: the supports of D and
+#'   the outcome, the sets A, the one-sided noncompliance screen and the \code{Q} construction are determined within
+#'   each block, and every cell only uses its own block's rows. \code{pool = "block"} and \code{select = "block"}
+#'   then pool or select across blocks (valid because each cell is a weakly positive implication of the joint null).
+#'   Requires \code{cluster} (a unit identifier shared by a unit's rows in all blocks, so that sample splitting
+#'   keeps them together and standard errors of pooled moments account for the duplication), hence
+#'   \code{testtype = "forest"}. D and Y must not need binning (at most \code{Dsubsets}/\code{Ysubsets} distinct
+#'   values in the stacked data) and two-valued treatments should be coded 0/1 in every block. If the blocks are
+#'   row-aligned copies of each other (same Z, X, sample, cluster and weight in the same row order), \code{Z.hat}
+#'   and the variance nuisance are fitted once, on the first block, and copied to the other blocks; otherwise
+#'   they are fitted on the stacked data (with a message).
 #' @param progress Logical, default \code{interactive()}. Show a progress bar over the blocks when
 #'   \code{stack = FALSE}.
 #' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
@@ -351,7 +364,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,local=TRUE,stack=TRUE,progress=interactive(),
+                 doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list()
 ){
@@ -611,22 +624,47 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   Dsubsets <- check_integer_gt1(Dsubsets, "Dsubsets")
   Zsubsets <- check_integer_gt1(Zsubsets, "Zsubsets")
 
+  ##VALIDATE block
+  has_block <- !is.null(block)
+  if (has_block) {
+    if (!is.character(block) || length(block) != 1L || !(block %in% colnames(data))) {
+      stop("Argument block must be the name of a single column in data.", call. = FALSE)
+    }
+    if (!identical(condition, "KR")) {
+      stop("`block` is only supported for condition = \"KR\".", call. = FALSE)
+    }
+    if (is.null(cluster)) {
+      stop("`block` requires `cluster`: a unit identifier shared by a unit's rows in all blocks.", call. = FALSE)
+    }
+    if (anyNA(data[[block]])) stop("The block column may not contain missing values.", call. = FALSE)
+    if (!identical(block, "block")) {
+      if ("block" %in% colnames(data)) {
+        stop("`data` has a column named `block` that is not the `block` argument; please rename it.", call. = FALSE)
+      }
+      data[, block := as.integer(factor(get(block)))]
+    } else {
+      data[, block := as.integer(factor(block))]
+    }
+    blk_vals <- sort(unique(data$block))
+  }
+
   ##VALIDATE POOL/SELECT
+  pool_vocab <- c("zmargin", "dval", "yval", "condition", "equation", "sample", if (has_block) "block")
   pool_input <- pool
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
-  else if (sum(pool=="all")==1) pool=c("zmargin","dval","yval","condition","equation","sample")
+  else if (sum(pool=="all")==1) pool=pool_vocab
   else if (sum(pool=="none")==1) pool=c()
   else if (is.null(pool)==FALSE) pool <- match.arg(
     pool,
-    c("zmargin", "dval", "yval", "condition", "equation", "sample"),
+    pool_vocab,
     several.ok = TRUE
   )
   else pool=c("zmargin","dval","yval","sample")
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
-  else if (sum(select=="all")==1) select=c("zmargin","dval","yval","condition","equation","sample")
+  else if (sum(select=="all")==1) select=pool_vocab
   else if (sum(select=="none")==1) select=c()
-  else if (is.null(select)==FALSE) select=match.arg(select,c("zmargin","dval","yval","condition","equation","sample"),several.ok=TRUE)
+  else if (is.null(select)==FALSE) select=match.arg(select,pool_vocab,several.ok=TRUE)
   else select="condition"
 
   if (!local) {
@@ -890,7 +928,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     vars_FE,
     Y, D, Z,
     weight,
-    cluster
+    cluster,
+    if (has_block) "block"
   ))
   allvars <- allvars[!is.na(allvars)]
 
@@ -1030,6 +1069,22 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   time=rbind(time,"Prepare data"=proc.time())
 
   ############### 3 Discretize Z, D and Y into subsets ###############
+
+  if (has_block) {
+    ## Binning pools all blocks, which is wrong when they have different D/Y
+    ## distributions, so D and Y must be used as they are.
+    if (data.table::uniqueN(data[[D]], na.rm = TRUE) > Dsubsets ||
+        (!is.null(Y) && any(vapply(Y, function(yy) data.table::uniqueN(data[[yy]], na.rm = TRUE) > Ysubsets, logical(1L))))) {
+      stop("With `block`, D and Y must not need binning: raise Dsubsets/Ysubsets to at least the number of ",
+           "distinct values of D/Y in the stacked data.", call. = FALSE)
+    }
+    for (b in blk_vals) {
+      dsb <- sort(unique(stats::na.omit(data[block == b][[D]])))
+      if (length(dsb) == 2L && !all(dsb == c(0, 1))) {
+        stop("With `block`, a two-valued treatment must be coded 0/1 within every block (block ", b, ").", call. = FALSE)
+      }
+    }
+  }
 
   if (need_binarized_D) {
     ##bin treatment
@@ -1369,7 +1424,41 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   zhat <- paste0(Z, ".hat")
 
+  ## With `block` the nuisances that do not depend on the block (Z.hat, v(X)) are
+  ## fit on the first block only and copied to the same unit's rows in the other
+  ## blocks, instead of on the stacked data: it saves the time and, with
+  ## out-of-bag predictions, avoids a unit's own copy being in-bag when its
+  ## prediction is formed. Requires the blocks to be row-aligned copies of each
+  ## other as far as Z, X, sample, cluster and weight are concerned.
+  rows_est <- NULL
+  if (has_block && length(blk_vals) > 1L) {
+    data[, unit_pos__ := seq_len(.N), by = c("block", "zmargin")]
+    chk_cols <- unique(c("zmargin", "unit_pos__", Z, "sample", cluster, weight, X_forest))
+    chk_cols <- chk_cols[chk_cols %in% names(data)]
+    ref_b <- blk_vals[1L]
+    ref_dt <- data[block == ref_b][order(zmargin, unit_pos__), ..chk_cols]
+    aligned <- all(vapply(blk_vals[-1L], function(b) {
+      ob <- data[block == b][order(zmargin, unit_pos__), ..chk_cols]
+      nrow(ob) == nrow(ref_dt) &&
+        all(vapply(chk_cols, function(cc) isTRUE(all.equal(ob[[cc]], ref_dt[[cc]])), logical(1L)))
+    }, logical(1L)))
+    if (aligned) {
+      rows_est <- which(data$block == ref_b)
+    } else {
+      message("`block`: the blocks are not row-aligned copies of each other (Z, X, sample, cluster, weight); ",
+              "Z.hat and v(X) are estimated on the stacked data.")
+      data[, unit_pos__ := NULL]
+    }
+  }
+  copy_from_ref <- function(col) {
+    ref <- data[rows_est, c("zmargin", "unit_pos__", col), with = FALSE]
+    data.table::setnames(ref, col, "ref__")
+    data[ref, (col) := i.ref__, on = c("zmargin", "unit_pos__")]
+    invisible(NULL)
+  }
+
   Z_hat_info <- estimate_conditional_mean(
+    i = rows_est,
     DT = data,
     y_name = Z,
     x_expr = X_expr_Z,
@@ -1391,6 +1480,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     return_residual = FALSE,
     partial_out_y_fe = TRUE
   )
+  if (!is.null(rows_est)) copy_from_ref(zhat)
 
 
 
@@ -1504,8 +1594,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       keep_x = FALSE,
       return_residual = FALSE,
       partial_out_y_fe = TRUE,
-      i = which(data$z_use_linear_score)
+      i = if (is.null(rows_est)) which(data$z_use_linear_score) else intersect(rows_est, which(data$z_use_linear_score))
     )
+    if (!is.null(rows_est)) copy_from_ref(zvarhat)
   }
 
   if (need_ols_v) {
@@ -1520,6 +1611,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   if (need_v_hat || need_ols_v) {
     data[, (z_resid_sq) := NULL]
   }
+  if ("unit_pos__" %in% names(data)) data[, unit_pos__ := NULL]
 
   ##RESIDUALIZE Y in stacked data if testing MW or AHS and using Y.res=TRUE
   if (any(condition %in% c("MW", "AHS")) && isTRUE(Y.res)) {
@@ -1582,12 +1674,31 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       )
     }
 
-    os_res <- test_one_sided_noncompliance(
-      data = data[z_is_linear == FALSE],
-      D = Dbincol,
-      Z = Z,
-      zmargin_var = margins
-    )
+    if (has_block) {
+      ## D differs between blocks, so the screen is run within each block.
+      os_list <- lapply(blk_vals, function(b) {
+        r <- test_one_sided_noncompliance(
+          data = data[z_is_linear == FALSE & block == b],
+          D = Dbincol,
+          Z = Z,
+          zmargin_var = margins
+        )
+        r$threshold[, block := b]
+        r$exact[, block := b]
+        r
+      })
+      os_res <- list(
+        threshold = data.table::rbindlist(lapply(os_list, `[[`, "threshold"), use.names = TRUE, fill = TRUE),
+        exact = data.table::rbindlist(lapply(os_list, `[[`, "exact"), use.names = TRUE, fill = TRUE)
+      )
+    } else {
+      os_res <- test_one_sided_noncompliance(
+        data = data[z_is_linear == FALSE],
+        D = Dbincol,
+        Z = Z,
+        zmargin_var = margins
+      )
+    }
 
     osmargins <- margins
 
@@ -1946,16 +2057,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     if (has_FE) {
       ## os_res is not computed under FE (see the one-sided-noncompliance
       ## block above) -- test every margin directly instead of filtering.
-      tmp <- if (K > 2L) {
-        data.table::CJ(zmargin = Zsup[-1L], dval = Dsup)
+      mk_tmp <- function(Ds) {
+        if (K > 2L) data.table::CJ(zmargin = Zsup[-1L], dval = Ds) else data.table::data.table(dval = Ds)
+      }
+      tmp <- if (has_block) {
+        data.table::rbindlist(lapply(blk_vals, function(b) {
+          mk_tmp(sort(unique(data[block == b][[Dbincol]])))[, block := b]
+        }))
       } else {
-        data.table::data.table(dval = Dsup)
+        mk_tmp(Dsup)
       }
 
     } else {
       tmp <- os_res$exact[trivial_exact == FALSE]
 
-      keep <- intersect(c("zmargin", "dval", "dmargin"), names(tmp))
+      keep <- intersect(c("zmargin", "dval", "dmargin", "block"), names(tmp))
       tmp <- tmp[, ..keep]
 
       if ("dmargin" %in% names(tmp)) {
@@ -1970,6 +2086,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
     tmp[, condition := "KR"]
 
+    ## The sets A for the support (Dsup, Ysup) of one problem; with `block` it is
+    ## run once per block on that block's own supports.
+    make_A_idx <- function(Dsup, Ysup) {
+    L <- length(Ysup)
     A_specs <- list()
 
     for (dv in Dsup) {
@@ -2029,9 +2149,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
       }
     }
 
-    A_idx <- data.table::rbindlist(A_specs, use.names = TRUE, fill = TRUE)
+    data.table::rbindlist(A_specs, use.names = TRUE, fill = TRUE)
+    } ## end make_A_idx()
 
-    tmp <- A_idx[tmp, on = "dval", allow.cartesian = TRUE]
+    if (has_block) {
+      A_idx <- data.table::rbindlist(lapply(blk_vals, function(b) {
+        db <- data[block == b]
+        a <- make_A_idx(sort(unique(db[[Dbincol]])), sort(unique(db[[Ybincol]])))
+        if (nrow(a) > 0L) a[, block := b]
+        a
+      }), use.names = TRUE, fill = TRUE)
+      tmp <- A_idx[tmp, on = c("block", "dval"), allow.cartesian = TRUE]
+    } else {
+      A_idx <- make_A_idx(Dsup, Ysup)
+      tmp <- A_idx[tmp, on = "dval", allow.cartesian = TRUE]
+    }
 
     idx_blocks[["KR"]] <- tmp
   }
@@ -2060,7 +2192,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     mi
   }
 
-  margin_index <- drop_nonvarying_index_cols(margin_index)
+  margin_index <- drop_nonvarying_index_cols(margin_index, always_keep = c("condition", if (has_block) "block"))
 
 
 
@@ -2103,6 +2235,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
   mi <- data.table::copy(margin_index)
 
+  ## With `block`, each cell only uses the rows of its own block.
+  blk_key <- if (has_block) "block" else NULL
+
   if ("zmargin" %in% names(data) && "zmargin" %in% names(mi)) {
     ## Make sure both join columns have the same type.
     data[, zmargin := as.numeric(zmargin)]
@@ -2110,7 +2245,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
     data <- mi[
       data,
-      on = "zmargin",
+      on = c("zmargin", blk_key),
       allow.cartesian = TRUE
     ]
 
@@ -2120,12 +2255,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
 
     data <- mi[
       data,
-      on = "join_dummy__",
+      on = c("join_dummy__", blk_key),
       allow.cartesian = TRUE
     ]
 
     data[, join_dummy__ := NULL]
   }
+
+  ## Rows of a block without any cell (all its cells screened out) are dropped.
+  if (has_block) data <- data[!is.na(condition)]
 
   # --------------------------------------------------
   # Define margin variables
@@ -2343,20 +2481,23 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
     stopifnot(!is.null(Dcol), Dcol %in% names(data))
     stopifnot(Ycol %in% names(data))
 
-    dmin <- min(data[[Dcol]], na.rm = TRUE)
+    ## With `block`, the lowest treatment value is that of the row's own block.
+    data[, dmin__ := min(get(Dcol), na.rm = TRUE), by = eval(if (has_block) "block")]
+    kr_by <- c("dval", "yval", if (has_block) "block")
 
     data[
-      condition == "KR" & dval == dmin,
+      condition == "KR" & dval == dmin__,
       Q := -as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-      by = .(dval, yval)
+      by = kr_by
     ]
 
     data[
-      condition == "KR" & dval > dmin,
+      condition == "KR" & dval > dmin__,
       Q := as.numeric(get(Dcol) >= dval) -
         as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-      by = .(dval, yval)
+      by = kr_by
     ]
+    data[, dmin__ := NULL]
   }
 
   # ---------------- sanity check ----------------
@@ -3000,7 +3141,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,condition=NULL,inn
   ## covariate's cleaned name, either of which would make the rename
   ## ambiguous to name-based lookups; such columns keep their internal name.
   if (!is.null(X_forest_info) && !is.null(X_forest_info$x_names)) {
-    reserved <- c("zmargin", "dval", "yval", "condition", "equation", "sample")
+    reserved <- c("zmargin", "dval", "yval", "condition", "equation", "sample", "block")
     old_nm <- X_forest_info$x_names
     new_nm <- X_forest_info$clean_names
     bad <- new_nm %in% reserved | duplicated(new_nm) | duplicated(new_nm, fromLast = TRUE)

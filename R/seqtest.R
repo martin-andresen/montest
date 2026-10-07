@@ -11,6 +11,15 @@
 #'     outcome, i.e. \code{montest(D2 + Y ~ X | FE | D1 ~ Z, condition = "KR")}. The sets A range over the
 #'     joint support of the binned outcomes; the \code{yval} labels in \code{$results} list the
 #'     (D2, Y) tuples in each set and \code{$Ylookup} of the fit decodes them. Requires Y.}
+#'   \item{\code{"KRDY2"}}{The intersection of two sets of Kwan-Roth conditions (use case 2): KR with D1 as the
+#'     treatment and (D2, Y) jointly as the outcome (as \code{"KRDY"}), and KR with D2 as the treatment and Y as the
+#'     outcome. The two problems are stacked as blocks of one \code{montest()} call using its \code{block} argument
+#'     (cluster = the unit, or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"}
+#'     pool or select across them and everything is corrected as one family. Y is binned once (\code{Ysubsets},
+#'     \code{gridtypeY}); \code{block} and \code{Dsubsets} may not be passed. D1, D2 and Y may
+#'     not have missing values; two-valued D1/D2 are recoded to 0/1. \code{$Wlookup} of the fit decodes the outcome
+#'     codes appearing in \code{yval}; \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and
+#'     uses the forest search (\code{testtype = "forest"}).}
 #'   \item{\code{"FSD"}}{The first stage difference condition
 #'     \eqn{E[D1|Z=1]-E[D1|Z=0] \ge E[D2|Z=1]-E[D2|Z=0]}, tested as the simple first stage condition for the
 #'     constructed treatment D1 - D2 (shifted by 1 and scored linearly), i.e.
@@ -27,7 +36,7 @@
 #' @param fml A formula \code{Y ~ X | FE | D1 + D2 ~ Z}. Y may be omitted (\code{~ X | D1 + D2 ~ Z}) unless
 #'   \code{"KRDY"} is requested, and may contain several variables joined by \code{+}.
 #' @param data A \code{data.frame} or \code{data.table}.
-#' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"FSD"}, \code{"MWD"},
+#' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"MWD"},
 #'   \code{"MWDY"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 #'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
 #'   the MW conditions are never run by default.
@@ -75,14 +84,23 @@ seqtest <- function(fml, data, condition = NULL, ...) {
   fsd_ok <- two_valued(data[[D1]]) && two_valued(data[[D2]])
 
   ################ conditions ################
-  allowed <- c("KRD", "KRDY", "FSD", "MWD", "MWDY")
+  allowed <- c("KRD", "KRDY", "KRDY2", "FSD", "MWD", "MWDY")
   if (is.null(condition)) {
     condition <- c("KRD", if (!is.null(Y)) "KRDY", if (fsd_ok) "FSD")
   } else {
     condition <- match.arg(condition, c(allowed, "all"), several.ok = TRUE)
     if ("all" %in% condition) condition <- allowed
   }
-  for (cn in intersect(c("KRDY", "MWDY"), condition)) {
+  if ("KRDY2" %in% condition) {
+    bad_dots <- intersect(c("block", "Dsubsets"), names(dots))
+    if (length(bad_dots)) {
+      stop("Condition KRDY2 sets `", paste(bad_dots, collapse = "`, `"), "` itself.", call. = FALSE)
+    }
+    if (!is.null(Y) && anyNA(data[, c(D1, D2, Y), with = FALSE])) {
+      stop("Condition KRDY2 requires no missing values in D1, D2 and Y.", call. = FALSE)
+    }
+  }
+  for (cn in intersect(c("KRDY", "KRDY2", "MWDY"), condition)) {
     if (is.null(Y)) {
       stop("Condition ", cn, " requires an outcome Y on the left hand side of `fml`.", call. = FALSE)
     }
@@ -114,6 +132,44 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       f <- make_fml(c(D2, if (grepl("Y$", cond)) Y), as.name(D1))
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = data,
                                               condition = substr(cond, 1L, 2L)), dots))
+    } else if (cond == "KRDY2") {
+      ## Two KR problems stacked as blocks of one montest() call:
+      ##   block 1: treatment D1, outcome = joint code of (D2, binned Y)
+      ##   block 2: treatment D2, outcome = binned Y
+      ## Both copies of a unit share a cluster id, so sample splitting keeps them together.
+      st_id <- "seq_id__"; st_blk <- "seq_block__"; st_T <- "seq_T__"; st_W <- "seq_W__"
+      dat <- data.table::copy(data)
+      dat[, (st_id) := .I]
+      recode01 <- function(x) if (two_valued(x)) as.integer(x == max(x, na.rm = TRUE)) else x
+      dat[, (D1) := recode01(get(D1))]
+      dat[, (D2) := recode01(get(D2))]
+      wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
+      ybins <- paste0(Y, ".seqbin__")
+      for (k in seq_along(Y)) {
+        dat <- binarize_var(dat, Y[k], ngroups = if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets,
+                            gridtype = if (is.null(dots$gridtypeY)) "equidistant" else dots$gridtypeY,
+                            wvar = wvar, newvar = ybins[k])
+      }
+      ylab <- do.call(paste, c(lapply(seq_along(Y), function(k) paste0(Y[k], "=", dat[[ybins[k]]])), sep = ","))
+      dat[, lab1__ := paste0("(", D2, "=", get(D2), ",", ylab, ")")]
+      dat[, lab2__ := paste0("(", ylab, ")")]
+      lab_levels <- c(unique(dat$lab1__), unique(dat$lab2__))
+      b1 <- data.table::copy(dat)[, `:=`(seq_block__ = 1L, seq_T__ = get(D1),
+                                          seq_W__ = match(lab1__, lab_levels) - 1L)]
+      b2 <- data.table::copy(dat)[, `:=`(seq_block__ = 2L, seq_T__ = get(D2),
+                                          seq_W__ = match(lab2__, lab_levels) - 1L)]
+      st <- data.table::rbindlist(list(b1, b2))
+      st[, c("lab1__", "lab2__") := NULL]
+      wlookup <- data.table::data.table(code = seq_along(lab_levels) - 1L, label = lab_levels)
+      args <- dots
+      args$Ysubsets <- NULL
+      args$cluster <- if (is.null(dots$cluster)) st_id else dots$cluster
+      f <- make_fml(st_W, as.name(st_T))
+      fits[[cond]] <- do.call(montest, c(list(fml = f, data = st, condition = "KR", block = st_blk,
+                                              Ysubsets = max(2L, nrow(wlookup)),
+                                              Dsubsets = max(4L, data.table::uniqueN(data[[D1]]),
+                                                             data.table::uniqueN(data[[D2]]))), args))
+      fits[[cond]]$Wlookup <- wlookup
     } else {
       ## FSD: recode both to {0,1} (order preserving). D1 - D2 takes values in
       ## {-1,0,1} (D2 need not be nested in D1) and is scored linearly, so the

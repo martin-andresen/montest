@@ -12,7 +12,7 @@ seqtest(fml, data, condition = NULL, ...)
 
 \item{data}{A \code{data.frame} or \code{data.table}.}
 
-\item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"FSD"}, \code{"MWD"},
+\item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"MWD"},
 \code{"MWDY"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
 the MW conditions are never run by default.}
@@ -41,6 +41,15 @@ all other arguments straight through. The conditions are
     outcome, i.e. \code{montest(D2 + Y ~ X | FE | D1 ~ Z, condition = "KR")}. The sets A range over the
     joint support of the binned outcomes; the \code{yval} labels in \code{$results} list the
     (D2, Y) tuples in each set and \code{$Ylookup} of the fit decodes them. Requires Y.}
+  \item{\code{"KRDY2"}}{The intersection of two sets of Kwan-Roth conditions (use case 2): KR with D1 as the
+    treatment and (D2, Y) jointly as the outcome (as \code{"KRDY"}), and KR with D2 as the treatment and Y as the
+    outcome. The two problems are stacked as blocks of one \code{montest()} call using its \code{block} argument
+    (cluster = the unit, or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"}
+    pool or select across them and everything is corrected as one family. Y is binned once (\code{Ysubsets},
+    \code{gridtypeY}); \code{block} and \code{Dsubsets} may not be passed. D1, D2 and Y may
+    not have missing values; two-valued D1/D2 are recoded to 0/1. \code{$Wlookup} of the fit decodes the outcome
+    codes appearing in \code{yval}; \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and
+    uses the forest search (\code{testtype = "forest"}).}
   \item{\code{"FSD"}}{The first stage difference condition
     \eqn{E[D1|Z=1]-E[D1|Z=0] \ge E[D2|Z=1]-E[D2|Z=0]}, tested as the simple first stage condition for the
     constructed treatment D1 - D2 (shifted by 1 and scored linearly), i.e.
