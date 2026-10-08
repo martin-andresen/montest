@@ -48,7 +48,7 @@ all other arguments straight through. The conditions are
     pool or select across them and everything is corrected as one family. Y is binned once (\code{Ysubsets},
     \code{gridtypeY}); \code{block} and \code{Dsubsets} may not be passed. D1, D2 and Y may
     not have missing values; two-valued D1/D2 are recoded to 0/1. \code{$Wlookup} of the fit decodes the outcome
-    codes appearing in \code{yval}; \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and
+    codes appearing in \code{yval}; \code{block} is \code{"KRDY"} for the D1 problem and \code{"KRD2Y"} for the D2 problem. Requires Y and
     uses the forest search (\code{testtype = "forest"}).}
   \item{\code{"FSD"}}{The first stage difference condition
     \eqn{E[D1|Z=1]-E[D1|Z=0] \ge E[D2|Z=1]-E[D2|Z=0]}, tested as the simple first stage condition for the
@@ -68,7 +68,7 @@ all other arguments straight through. The conditions are
     and everything is corrected as one family. The first outcome column is D2 in block 1 and a constant in block 2,
     the Y columns are shared; outcomes are residualized and nuisances fitted within each block, and Y is not binned.
     \code{block} and \code{Dsubsets} may not be passed. D1 and D2 must be binary and D1, D2, Y free of missing
-    values. \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and the forest search.}
+    values. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
 }
 }
 \details{

@@ -18,7 +18,7 @@
 #'     pool or select across them and everything is corrected as one family. Y is binned once (\code{Ysubsets},
 #'     \code{gridtypeY}); \code{block} and \code{Dsubsets} may not be passed. D1, D2 and Y may
 #'     not have missing values; two-valued D1/D2 are recoded to 0/1. \code{$Wlookup} of the fit decodes the outcome
-#'     codes appearing in \code{yval}; \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and
+#'     codes appearing in \code{yval}; \code{block} is \code{"KRDY"} for the D1 problem and \code{"KRD2Y"} for the D2 problem. Requires Y and
 #'     uses the forest search (\code{testtype = "forest"}).}
 #'   \item{\code{"FSD"}}{The first stage difference condition
 #'     \eqn{E[D1|Z=1]-E[D1|Z=0] \ge E[D2|Z=1]-E[D2|Z=0]}, tested as the simple first stage condition for the
@@ -38,7 +38,7 @@
 #'     and everything is corrected as one family. The first outcome column is D2 in block 1 and a constant in block 2,
 #'     the Y columns are shared; outcomes are residualized and nuisances fitted within each block, and Y is not binned.
 #'     \code{block} and \code{Dsubsets} may not be passed. D1 and D2 must be binary and D1, D2, Y free of missing
-#'     values. \code{block} is 1 for the D1 problem and 2 for the D2 problem. Requires Y and the forest search.}
+#'     values. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
 #' }
 #'
 #' \strong{How the tests localize.} The Kwan-Roth conditions localize in the conditioning variables (D2, or
@@ -176,11 +176,11 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       lab2 <- paste0("(", ylab, ")")
       lab_levels <- c(unique(lab1), unique(lab2))
       b1 <- data.table::copy(dat)
-      data.table::set(b1, j = st_blk, value = 1L)
+      data.table::set(b1, j = st_blk, value = factor("KRDY", levels = c("KRDY", "KRD2Y")))
       data.table::set(b1, j = st_T, value = dat[[D1]])
       data.table::set(b1, j = st_W, value = match(lab1, lab_levels) - 1L)
       b2 <- data.table::copy(dat)
-      data.table::set(b2, j = st_blk, value = 2L)
+      data.table::set(b2, j = st_blk, value = factor("KRD2Y", levels = c("KRDY", "KRD2Y")))
       data.table::set(b2, j = st_T, value = dat[[D2]])
       data.table::set(b2, j = st_W, value = match(lab2, lab_levels) - 1L)
       st <- data.table::rbindlist(list(b1, b2))
@@ -207,11 +207,11 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       data.table::set(dat, j = D1, value = recode01(dat[[D1]]))
       data.table::set(dat, j = D2, value = recode01(dat[[D2]]))
       b1 <- data.table::copy(dat)
-      data.table::set(b1, j = st_blk, value = 1L)
+      data.table::set(b1, j = st_blk, value = factor("MWDY", levels = c("MWDY", "MWD2Y")))
       data.table::set(b1, j = st_T, value = dat[[D1]])
       data.table::set(b1, j = st_O, value = as.numeric(dat[[D2]]))
       b2 <- data.table::copy(dat)
-      data.table::set(b2, j = st_blk, value = 2L)
+      data.table::set(b2, j = st_blk, value = factor("MWD2Y", levels = c("MWDY", "MWD2Y")))
       data.table::set(b2, j = st_T, value = dat[[D2]])
       data.table::set(b2, j = st_O, value = 0)
       st <- data.table::rbindlist(list(b1, b2))

@@ -727,6 +727,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       stop("`block` requires `cluster`: a unit identifier shared by a unit's rows in all blocks.", call. = FALSE)
     }
     if (anyNA(data[[block]])) stop("The block column may not contain missing values.", call. = FALSE)
+    ## Character/factor blocks keep their labels in the output (factor level order, or sorted
+    ## for character); the internal code is the integer position in that order.
+    blk_src <- data[[block]]
+    block_labels <- if (is.character(blk_src) || is.factor(blk_src)) levels(factor(blk_src)) else NULL
     if (!identical(block, "block")) {
       if ("block" %in% colnames(data)) {
         stop("`data` has a column named `block` that is not the `block` argument; please rename it.", call. = FALSE)
@@ -3362,6 +3366,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       if (is.character(options[[nm]])) options[[nm]] <- restore_aliases(options[[nm]], alias_map)
     }
     if (!is.null(Ylookup)) data.table::setnames(Ylookup, restore_aliases(names(Ylookup), alias_map))
+  }
+
+  ## Named blocks: relabel the integer block codes in every output table.
+  if (has_block && !is.null(block_labels)) {
+    relabel_block <- function(tb) {
+      if (data.table::is.data.table(tb) && "block" %in% names(tb) && is.numeric(tb$block)) {
+        data.table::set(tb, j = "block", value = block_labels[tb$block])
+      }
+      invisible(tb)
+    }
+    for (nm in names(res)) relabel_block(res[[nm]])
+    relabel_block(margin_index)
   }
 
   out <- c(res, list(

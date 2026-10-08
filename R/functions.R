@@ -2246,7 +2246,18 @@ feols_partial_out <- function(DT,
       dsub_j <- dsub[keep_row]
       ii_j   <- ii[keep_row]
 
-      data.table::set(dsub_j, j = alias_lhs, value = dsub_j[[lhs]])
+      ## A constant outcome in this group (e.g. the constant outcome column in
+      ## one block of seqtest's MWDY2) makes feols() stop with an error. Its
+      ## fit is the constant itself and the residual is exactly 0 (all RHS
+      ## and FE specifications here include an intercept).
+      lhs_vals <- dsub_j[[lhs]]
+      if (length(lhs_vals) > 0L && !anyNA(lhs_vals) && all(lhs_vals == lhs_vals[1L])) {
+        if (keep %in% c("resid", "both")) DT[ii_j, (out$resid[j]) := 0]
+        if (keep %in% c("fitted", "both")) DT[ii_j, (out$fitted[j]) := as.numeric(lhs_vals[1L])]
+        next
+      }
+
+      data.table::set(dsub_j, j = alias_lhs, value = lhs_vals)
 
       args <- c(
         list(fml = fml_alias, data = dsub_j, notes = FALSE, warn = FALSE),
