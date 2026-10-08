@@ -209,9 +209,9 @@ studentize_te <- function(data, pred, pred_var, pred_o, pred_o_var,
 
 ## Priority sort keys (Neill 2012, JRSS-B): pred / v and pred_o / v_o, where v (own-half OOB)
 ## and v_o (fitted on the opposite half) estimate the centered score variance. Written to
-## `out_pred` / `out_pred_o`. As in studentize_te(), variances are floored at 1% of the
-## positive median within each margin cell x sample (non-finite/non-positive -> that median);
-## cells with no usable variance fall back to the raw prediction.
+## `out_pred` / `out_pred_o`. Variances are floored at `floor_frac` times the positive median
+## within each margin cell x sample (non-finite -> that median; non-positive -> the floor);
+## cells with no positive variance fall back to the raw prediction.
 priority_te <- function(data, pred, pred_v, pred_o, pred_o_v,
                         margins = NULL, sample = "sample",
                         out_pred = "pred_p", out_pred_o = "pred_o_p",
@@ -222,7 +222,7 @@ priority_te <- function(data, pred, pred_v, pred_o, pred_o_v,
     ok <- is.finite(v) & v > 0
     if (!any(ok)) return(y)
     med <- stats::median(v[ok])
-    v[!ok] <- med
+    v[!is.finite(v)] <- med
     y / pmax(v, floor_frac * med)
   }
   cy <- as.character(pred); cv <- as.character(pred_v)
@@ -1494,7 +1494,8 @@ crossfit_hat <- function(DT,
                          sample_name = "sample",
                          forest_opts = list(),
                          hat_suffix = ".hat",
-                         mode = c("within", "across"),
+                         hat_suffix_o = NULL,       # mode = "both" only: column for the other-half prediction
+                         mode = c("within", "across", "both"),
                          verbose = FALSE,
                          progress_title = NULL) {
 
@@ -1533,6 +1534,17 @@ crossfit_hat <- function(DT,
   hat_col <- paste0(y_name, hat_suffix)
   if (!(hat_col %in% names(DT))) DT[, (hat_col) := NA_real_]
 
+  ## mode = "both": ONE forest per outer half gives that half's own out-of-bag predictions
+  ## (-> `hat_col`) and the predictions for the opposite half's rows (-> `hat_col_o`, i.e.
+  ## what mode = "across" returns), instead of fitting each half's forest twice. Needs
+  ## folds = NULL (out-of-bag).
+  hat_col_o <- NULL
+  if (mode == "both") {
+    stopifnot(is.character(hat_suffix_o), length(hat_suffix_o) == 1L, is.null(folds))
+    hat_col_o <- paste0(y_name, hat_suffix_o)
+    if (!(hat_col_o %in% names(DT))) DT[, (hat_col_o) := NA_real_]
+  }
+
   X_all <- as.matrix(DT[i, ..x_names])
 
   rid_col <- ".__rid__"
@@ -1545,6 +1557,7 @@ crossfit_hat <- function(DT,
   f_all <- if (!is.null(folds)) DT[[folds]] else NULL
 
   preds_buf <- rep(NA_real_, n_i)
+  preds_o_buf <- rep(NA_real_, n_i)
 
   fit_predict_idx <- function(idx_tr, idx_te) {
     n_te <- length(idx_te)
@@ -1628,6 +1641,50 @@ crossfit_hat <- function(DT,
     p
   }
 
+  ## One forest on `idx_s`: out-of-bag predictions for `idx_s` and predictions for `idx_te`.
+  ## Degenerate cases follow within_oob_idx() / fit_predict_idx().
+  fit_both_idx <- function(idx_s, idx_te) {
+    n <- length(idx_s)
+    oob <- rep(NA_real_, n)
+    te <- rep(NA_real_, length(idx_te))
+    if (n == 0L) return(list(oob = oob, te = te))
+
+    y_s <- y_all[idx_s]
+    w_s <- if (is.null(w_all)) NULL else w_all[idx_s]
+
+    if (n < 2L) {
+      mu <- if (is.null(w_s)) mean(y_s) else stats::weighted.mean(y_s, w_s)
+      oob[] <- mu; te[] <- mu
+      return(list(oob = oob, te = te))
+    }
+
+    y_fin <- y_s[is.finite(y_s)]
+    if (length(y_fin) == 0L) return(list(oob = oob, te = te))
+    if (!any(y_fin != y_fin[1L])) {
+      oob[] <- y_fin[1L]; te[] <- y_fin[1L]
+      return(list(oob = oob, te = te))
+    }
+
+    fit <- do.call(
+      grf::regression_forest,
+      c(
+        list(
+          X = X_all[rid[idx_s], , drop = FALSE],
+          Y = y_s,
+          sample.weights = w_s,
+          compute.oob.predictions = TRUE
+        ),
+        forest_opts
+      )
+    )
+
+    oob[] <- as.numeric(predict(fit)$predictions)
+    if (length(idx_te)) {
+      te[] <- as.numeric(predict(fit, X_all[rid[idx_te], , drop = FALSE])$predictions)
+    }
+    list(oob = oob, te = te)
+  }
+
   within_pred_idx <- function(idx_s) {
     n <- length(idx_s)
     if (n == 0L) return(numeric())
@@ -1691,7 +1748,19 @@ crossfit_hat <- function(DT,
     idx1 <- idx_g[sample_all[idx_g] == 1L]
     idx2 <- idx_g[sample_all[idx_g] == 2L]
 
-    if (mode == "across") {
+    if (mode == "both") {
+      if (length(idx1) > 0L) {
+        b1 <- fit_both_idx(idx1, idx2)
+        preds_buf[rid[idx1]] <- b1$oob
+        if (length(idx2)) preds_o_buf[rid[idx2]] <- b1$te
+      }
+      if (length(idx2) > 0L) {
+        b2 <- fit_both_idx(idx2, idx1)
+        preds_buf[rid[idx2]] <- b2$oob
+        if (length(idx1)) preds_o_buf[rid[idx1]] <- b2$te
+      }
+
+    } else if (mode == "across") {
       if (length(idx1) > 1L && length(idx2) > 0L) {
         preds_buf[rid[idx2]] <- fit_predict_idx(idx1, idx2)
       } else if (length(idx1) == 1L && length(idx2) > 0L) {
@@ -1722,6 +1791,7 @@ crossfit_hat <- function(DT,
   pbar$close()
 
   DT[i, (hat_col) := preds_buf]
+  if (!is.null(hat_col_o)) DT[i, (hat_col_o) := preds_o_buf]
   DT[, (rid_col) := NULL]
 
   invisible(DT)
@@ -2316,6 +2386,7 @@ estimate_conditional_mean <- function(DT,
                                       x_expr,
                                       fe_expr = NULL,
                                       out_hat = paste0(y_name, ".hat"),
+                                      out_hat_o = NULL,
                                       out_resid = NULL,
                                       by = NULL,
                                       sample_var = "sample",
@@ -2376,6 +2447,15 @@ estimate_conditional_mean <- function(DT,
   }
 
   has_X <- !is.null(x_names) && length(x_names) > 0L
+
+  ## `out_hat_o`: additionally return, for each row, the prediction from the forest trained on
+  ## the OPPOSITE outer sample half (what crossfit "across" gives), from the same single forest
+  ## per half that yields the out-of-bag `out_hat`. Forest path with covariates, out-of-bag only.
+  if (!is.null(out_hat_o)) {
+    if (isTRUE(parametric) || !has_X || !is.null(foldname)) {
+      stop("`out_hat_o` requires parametric = FALSE, covariates, and foldname = NULL.", call. = FALSE)
+    }
+  }
 
   if (isTRUE(parametric)) {
 
@@ -2448,6 +2528,8 @@ estimate_conditional_mean <- function(DT,
         "across",
         "within"
       )
+      ## "both" (out_hat_o) also needs both halves in the same group, like "across".
+      if (!is.null(out_hat_o)) xfit_mode <- "both"
 
       crossfit_hat(
         DT,
@@ -2455,16 +2537,22 @@ estimate_conditional_mean <- function(DT,
         y_name = y_for_rf,
         x_names = x_names,
         folds = foldname,
-        margins = if (identical(xfit_mode, "across")) by else by_sp,
+        margins = if (xfit_mode %in% c("across", "both")) by else by_sp,
         weight_name = weight,
         mode = xfit_mode,
         forest_opts = forest_opts,
         hat_suffix = ".sp_hat",
+        hat_suffix_o = if (!is.null(out_hat_o)) ".sp_hat_o" else NULL,
         progress_title = progress_title
       )
 
       DT[i, (y_sp_hat) := .SD[[paste0(y_for_rf, ".sp_hat")]],
          .SDcols = paste0(y_for_rf, ".sp_hat")]
+      if (!is.null(out_hat_o)) {
+        y_sp_hat_o <- paste0(y_name, ".sp_hat_o")
+        DT[i, (y_sp_hat_o) := .SD[[paste0(y_for_rf, ".sp_hat_o")]],
+           .SDcols = paste0(y_for_rf, ".sp_hat_o")]
+      }
 
     } else if (has_FE && isTRUE(partial_out_y_fe)) {
       DT[i, (y_sp_hat) := 0]
@@ -2498,8 +2586,13 @@ estimate_conditional_mean <- function(DT,
     if (isTRUE(partial_out_y_fe)) {
       DT[i, (out_hat) := .SD[[y_fehat]] + .SD[[y_sp_hat]],
          .SDcols = c(y_fehat, y_sp_hat)]
+      if (!is.null(out_hat_o)) {
+        DT[i, (out_hat_o) := .SD[[y_fehat]] + .SD[[y_sp_hat_o]],
+           .SDcols = c(y_fehat, y_sp_hat_o)]
+      }
     } else {
       DT[i, (out_hat) := .SD[[y_sp_hat]], .SDcols = y_sp_hat]
+      if (!is.null(out_hat_o)) DT[i, (out_hat_o) := .SD[[y_sp_hat_o]], .SDcols = y_sp_hat_o]
     }
   }
 

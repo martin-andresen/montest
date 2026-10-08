@@ -21,14 +21,18 @@
 #'   mean -- the two need not use the same covariates (e.g. a more parsimonious variance
 #'   model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
 #'   main X part), so leaving it unset reproduces the previous behavior of reusing the same
-#'   covariates used for \code{Z}'s conditional mean.
+#'   covariates used for \code{Z}'s conditional mean. This variance is always estimated with a
+#'   regression forest, whatever \code{parametric} says (a linear model for a squared residual
+#'   can go negative and misspecification enters the score through a denominator); any fixed
+#'   effects are still partialled out linearly (\code{feols}) before the forest.
 #' @param fml.C Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml.
 #' @param fml.varS Optional: A one-sided formula for the covariates of the score-variance model used when \code{priority = TRUE}. Defaults to \code{fml.C}.
 #' @param fml.Q Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 #' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
 #' @param parametric A boolean indicating whether nuisances should be estimated using the parametric functional form specified or using semiparametric methods (the default). In the latter case,
 #' all fixed effects are residualized as specified in the FE part of the formula, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
-#' \code{parametric} governs nuisance estimation only.
+#' \code{parametric} governs the conditional-mean nuisances (\code{Z}, \code{Q}, \code{Y}) only; the variance nuisances
+#' (\code{fml.varZ}, and \code{fml.varS} for \code{priority}) are always forest-based.
 #' Nuisance fragility that can arise under \code{parametric=TRUE} (e.g. a linear-probability-model propensity falling outside \eqn{[0,1]}) is caught at score-construction time by the validity checks
 #' described under \code{aipw.clip}.
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
@@ -171,8 +175,13 @@
 #'   \code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
 #'   to \code{pred} before dividing. Each outer sample half's own key uses an out-of-bag \code{v(X)} fit on that half only,
 #'   and the key used in the other half uses the \code{v(X)} fit on the search half only. Reported cutoffs
-#'   (\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Cannot be combined with \code{studentize}.
+#'   (\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Fixed effects in the formula are partialled out
+#'   linearly before the forest (as for the variance of \code{Z}), so the fitted \code{v} can be non-positive; see
+#'   \code{priority.floor}. Cannot be combined with \code{studentize}.
 #'   Only with \code{local = TRUE} and \code{testtype = "forest"}.
+#' @param priority.floor Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
+#'   at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
+#'   non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
@@ -383,7 +392,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=FALSE,linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=FALSE,priority.floor=0.01,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
@@ -525,7 +534,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## existing FE-rank correction (fe_rank_adj). Under parametric = FALSE,
   ## X is genuinely cross-fit, so no such penalty applies.
   x_rank_vars <- if (isTRUE(parametric)) {
-    unique(c(all.vars(X_expr_Z), all.vars(X_expr_Q), all.vars(X_expr_varZ)))
+    ## The variance nuisances (`fml.varZ`, `fml.varS`) are always forests, so they add no X rank.
+    unique(c(all.vars(X_expr_Z), all.vars(X_expr_Q)))
   } else {
     character(0)
   }
@@ -597,6 +607,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   }
   ## TODO: remove `studentize` once `priority` has settled.
   stopifnot(is.logical(priority), length(priority) == 1L, !is.na(priority))
+  stopifnot(is.numeric(priority.floor), length(priority.floor) == 1L,
+            is.finite(priority.floor), priority.floor > 0, priority.floor <= 1)
   if (priority && !isTRUE(local)) priority <- FALSE
   if (priority && testtype != "forest") {
     warning("`priority` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
@@ -1662,7 +1674,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       sample_var = "sample",
       weight = weight,
       cluster = cluster,
-      parametric = parametric,
+      parametric = FALSE, ## variance nuisance: always a forest, whatever `parametric` says
       foldname = foldname,
       crossfit = crossfit,
       crossfit_label = "Z",
@@ -3051,21 +3063,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     X_expr_pr <- if (is.null(X_expr_varS)) X_expr_forest else X_expr_varS
     ## Same covariates as the causal forest (the default): reuse its columns.
     X_names_pr <- if (is.null(X_expr_varS) || identical(X_expr_varS, X_expr_forest)) X_forest else NULL
-    pr_call <- function(out_hat, crossfit_s) {
-      estimate_conditional_mean(
-        DT = data, y_name = pr_target, x_expr = X_expr_pr, fe_expr = FE_expr,
-        out_hat = out_hat, by = margins, sample_var = "sample", weight = weight,
-        cluster = cluster, parametric = FALSE, foldname = NULL,
-        crossfit = crossfit_s, crossfit_label = "S",
-        forest_opts = utils::modifyList(list(num.trees = 500L), Sparameters),
-        fixest_opts = Sparameters, x_names = X_names_pr, x_prefix = "__xs",
-        keep_x = FALSE, return_residual = FALSE, partial_out_y_fe = FALSE,
-        i = pr_rows
-      )
-    }
-    pr_call(pr_v,  character())
-    pr_call(pr_vo, "S")
-    data[, intersect(c(pr_target, paste0(pr_target, ".sp_hat")), names(data)) := NULL]
+    ## One forest per half: out-of-bag `pr_v` for its own rows, `pr_vo` for the other half's rows.
+    estimate_conditional_mean(
+      DT = data, y_name = pr_target, x_expr = X_expr_pr, fe_expr = FE_expr,
+      out_hat = pr_v, out_hat_o = pr_vo, by = margins, sample_var = "sample", weight = weight,
+      cluster = cluster, parametric = FALSE, foldname = NULL,
+      crossfit = character(), crossfit_label = "S",
+      forest_opts = utils::modifyList(list(num.trees = 500L), Sparameters),
+      fixest_opts = Sparameters, x_names = X_names_pr, x_prefix = "__xs",
+      keep_x = FALSE, return_residual = FALSE, partial_out_y_fe = TRUE,
+      i = pr_rows
+    )
+    data[, intersect(c(pr_target, paste0(pr_target, c(".sp_hat", ".sp_hat_o"))), names(data)) := NULL]
   }
 
   ###EMPIRICAL BAYES SHRINKAGE IF SHRINK>0 #######
@@ -3099,7 +3108,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (priority) {
     priority_te(data, pred = "pred", pred_v = pr_v, pred_o = "pred_o", pred_o_v = pr_vo,
                 margins = margins, sample = "sample",
-                out_pred = "pred_p", out_pred_o = "pred_o_p")
+                out_pred = "pred_p", out_pred_o = "pred_o_p", floor_frac = priority.floor)
     data[, c(pr_v, pr_vo) := NULL]
     pred_arg <- "pred_p"
     pred_o_arg <- "pred_o_p"

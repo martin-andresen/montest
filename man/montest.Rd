@@ -42,6 +42,7 @@ montest(
   shrink = 0,
   studentize = FALSE,
   priority = FALSE,
+  priority.floor = 0.01,
   linearD = FALSE,
   linearZ = FALSE,
   target = NULL,
@@ -81,7 +82,10 @@ estimated), separately from \code{fml.Z}'s covariates for \code{Z}'s own conditi
 mean -- the two need not use the same covariates (e.g. a more parsimonious variance
 model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
 main X part), so leaving it unset reproduces the previous behavior of reusing the same
-covariates used for \code{Z}'s conditional mean.}
+covariates used for \code{Z}'s conditional mean. This variance is always estimated with a
+regression forest, whatever \code{parametric} says (a linear model for a squared residual
+can go negative and misspecification enters the score through a denominator); any fixed
+effects are still partialled out linearly (\code{feols}) before the forest.}
 
 \item{fml.C}{Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml.}
 
@@ -259,8 +263,14 @@ of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated b
 \code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
 to \code{pred} before dividing. Each outer sample half's own key uses an out-of-bag \code{v(X)} fit on that half only,
 and the key used in the other half uses the \code{v(X)} fit on the search half only. Reported cutoffs
-(\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Cannot be combined with \code{studentize}.
+(\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Fixed effects in the formula are partialled out
+linearly before the forest (as for the variance of \code{Z}), so the fitted \code{v} can be non-positive; see
+\code{priority.floor}. Cannot be combined with \code{studentize}.
 Only with \code{local = TRUE} and \code{testtype = "forest"}.}
+
+\item{priority.floor}{Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
+at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
+non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.}
 
 \item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
@@ -345,7 +355,8 @@ routine. See Details.}
 
 \item{parametric}{A boolean indicating whether nuisances should be estimated using the parametric functional form specified or using semiparametric methods (the default). In the latter case,
 all fixed effects are residualized as specified in the FE part of the formula, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.
-\code{parametric} governs nuisance estimation only.
+\code{parametric} governs the conditional-mean nuisances (\code{Z}, \code{Q}, \code{Y}) only; the variance nuisances
+(\code{fml.varZ}, and \code{fml.varS} for \code{priority}) are always forest-based.
 Nuisance fragility that can arise under \code{parametric=TRUE} (e.g. a linear-probability-model propensity falling outside \eqn{[0,1]}) is caught at score-construction time by the validity checks
 described under \code{aipw.clip}.}
 
