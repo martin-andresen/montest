@@ -41,7 +41,7 @@ montest(
   select = NULL,
   shrink = 0,
   studentize = FALSE,
-  priority = FALSE,
+  priority = TRUE,
   priority.floor = 0.01,
   linearD = FALSE,
   linearZ = FALSE,
@@ -257,7 +257,7 @@ ranking comparable across pooled margins and conditions whose scores differ in s
 \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
 Only with \code{local = TRUE} and \code{testtype = "forest"}.}
 
-\item{priority}{Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the priority
+\item{priority}{Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
 \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
 of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
 \code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
@@ -364,7 +364,9 @@ described under \code{aipw.clip}.}
 additional arguments passed to the underlying estimation routines for different
 nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
 Unless \code{num.trees} is supplied, the nuisance forests (\code{Zparameters}, \code{Yparameters},
-\code{Qparameters}, \code{Sparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.}
+\code{Qparameters}, \code{Sparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.
+If \code{Sparameters} is empty, the score-variance forest of \code{priority} uses \code{Cparameters} (so it must then
+only contain arguments \code{regression_forest} accepts).}
 }
 \value{
 A named list:

@@ -1537,10 +1537,12 @@ crossfit_hat <- function(DT,
   ## mode = "both": ONE forest per outer half gives that half's own out-of-bag predictions
   ## (-> `hat_col`) and the predictions for the opposite half's rows (-> `hat_col_o`, i.e.
   ## what mode = "across" returns), instead of fitting each half's forest twice. Needs
-  ## folds = NULL (out-of-bag).
+  ## folds = NULL (out-of-bag). With `folds`, as in fit_models(): the own-half prediction
+  ## comes from the inner folds within the half, the other-half prediction from the
+  ## full-half forest.
   hat_col_o <- NULL
   if (mode == "both") {
-    stopifnot(is.character(hat_suffix_o), length(hat_suffix_o) == 1L, is.null(folds))
+    stopifnot(is.character(hat_suffix_o), length(hat_suffix_o) == 1L)
     hat_col_o <- paste0(y_name, hat_suffix_o)
     if (!(hat_col_o %in% names(DT))) DT[, (hat_col_o) := NA_real_]
   }
@@ -1672,13 +1674,13 @@ crossfit_hat <- function(DT,
           X = X_all[rid[idx_s], , drop = FALSE],
           Y = y_s,
           sample.weights = w_s,
-          compute.oob.predictions = TRUE
+          compute.oob.predictions = is.null(folds)
         ),
         forest_opts
       )
     )
 
-    oob[] <- as.numeric(predict(fit)$predictions)
+    oob[] <- if (is.null(folds)) as.numeric(predict(fit)$predictions) else within_pred_idx(idx_s)
     if (length(idx_te)) {
       te[] <- as.numeric(predict(fit, X_all[rid[idx_te], , drop = FALSE])$predictions)
     }
@@ -2452,8 +2454,8 @@ estimate_conditional_mean <- function(DT,
   ## the OPPOSITE outer sample half (what crossfit "across" gives), from the same single forest
   ## per half that yields the out-of-bag `out_hat`. Forest path with covariates, out-of-bag only.
   if (!is.null(out_hat_o)) {
-    if (isTRUE(parametric) || !has_X || !is.null(foldname)) {
-      stop("`out_hat_o` requires parametric = FALSE, covariates, and foldname = NULL.", call. = FALSE)
+    if (isTRUE(parametric) || !has_X) {
+      stop("`out_hat_o` requires parametric = FALSE and covariates.", call. = FALSE)
     }
   }
 

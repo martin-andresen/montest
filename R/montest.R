@@ -169,7 +169,7 @@
 #'   ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
 #'   \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
 #'   Only with \code{local = TRUE} and \code{testtype = "forest"}.
-#' @param priority Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the priority
+#' @param priority Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
 #'   \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
 #'   of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
 #'   \code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
@@ -265,6 +265,8 @@
 #'   nuisance or target models. See regression_forest, causal_forest, feols and rpart for for details.
 #'   Unless \code{num.trees} is supplied, the nuisance forests (\code{Zparameters}, \code{Yparameters},
 #'   \code{Qparameters}, \code{Sparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.
+#'   If \code{Sparameters} is empty, the score-variance forest of \code{priority} uses \code{Cparameters} (so it must then
+#'   only contain arguments \code{regression_forest} accepts).
 #' @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
 #'
 #' @details
@@ -392,7 +394,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=FALSE,priority.floor=0.01,linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=TRUE,priority.floor=0.01,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
@@ -3063,14 +3065,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     X_expr_pr <- if (is.null(X_expr_varS)) X_expr_forest else X_expr_varS
     ## Same covariates as the causal forest (the default): reuse its columns.
     X_names_pr <- if (is.null(X_expr_varS) || identical(X_expr_varS, X_expr_forest)) X_forest else NULL
+    S_opts <- if (length(Sparameters)) Sparameters else Cparameters
     ## One forest per half: out-of-bag `pr_v` for its own rows, `pr_vo` for the other half's rows.
     estimate_conditional_mean(
       DT = data, y_name = pr_target, x_expr = X_expr_pr, fe_expr = FE_expr,
       out_hat = pr_v, out_hat_o = pr_vo, by = margins, sample_var = "sample", weight = weight,
       cluster = cluster, parametric = FALSE, foldname = NULL,
       crossfit = character(), crossfit_label = "S",
-      forest_opts = utils::modifyList(list(num.trees = 500L), Sparameters),
-      fixest_opts = Sparameters, x_names = X_names_pr, x_prefix = "__xs",
+      forest_opts = utils::modifyList(list(num.trees = 500L), S_opts),
+      fixest_opts = S_opts, x_names = X_names_pr, x_prefix = "__xs",
       keep_x = FALSE, return_residual = FALSE, partial_out_y_fe = TRUE,
       i = pr_rows
     )
