@@ -43,6 +43,7 @@ montest(
   studentize = FALSE,
   priority = TRUE,
   priority.floor = 0.01,
+  priority.var = c("model", "scores"),
   linearD = FALSE,
   linearZ = FALSE,
   target = NULL,
@@ -50,6 +51,7 @@ montest(
   local = TRUE,
   stack = TRUE,
   block = NULL,
+  mw_sets = c("datadriven", "endpoints"),
   progress = interactive(),
   cp = 0,
   maxrankcp = 10L,
@@ -241,12 +243,14 @@ required within each sample half and margin cell considered for residual variati
 \item{pool}{Character vector controlling which dimensions are pooled when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
+\code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval")}
+(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+\code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block", "yval", "equation")}
+(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{pool}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
@@ -271,6 +275,16 @@ Only with \code{local = TRUE} and \code{testtype = "forest"}.}
 \item{priority.floor}{Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
 non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.}
+
+\item{priority.var}{Character, \code{"model"} (default) or \code{"scores"}. With \code{priority = TRUE}, how the score
+variance \code{v(X)} is obtained. \code{"scores"} always uses the regression forest on the squared centered scores
+described under \code{priority}. \code{"model"} instead computes \code{v(X)} in closed form, without a forest, for
+rows with a binary instrument and an outcome \code{Q} that takes exactly two values within the margin cell (the
+binarized-treatment cells of \code{"simple"} and \code{"AHS"}, and \code{"KR"}): from \code{Z.hat}, \code{Q.hat}
+and the predicted effect, \eqn{v = \sigma_1^2/e + \sigma_0^2/(1-e)} with arm variances \eqn{\sigma_z^2 = D^2 p_z(1-p_z)}
+(plus a between-arm term for \code{doubly.robust = FALSE}). This avoids the heavy-tailed target of the forest and, with
+fixed effects, the full-sample fixed-effect means of the squared scores. All other rows (\code{linearZ},
+\code{linearD}, \code{"MW"}, continuous \code{Q}) keep the forest. Ignored if \code{priority = FALSE}.}
 
 \item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,

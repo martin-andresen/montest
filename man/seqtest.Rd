@@ -57,7 +57,9 @@ all other arguments straight through. The conditions are
     nested in D1. Rejected unless D1 and D2 are both binary.}
   \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
     i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
-    binary and \code{fml} may not contain fixed effects; D1 must be binary (an error otherwise).}
+    binary and \code{fml} may not contain fixed effects. D1 may be multivalued and ordered: the endpoint
+    conditions are then pointwise sign restrictions, and the interior values are tested with outcome sets
+    learned on the training half (see \code{montest}); this requires \code{local = TRUE}.}
   \item{\code{"MWDY"}}{As \code{"MWD"} with (D2, Y) as outcomes, i.e.
     \code{montest(D2 + Y ~ X | D1 ~ Z, condition = "MW")}; each outcome is residualized separately (see
     \code{Y.res}) and all enter the forest. Requires Y.}
@@ -67,8 +69,11 @@ all other arguments straight through. The conditions are
     or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"} pool or select across them
     and everything is corrected as one family. The first outcome column is D2 in block 1 and a constant in block 2,
     the Y columns are shared; outcomes are residualized and nuisances fitted within each block, and Y is not binned.
-    \code{block} and \code{Dsubsets} may not be passed. D1 and D2 must be binary and D1, D2, Y free of missing
-    values. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
+    \code{block} and \code{Dsubsets} may not be passed. D1 and D2 may be multivalued and ordered (two-valued ones are
+    recoded to 0/1; as for \code{"MWD"} this requires \code{local = TRUE}), and D1, D2, Y must be free of missing
+    values. With a multivalued D2 the second-treatment conditions are the Mourifie-Wan conditions for D2, which are
+    pointwise only at the endpoints of D2 and learned-set budget bounds in the interior. The intersection of the two
+    sets of conditions is not sharp when D1 is multivalued. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
 }
 }
 \details{

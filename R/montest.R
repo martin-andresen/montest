@@ -182,6 +182,15 @@
 #' @param priority.floor Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 #'   at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
 #'   non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.
+#' @param priority.var Character, \code{"model"} (default) or \code{"scores"}. With \code{priority = TRUE}, how the score
+#'   variance \code{v(X)} is obtained. \code{"scores"} always uses the regression forest on the squared centered scores
+#'   described under \code{priority}. \code{"model"} instead computes \code{v(X)} in closed form, without a forest, for
+#'   rows with a binary instrument and an outcome \code{Q} that takes exactly two values within the margin cell (the
+#'   binarized-treatment cells of \code{"simple"} and \code{"AHS"}, and \code{"KR"}): from \code{Z.hat}, \code{Q.hat}
+#'   and the predicted effect, \eqn{v = \sigma_1^2/e + \sigma_0^2/(1-e)} with arm variances \eqn{\sigma_z^2 = D^2 p_z(1-p_z)}
+#'   (plus a between-arm term for \code{doubly.robust = FALSE}). This avoids the heavy-tailed target of the forest and, with
+#'   fixed effects, the full-sample fixed-effect means of the squared scores. All other rows (\code{linearZ},
+#'   \code{linearD}, \code{"MW"}, continuous \code{Q}) keep the forest. Ignored if \code{priority = FALSE}.
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
 #'   \code{"equidistant"}.
@@ -216,11 +225,13 @@
 #' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval")}
+#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block", "yval", "equation")}
+#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{pool}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param local Logical, default \code{TRUE}. If \code{FALSE}, the local (subgroup) search is skipped entirely:
 #'   there is no sample split (\code{sample} is 1 for all observations), no \code{forest_test}/CART search, and the
 #'   estimates are computed globally within each margin cell, using the same centering / re-centering as the local
@@ -394,8 +405,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=TRUE,priority.floor=0.01,linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,progress=interactive(),
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
+                 doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
@@ -611,6 +622,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   stopifnot(is.logical(priority), length(priority) == 1L, !is.na(priority))
   stopifnot(is.numeric(priority.floor), length(priority.floor) == 1L,
             is.finite(priority.floor), priority.floor > 0, priority.floor <= 1)
+  priority.var <- match.arg(priority.var)
   if (priority && !isTRUE(local)) priority <- FALSE
   if (priority && testtype != "forest") {
     warning("`priority` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
@@ -651,6 +663,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     } else condition="KR"
   }
 
+  mw_sets <- match.arg(mw_sets)
   condition=match.arg(condition,c("simple","KR","MW","AHS","all"),several.ok=TRUE)
   if ("all" %in% condition) {
     condition=c("simple","KR","MW","AHS")
@@ -747,19 +760,24 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   pool_input <- pool
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
   else if (sum(pool=="all")==1) pool=pool_vocab
-  else if (sum(pool=="none")==1) pool=c()
+  else if (sum(pool=="none")==1) pool=character()
   else if (is.null(pool)==FALSE) pool <- match.arg(
     pool,
     pool_vocab,
     several.ok = TRUE
   )
-  else pool=c("zmargin","dval","yval","sample")
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
   else if (sum(select=="all")==1) select=pool_vocab
-  else if (sum(select=="none")==1) select=c()
+  else if (sum(select=="none")==1) select=character()
   else if (is.null(select)==FALSE) select=match.arg(select,pool_vocab,several.ok=TRUE)
-  else select="condition"
+
+  ## Defaults: whatever the user specifies in one of pool/select is left out of the other's default.
+  pool_default <- c("sample", "zmargin", "dval")
+  select_default <- c("condition", "block", "yval", "equation")
+  if (is.null(pool)) pool <- setdiff(pool_default, if (is.null(select)) character() else select)
+  if (is.null(select)) select <- setdiff(select_default, if (is.null(pool_input)) character() else pool)
+  select <- intersect(select, pool_vocab)
 
   if (!local) {
     ## `select` has no role without a local search and `sample` is moot.
@@ -886,8 +904,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   Zname=Z
   Dname=D
 
-  J <- data.table::uniqueN(data[[D]])
-  K <- data.table::uniqueN(data[[Z]])
+  ## na.rm: rows with missing values are only dropped further down, and a
+  ## missing value must not count as an extra support point (a binary Z with
+  ## some NAs would otherwise look multivalued).
+  J <- data.table::uniqueN(data[[D]], na.rm = TRUE)
+  K <- data.table::uniqueN(data[[Z]], na.rm = TRUE)
 
   ## J/K get reassigned below to post-binning bin counts (length(Dsup)/
   ## length(Zsup)) once binarize_var() runs -- keep the TRUE support-point
@@ -1274,7 +1295,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## binarize_var() overwrote J/K with post-binning bin counts) -- checking
   ## the post-binning counts here would let e.g. Zsubsets=2 mask a genuinely
   ## multivalued Z and defeat this guard entirely.
-  if (J_true>2&("MW" %in% condition)) stop("Multivalued treatment not supported with condition MW.")
+  ## Multivalued D with MW: endpoint rows are the pointwise MW sign
+  ## restrictions; interior rows use outcome sets learned on the training
+  ## half (mw_sets = "datadriven"). Both need the local forest search.
+  if (J_true>2&("MW" %in% condition)&!isTRUE(local)) {
+    stop("condition = \"MW\" with a multivalued treatment requires local = TRUE.", call. = FALSE)
+  }
+  if (J_true>2&("MW" %in% condition)&isTRUE(linearD)) {
+    stop("condition = \"MW\" with a multivalued treatment is not compatible with linearD = TRUE.", call. = FALSE)
+  }
   if (J_true>2&("AHS" %in% condition)) {
     stop(
       "condition = \"AHS\" requires a genuinely binary treatment D (J <= 2 ",
@@ -1809,7 +1838,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     ## fails later with a confusing, unrelated error instead of this one.
     if (
       nrow(os_res$threshold[one_sided == FALSE]) == 0 &&
-      !("KR" %in% condition)
+      !("KR" %in% condition) &&
+      !(J > 2L && "MW" %in% condition)
     ) {
       stop(
         "One-sided noncompliance for all margins of Z and D - ",
@@ -2089,6 +2119,37 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       )
     }
 
+    if (J > 2L) {
+      ## Multivalued D. One row per (zmargin, block, dval, equation), with
+      ## equation = 0 the inflow side and equation = 1 the outflow side:
+      ##   dval = dmin: inflow only  (sign restriction g_dmin <= 0)
+      ##   dval = dmax: outflow only (sign restriction g_dmax >= 0)
+      ##   interior   : both sides (budget bounds, learned outcome sets)
+      ## The other side at an endpoint is implied by the first stage. The
+      ## one-sided screen is not used to drop MW rows here; cells without
+      ## variation are dropped by the usual bad-cell screen on Q.
+      tmp <- unique(os_res$exact[, .SD, .SDcols = intersect(c("zmargin", "dval", "block"), names(os_res$exact))])
+      if (K == 2L && "zmargin" %in% names(tmp)) tmp[, zmargin := NULL]
+      tmp <- unique(tmp)
+
+      grp <- if ("block" %in% names(tmp)) "block" else NULL
+      tmp[, `:=`(dmin__ = min(dval), dmax__ = max(dval)), by = grp]
+      tmp <- tmp[, .(equation = 0:1), by = names(tmp)]
+      ## endpoints: inflow side only at dmin, outflow side only at dmax
+      tmp <- tmp[
+        !((dval == dmin__ & equation == 1L) | (dval == dmax__ & equation == 0L))
+      ]
+      ## mw_sets = "endpoints": drop interior values
+      if (mw_sets == "endpoints") tmp <- tmp[dval == dmin__ | dval == dmax__]
+      tmp[, c("dmin__", "dmax__") := NULL]
+      tmp[, condition := "MW"]
+
+      if (nrow(tmp) == 0L) {
+        stop("No MW rows to test.", call. = FALSE)
+      }
+      idx_blocks[["MW"]] <- tmp
+    } else {
+
     tmp <- os_res$threshold[one_sided == FALSE]
 
     keep <- intersect(c("zmargin", "dmargin", "direction", "block"), names(tmp))
@@ -2148,6 +2209,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
 
     idx_blocks[["MW"]] <- tmp
+    } ## end binary D
   }
 
   # KR
@@ -2459,6 +2521,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   is_linear_condition <- data[["condition"]] %in% linear_conditions
   is_MW <- data[["condition"]] == "MW"
   is_KR <- data[["condition"]] == "KR"
+  ## Interior multivalued-MW rows (learned outcome sets) -- see the MW Q block.
+  data[, mw_int__ := FALSE]
 
   if (!is.null(Dcol) && Dcol %in% names(data)) {
     Dvals__ <- sort(unique(stats::na.omit(data[[Dcol]])))
@@ -2557,8 +2621,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       )
     ]
 
+    ## Binary D (no dval): the original pointwise MW scores.
+    dval_mw__ <- if ("dval" %in% names(data)) data[["dval"]] else rep(NA_real_, nrow(data))
+    is_MW_bin <- is_MW & is.na(dval_mw__)
+    is_MW_mv  <- is_MW & !is.na(dval_mw__)
+
     data[
-      condition == "MW",
+      is_MW_bin,
       Q := equation * (
         (1 - get(zhat)) * get(Dcol) * get(Zcol) -
           get(zhat) * get(Dcol) * (1 - get(Zcol))
@@ -2568,6 +2637,87 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
             (1 - get(zhat)) * (1 - get(Dcol)) * get(Zcol)
         )
     ]
+
+    ## Multivalued D. Scores are e(1-e) times the IPW contrast, as above.
+    ## equation = 0: inflow side, equation = 1: outflow side.
+    ##   Endpoints (pointwise sign restrictions, W stays a forest feature):
+    ##     dmin, eq 0:  -1{D = dmin} (Z - e)      (g_dmin <= 0)
+    ##     dmax, eq 1:   1{D = dmax} (Z - e)      (g_dmax >= 0)
+    ##   Interior m (budget bounds; outcome sets learned on the training half):
+    ##     eq 0: Q = 1{D >= m} - 1{D = m} 1{ghat_m > 0},  score = Q (Z - e)
+    ##     eq 1: Q = 1{D >  m} + 1{D = m} 1{ghat_m < 0},  score = Q (Z - e)
+    ##   with ghat_m = E[1{D = m}(Z - e) | W, X]. `Q` uses the row's own-half
+    ##   (out-of-bag) ghat for the sorting/search stage; `Q_test` uses ghat from
+    ##   the OPPOSITE half's forest, for the final held-out test.
+    data[, Q_test := NA_real_]
+
+    if (any(is_MW_mv)) {
+      by_blk <- if (has_block) "block" else NULL
+      data[, dmin_mw__ := min(get(Dcol), na.rm = TRUE), by = by_blk]
+      data[, dmax_mw__ := max(get(Dcol), na.rm = TRUE), by = by_blk]
+
+      is_end0 <- is_MW_mv & data[["equation"]] == 0 & data[["dval"]] == data[["dmin_mw__"]]
+      is_end1 <- is_MW_mv & data[["equation"]] == 1 & data[["dval"]] == data[["dmax_mw__"]]
+      is_int  <- is_MW_mv & !is_end0 & !is_end1
+
+      data[is_end0, Q := -as.numeric(get(Dcol) == dval) * (get(Zcol) - get(zhat))]
+      data[is_end1, Q :=  as.numeric(get(Dcol) == dval) * (get(Zcol) - get(zhat))]
+
+      if (any(is_int)) {
+        data[, mw_int__ := is_int]
+        data[, s_m__ := NA_real_]
+        data[is_int, s_m__ := as.numeric(get(Dcol) == dval) * (get(Zcol) - get(zhat))]
+
+        ## One ghat_m forest per (m, zmargin, block), shared by both sides:
+        ## fit on the inflow rows, plus outflow rows with no inflow counterpart.
+        keycols <- intersect(c("id_", "dval", "zmargin", "block"), names(data))
+        kk <- do.call(paste, c(lapply(keycols, function(cc) data[[cc]]), sep = "\r"))
+        rows0 <- which(is_int & data[["equation"]] == 0)
+        rows1 <- which(is_int & data[["equation"]] == 1)
+        m1 <- match(kk[rows1], kk[rows0])
+        rows_fit <- c(rows0, rows1[is.na(m1)])
+
+        fit_models(
+          DT = data,
+          i = rows_fit,
+          forest_type = "regression",
+          y_name = "s_m__",
+          x_names = null_if_empty(c(X_forest, y_name_rhs)),
+          folds = if ("C" %in% crossfit) foldname else NULL,
+          margins = margins,
+          weight_name = weight,
+          cluster_name = cluster,
+          forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
+          shrink = FALSE
+        )
+
+        data[, `:=`(ghat_own__ = NA_real_, ghat_opp__ = NA_real_)]
+        data.table::set(data, i = rows_fit, j = "ghat_own__", value = data[["pred"]][rows_fit])
+        data.table::set(data, i = rows_fit, j = "ghat_opp__", value = data[["pred_o"]][rows_fit])
+        if (length(rows1) > 0L) {
+          ok1 <- !is.na(m1)
+          data.table::set(data, i = rows1[ok1], j = "ghat_own__", value = data[["ghat_own__"]][rows0][m1[ok1]])
+          data.table::set(data, i = rows1[ok1], j = "ghat_opp__", value = data[["ghat_opp__"]][rows0][m1[ok1]])
+        }
+
+        mw_Q <- function(g) {
+          Dv <- data[[Dcol]]
+          dv <- data[["dval"]]
+          ## inflow vs outflow pseudo-outcome
+          q_in  <- as.numeric(Dv >= dv) - as.numeric(Dv == dv) * as.numeric(g > 0)
+          q_out <- as.numeric(Dv >  dv) + as.numeric(Dv == dv) * as.numeric(g < 0)
+          q01 <- ifelse(data[["equation"]] == 0, q_in, q_out)
+          ## MW is IPW (singly robust) throughout, whatever `doubly.robust` is:
+          ## the score is the pseudo-outcome times (Z - e), as for the endpoints.
+          q01 * (data[[Zcol]] - data[[zhat]])
+        }
+        q_own__  <- mw_Q(data[["ghat_own__"]])
+        q_test__ <- mw_Q(data[["ghat_opp__"]])
+        data.table::set(data, i = which(is_int), j = "Q", value = q_own__[is_int])
+        data.table::set(data, i = which(is_int), j = "Q_test", value = q_test__[is_int])
+      }
+      data[, c("dmin_mw__", "dmax_mw__") := NULL]
+    }
   }
 
   # ---------------- KR ----------------
@@ -2915,25 +3065,57 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## ------------------------------------------------------------
   ## MW: no target; conditional mean E[Q | X]
   ## ------------------------------------------------------------
+  data[, scores_test := NA_real_]
   if (any(data$condition == "MW")) {
     i_mw <- which(data$condition == "MW")
     data[i_mw, scores := Q]
 
+    ## Interior multivalued-D rows: W is absorbed into the learned set, so the
+    ## forest uses X only; the held-out stage uses scores_test (built from the
+    ## opposite half's ghat). Pointwise rows (binary D, endpoints) keep W as a
+    ## forest feature.
+    i_mw_int <- which(data$condition == "MW" & data$mw_int__)
+    if (length(i_mw_int) > 0L) data[i_mw_int, scores_test := Q_test]
+    i_mw_pt <- setdiff(i_mw, i_mw_int)
+
     if (testtype == "forest" && local) {
-      fit_models(
-        DT = data,
-        i = i_mw,
-        forest_type = "regression",
-        y_name = "Q",
-        x_names = null_if_empty(c(X_forest, y_name_rhs)),
-        folds = foldname,
-        margins = margins,
-        weight_name = weight,
-        cluster_name = cluster,
-        forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
-        shrink = need_pvar,
-        progress_title = step_bar(lbl_C)
-      )
+      if (length(i_mw_pt) > 0L) {
+        fit_models(
+          DT = data,
+          i = i_mw_pt,
+          forest_type = "regression",
+          y_name = "Q",
+          x_names = null_if_empty(c(X_forest, y_name_rhs)),
+          folds = foldname,
+          margins = margins,
+          weight_name = weight,
+          cluster_name = cluster,
+          forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
+          shrink = need_pvar,
+          progress_title = step_bar(lbl_C)
+        )
+      }
+      if (length(i_mw_int) > 0L) {
+        x_int <- X_forest
+        if (length(x_int) == 0L) {
+          data[, mw_const__ := 0]
+          x_int <- "mw_const__"
+        }
+        fit_models(
+          DT = data,
+          i = i_mw_int,
+          forest_type = "regression",
+          y_name = "Q",
+          x_names = x_int,
+          folds = foldname,
+          margins = margins,
+          weight_name = weight,
+          cluster_name = cluster,
+          forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
+          shrink = need_pvar,
+          progress_title = step_bar(lbl_C)
+        )
+      }
     }
   }
 
@@ -3064,14 +3246,24 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     pr_target <- "priority_sq__"
     pr_v  <- "priority_v__"
     pr_vo <- "priority_vo__"
-    data[, (pr_target) := (scores - pred)^2]
-    pr_rows <- which(is.finite(data[[pr_target]]))
+    pr_rows <- which(is.finite(data$scores) & is.finite(data$pred))
+    ## priority.var = "model": rows with a binary instrument and a two-point Q get v(X) in closed form
+    ## from Z.hat, Q.hat and pred (no forest); only the remaining rows go to the forest below.
+    if (identical(priority.var, "model")) {
+      pr_closed <- priority_var_closed(
+        data, rows = pr_rows, margins = margins, zhat = zhat, out_v = pr_v, out_vo = pr_vo,
+        doubly.robust = isTRUE(doubly.robust), clip = aipw.clip
+      )
+      pr_rows <- setdiff(pr_rows, pr_closed)
+    }
+    data[, (pr_target) := NA_real_]
+    data[pr_rows, (pr_target) := (scores - pred)^2]
     X_expr_pr <- if (is.null(X_expr_varS)) X_expr_forest else X_expr_varS
     ## Same covariates as the causal forest (the default): reuse its columns.
     X_names_pr <- if (is.null(X_expr_varS) || identical(X_expr_varS, X_expr_forest)) X_forest else NULL
     S_opts <- if (length(Sparameters)) Sparameters else Cparameters
     ## One forest per half: out-of-bag `pr_v` for its own rows, `pr_vo` for the other half's rows.
-    estimate_conditional_mean(
+    if (length(pr_rows)) estimate_conditional_mean(
       DT = data, y_name = pr_target, x_expr = X_expr_pr, fe_expr = FE_expr,
       out_hat = pr_v, out_hat_o = pr_vo, by = margins, sample_var = "sample", weight = weight,
       cluster = cluster, parametric = FALSE, foldname = NULL,
@@ -3081,6 +3273,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       keep_x = FALSE, return_residual = FALSE, partial_out_y_fe = TRUE,
       i = pr_rows
     )
+    for (cc in c(pr_v, pr_vo)) if (!(cc %in% names(data))) data[, (cc) := NA_real_]
     data[, intersect(c(pr_target, paste0(pr_target, c(".sp_hat", ".sp_hat_o"))), names(data)) := NULL]
   }
 
@@ -3131,7 +3324,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (defer_selection) selectmargins <- character()
 
   if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
   if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
   time=rbind(time,"Find promising subset and test"=proc.time())

@@ -27,7 +27,9 @@
 #'     nested in D1. Rejected unless D1 and D2 are both binary.}
 #'   \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
 #'     i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
-#'     binary and \code{fml} may not contain fixed effects; D1 must be binary (an error otherwise).}
+#'     binary and \code{fml} may not contain fixed effects. D1 may be multivalued and ordered: the endpoint
+#'     conditions are then pointwise sign restrictions, and the interior values are tested with outcome sets
+#'     learned on the training half (see \code{montest}); this requires \code{local = TRUE}.}
 #'   \item{\code{"MWDY"}}{As \code{"MWD"} with (D2, Y) as outcomes, i.e.
 #'     \code{montest(D2 + Y ~ X | D1 ~ Z, condition = "MW")}; each outcome is residualized separately (see
 #'     \code{Y.res}) and all enter the forest. Requires Y.}
@@ -37,8 +39,11 @@
 #'     or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"} pool or select across them
 #'     and everything is corrected as one family. The first outcome column is D2 in block 1 and a constant in block 2,
 #'     the Y columns are shared; outcomes are residualized and nuisances fitted within each block, and Y is not binned.
-#'     \code{block} and \code{Dsubsets} may not be passed. D1 and D2 must be binary and D1, D2, Y free of missing
-#'     values. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
+#'     \code{block} and \code{Dsubsets} may not be passed. D1 and D2 may be multivalued and ordered (two-valued ones are
+#'     recoded to 0/1; as for \code{"MWD"} this requires \code{local = TRUE}), and D1, D2, Y must be free of missing
+#'     values. With a multivalued D2 the second-treatment conditions are the Mourifie-Wan conditions for D2, which are
+#'     pointwise only at the endpoints of D2 and learned-set budget bounds in the interior. The intersection of the two
+#'     sets of conditions is not sharp when D1 is multivalued. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
 #' }
 #'
 #' \strong{How the tests localize.} The Kwan-Roth conditions localize in the conditioning variables (D2, or
@@ -115,18 +120,10 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       stop("Condition ", cn, " requires no missing values in D1, D2 and Y.", call. = FALSE)
     }
   }
-  if ("MWDY2" %in% condition && !two_valued(data[[D2]])) {
-    stop("Condition MWDY2 requires a binary D2 (", D2, "), but it has ",
-         data.table::uniqueN(data[[D2]], na.rm = TRUE), " distinct values.", call. = FALSE)
-  }
   for (cn in intersect(c("KRDY", "KRDY2", "MWDY", "MWDY2"), condition)) {
     if (is.null(Y)) {
       stop("Condition ", cn, " requires an outcome Y on the left hand side of `fml`.", call. = FALSE)
     }
-  }
-  if (any(c("MWD", "MWDY", "MWDY2") %in% condition) && !two_valued(data[[D1]])) {
-    stop("Conditions MWD, MWDY and MWDY2 require a binary D1 (", D1, "), but it has ",
-         data.table::uniqueN(data[[D1]], na.rm = TRUE), " distinct values.", call. = FALSE)
   }
   if ("FSD" %in% condition && !fsd_ok) {
     stop("Condition FSD requires both D1 (", D1, ") and D2 (", D2, ") to be binary.", call. = FALSE)
@@ -203,7 +200,8 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       st_id <- "seq_id__"; st_blk <- "seq_block__"; st_T <- "seq_T__"; st_O <- "seq_O__"
       dat <- data.table::copy(data)
       data.table::set(dat, j = st_id, value = seq_len(nrow(dat)))
-      recode01 <- function(x) as.integer(x == max(x, na.rm = TRUE))
+      ## Two-valued treatments are recoded to 0/1; multivalued ones are used as they are.
+      recode01 <- function(x) if (two_valued(x)) as.integer(x == max(x, na.rm = TRUE)) else x
       data.table::set(dat, j = D1, value = recode01(dat[[D1]]))
       data.table::set(dat, j = D2, value = recode01(dat[[D2]]))
       b1 <- data.table::copy(dat)
@@ -218,8 +216,10 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       args <- dots
       args$cluster <- if (is.null(dots$cluster)) st_id else dots$cluster
       f <- make_fml(c(st_O, Y), as.name(st_T))
+      ## Dsubsets: with `block`, D must not need binning (see montest()).
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = st, condition = "MW", block = st_blk,
-                                              Dsubsets = 2L), args))
+                                              Dsubsets = max(4L, data.table::uniqueN(data[[D1]]),
+                                                             data.table::uniqueN(data[[D2]]))), args))
     } else {
       ## FSD: recode both to {0,1} (order preserving). D1 - D2 takes values in
       ## {-1,0,1} (D2 need not be nested in D1) and is scored linearly, so the

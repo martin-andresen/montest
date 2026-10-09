@@ -207,6 +207,72 @@ studentize_te <- function(data, pred, pred_var, pred_o, pred_o_var,
 
 
 
+## Closed-form centered-score variance Var(S - tau | X) for a binary instrument and a two-point
+## outcome Q in {a, b}, from the nuisances alone. With e = P(Z=1|X), m = E[Q|X], tau = E[Q|X,Z=1] -
+## E[Q|X,Z=0] (the working model E[Q|X,Z] = m + tau (Z - e) is automatic for binary Z), the
+## arm means are m1 = m + tau (1-e), m0 = m - tau e and the arm variances are D^2 p_z (1-p_z) with
+## p_z = (m_z - a) / D, D = b - a. The doubly robust score minus tau is (Z-e)/v * eps with v = e(1-e)
+## and eps = Q - m_Z, so Var = s2_1 / e + s2_0 / (1-e). The singly robust score (Z-e)(Q-m)/v has
+## arm means tau (1-e)/e (Z=1) and tau e/(1-e) (Z=0), which adds the between-arm term
+## tau^2 (1-2e)^2 / (e (1-e)). `e` must already be clipped away from 0 and 1.
+score_var_binary <- function(e, m, tau, a, b, doubly.robust = TRUE) {
+  D <- b - a
+  p1 <- pmin(pmax((m + tau * (1 - e) - a) / D, 0), 1)
+  p0 <- pmin(pmax((m - tau * e - a) / D, 0), 1)
+  V <- D^2 * (p1 * (1 - p1) / e + p0 * (1 - p0) / (1 - e))
+  if (!isTRUE(doubly.robust)) V <- V + tau^2 * (1 - 2 * e)^2 / (e * (1 - e))
+  V
+}
+
+## Fills `out_v` (key for the row's own half; uses `pred`) and `out_vo` (key used on the other half;
+## same nuisances, `pred_o` in place of `pred`) with score_var_binary() for the rows in `rows` that
+## qualify: raw-binary Z (z_is_linear_raw is FALSE; fixed-effect rows also qualify, `e` then only
+## weights the two arms), a margin cell whose Q takes exactly two values, and finite Q.hat, Z.hat and
+## pred. Qualification is decided per margin cell, so a cell is never split between this and the
+## forest. Columns are created (NA) if missing. Returns the row indices that were filled; the others
+## are left for the caller (montest() fits the score-variance forest on them).
+priority_var_closed <- function(data, rows, margins, zhat, out_v, out_vo,
+                                qcol = "Q", qhat = "Q.hat", pred = "pred", pred_o = "pred_o",
+                                doubly.robust = TRUE, clip = 1e-3) {
+  stopifnot(data.table::is.data.table(data))
+  for (cc in c(out_v, out_vo)) if (!(cc %in% names(data))) data.table::set(data, j = cc, value = NA_real_)
+  rows <- as.integer(rows)
+  if (!length(rows)) return(integer())
+  margins <- intersect(as.character(margins), names(data))
+  cl <- max(if (is.null(clip)) 1e-3 else clip, 1e-6)
+
+  q <- as.numeric(data[[qcol]][rows])
+  key <- if (length(margins)) {
+    data.table::frankv(data[rows, margins, with = FALSE], ties.method = "dense")
+  } else {
+    rep.int(1L, length(rows))
+  }
+  st <- data.table::data.table(cell_id = key, q = q)[
+    , .(a = min(q, na.rm = TRUE), b = max(q, na.rm = TRUE), n = data.table::uniqueN(q, na.rm = TRUE)),
+    by = cell_id
+  ]
+  j <- match(key, st$cell_id)
+  a <- st$a[j]
+  b <- st$b[j]
+
+  e <- pmin(pmax(as.numeric(data[[zhat]][rows]), cl), 1 - cl)
+  m <- as.numeric(data[[qhat]][rows])
+  tau <- as.numeric(data[[pred]][rows])
+  tau_o <- as.numeric(data[[pred_o]][rows])
+  zl <- data[["z_is_linear_raw"]][rows]
+
+  ok <- st$n[j] == 2L & b > a & !(zl %in% TRUE) & is.finite(m) & is.finite(e) & is.finite(tau)
+  if (!any(ok)) return(integer())
+
+  v <- rep(NA_real_, length(rows))
+  vo <- rep(NA_real_, length(rows))
+  v[ok] <- score_var_binary(e[ok], m[ok], tau[ok], a[ok], b[ok], doubly.robust)
+  vo[ok] <- score_var_binary(e[ok], m[ok], tau_o[ok], a[ok], b[ok], doubly.robust)
+  data.table::set(data, i = rows[ok], j = out_v, value = v[ok])
+  data.table::set(data, i = rows[ok], j = out_vo, value = vo[ok])
+  rows[ok]
+}
+
 ## Priority sort keys (Neill 2012, JRSS-B): pred / v and pred_o / v_o, where v (own-half OOB)
 ## and v_o (fitted on the opposite half) estimate the centered score variance. Written to
 ## `out_pred` / `out_pred_o`. Variances are floored at `floor_frac` times the positive median
@@ -4121,6 +4187,7 @@ forest_test <- function(
     sort_pred = NULL,
     sort_pred_o = NULL,
     scores  = "scores",
+    scores_test = NULL,
     x_names = NULL,
     minsize = 50L,
     margins = NULL,
@@ -4199,6 +4266,7 @@ forest_test <- function(
       sort_pred = sort_pred,
       sort_pred_o = sort_pred_o,
       scores = scores,
+      scores_test = scores_test,
       x_names = x_names,
       minsize = minsize,
       margins = margins,
@@ -5134,6 +5202,7 @@ forest_test_core <- function(
     sort_pred = NULL,
     sort_pred_o = NULL,
     scores  = "scores",
+    scores_test = NULL,
     x_names = NULL,
     minsize = 50L,
     margins = NULL,
@@ -5307,6 +5376,15 @@ forest_test_core <- function(
   sortv   <- if (is.null(sort_pred)) predv else as.numeric(data[[as.character(sort_pred)]])
   sortov  <- if (is.null(sort_pred_o)) predov else as.numeric(data[[as.character(sort_pred_o)]])
   scorev  <- as.numeric(data[[scores_col]])
+  ## Held-out-stage scores. Differ from `scorev` only when the score depends on
+  ## a data-driven object learned within a sample half (montest's multivalued
+  ## MW sets): the search above uses each half's own scores, the final test on
+  ## the held-out half uses scores built from the OTHER half's fit.
+  scorev_test <- scorev
+  if (!is.null(scores_test)) {
+    st__ <- as.numeric(data[[as.character(scores_test)]])
+    scorev_test[!is.na(st__)] <- st__[!is.na(st__)]
+  }
 
   wv <- if (!is.null(weight_col)) as.numeric(data[[weight_col]]) else rep(1.0, n)
   wv[!is.finite(wv)] <- 0
@@ -5920,7 +5998,7 @@ forest_test_core <- function(
 
   dt_test <- data.table::data.table(
     rowid = seq_len(n),
-    score = scorev,
+    score = scorev_test,
     w = wv,
     w_sandwich = if (!is.null(wv_sandwich)) wv_sandwich else NA_real_,
     cl = clv,
