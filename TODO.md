@@ -1,0 +1,3 @@
+# TODO
+
+- **MWDY2 binning error in `seqtest()`.** `seqtest(condition = "MWDY2")` can stop with "With `block`, D and Y must not need binning: raise Dsubsets/Ysubsets ..." (check at `R/montest.R` ~1193). The check counts distinct values of the stacked treatment (D1 in block 1, D2 in block 2, i.e. their union), but `seqtest()` sets `Dsubsets = max(4, uniqueN(D1), uniqueN(D2))` (`R/seqtest.R` ~197 for KRDY2, ~226 for MWDY2), which is smaller than the union when D1 and D2 take different values. A candidate fix (`uniqueN(st[[st_T]])`) was tried and reverted; revisit, and also consider whether MW with `block` needs the check at all (the Y part of it is KR-only, and blocks use D as is).
