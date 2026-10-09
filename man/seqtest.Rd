@@ -70,8 +70,8 @@ all other arguments straight through. The conditions are
     and everything is corrected as one family. The first outcome column is D2 in block 1 and a constant in block 2,
     the Y columns are shared; outcomes are residualized and nuisances fitted within each block, and Y is not binned.
     \code{block} and \code{Dsubsets} may not be passed. D1 and D2 may be multivalued and ordered (two-valued ones are
-    recoded to 0/1; as for \code{"MWD"} this requires \code{local = TRUE}), and D1, D2, Y must be free of missing
-    values. With a multivalued D2 the second-treatment conditions are the Mourifie-Wan conditions for D2, which are
+    recoded to 0/1; as for \code{"MWD"} this requires \code{local = TRUE}), and rows with missing values in D1, D2 or Y
+    are dropped with a message (for all conditions). With a multivalued D2 the second-treatment conditions are the Mourifie-Wan conditions for D2, which are
     pointwise only at the endpoints of D2 and learned-set budget bounds in the interior. The intersection of the two
     sets of conditions is not sharp when D1 is multivalued. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
 }
