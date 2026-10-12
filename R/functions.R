@@ -446,6 +446,9 @@ CART_test <- function(
     alpha = 0.05,
     prune = TRUE,
     minsize = 50L,
+    arm = NULL,
+    minarm = 10L,
+    minarm_clusters = 5L,
     screen = c("stepdown","none", "minimum", "negative", "nonpositive", "fgk_relevant"),
     store_trees = FALSE,
     verbose = FALSE,
@@ -862,7 +865,8 @@ CART_test <- function(
         sample = s_group,
         score  = score_group,
         w      = w_group,
-        w_sandwich = w_sandwich_group
+        w_sandwich = w_sandwich_group,
+        arm    = if (!is.null(arm)) as.integer(df_group[[as.character(arm)]]) else NA_integer_
       )
       if (!is.null(cluster_col)) {
         dt0[, cl := as.integer(factor(cl_group, exclude = NULL))]
@@ -876,7 +880,7 @@ CART_test <- function(
         G_here <- data.table::uniqueN(cl)
         N_here <- .N
 
-        if (G_here < minsize) {
+        if (G_here < minsize || !utils::tail(arm_ok_prefix(arm, cl, minarm, minarm_clusters), 1L)) {
           list(
             G = G_here,
             N = N_here,
@@ -4176,6 +4180,20 @@ rank_adj_total <- function(data, idx, fe_expr, x_vars = NULL, weight_col = NULL,
   as.integer(fe_r + x_r)
 }
 
+## Running (prefix) eligibility on the instrument arms: TRUE where the rows up to and including
+## this position hold at least `minarm` rows and `minarm_clusters` distinct clusters with
+## arm == 1 AND with arm == 0. `arm` is a 1/0 vector in sort order; all-NA arm (continuous Z, or no
+## arm supplied) imposes no constraint. A leaf without instrument variation identifies nothing.
+arm_ok_prefix <- function(arm, cl, minarm = 10L, minarm_clusters = 5L) {
+  if (!length(arm) || all(is.na(arm))) return(rep(TRUE, length(arm)))
+  ok_arm <- function(a) {
+    key <- ifelse(arm == a, cl, NA)
+    first <- !is.na(key) & !duplicated(key)
+    cumsum(!is.na(key)) >= minarm & cumsum(first) >= minarm_clusters
+  }
+  ok_arm(1L) & ok_arm(0L)
+}
+
 ####### FIND OPTIMAL CUTOFF AND TEST #############
 forest_test <- function(
     data,
@@ -4190,6 +4208,9 @@ forest_test <- function(
     scores_test = NULL,
     x_names = NULL,
     minsize = 50L,
+    arm = NULL,
+    minarm = 10L,
+    minarm_clusters = 5L,
     margins = NULL,
     pool = NULL,
     select = NULL,
@@ -4271,6 +4292,9 @@ forest_test <- function(
       scores_test = scores_test,
       x_names = x_names,
       minsize = minsize,
+      arm = arm,
+      minarm = minarm,
+      minarm_clusters = minarm_clusters,
       margins = margins,
       pool = pool_eff,
       select = select_eff,
@@ -5207,6 +5231,9 @@ forest_test_core <- function(
     scores_test = NULL,
     x_names = NULL,
     minsize = 50L,
+    arm = NULL,
+    minarm = 10L,
+    minarm_clusters = 5L,
     margins = NULL,
     pool = NULL,
     select = NULL,
@@ -5417,6 +5444,9 @@ forest_test_core <- function(
     seq_len(n)
   }
 
+  if (!is.null(arm)) stopifnot(as.character(arm) %in% names(data))
+  armv <- if (!is.null(arm)) as.integer(data[[as.character(arm)]]) else rep(NA_integer_, n)
+
   fe_vars_needed <- if (!is.null(fe_expr)) unique(all.vars(fe_expr)) else character(0)
   fe_vars_needed <- fe_vars_needed[fe_vars_needed %in% names(data)]
   fe_dt_full <- if (length(fe_vars_needed)) data[, ..fe_vars_needed] else NULL
@@ -5502,6 +5532,7 @@ forest_test_core <- function(
       w      = w,
       wsand  = wsand,
       cl     = cl,
+      arm    = armv[idx],
       rid    = seq_along(idx)
     )
     if (isTRUE(cell_centered)) {
@@ -5549,6 +5580,7 @@ forest_test_core <- function(
     }
 
     dt[, N := seq_len(.N), by = sample]
+    dt[, arm_ok := arm_ok_prefix(arm, cl, minarm, minarm_clusters), by = sample]
 
     if (isTRUE(cell_centered)) {
       ## Centered/with-intercept theta(k) and its cluster-robust SE, at
@@ -5779,22 +5811,22 @@ forest_test_core <- function(
       ]
     }
 
-    tau_tr <- dt[G >= minsize, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
+    tau_tr <- dt[G >= minsize & arm_ok, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
 
-    dt_est <- dt[, .(sample, pred_o, cl, w)]
+    dt_est <- dt[, .(sample, pred_o, cl, w, arm)]
     data.table::setorder(dt_est, sample, pred_o)
     dt_est[, G_est := cumsum(!duplicated(cl)), by = sample]
-    tau_est <- dt_est[G_est >= minsize, .(tau_est = min(pred_o, na.rm = TRUE)), by = sample]
+    dt_est[, arm_ok_est := arm_ok_prefix(arm, cl, minarm, minarm_clusters), by = sample]
+    tau_est <- dt_est[G_est >= minsize & arm_ok_est, .(tau_est = min(pred_o, na.rm = TRUE)), by = sample]
 
     if (nrow(tau_tr) < 2L || nrow(tau_est) < 2L) {
-      msg <- "minsize too large: cannot reach minsize clusters in train or est order for both samples."
-      if (!is.null(key_dt) && ncol(key_dt) > 0L) {
-        msg <- paste0(
-          msg, " Cell: ",
-          paste(paste(names(key_dt), as.character(key_dt[1, ]), sep = "="), collapse = ", ")
-        )
-      }
-      stop(msg)
+      ## Infeasible cell (cannot reach minsize clusters and minarm rows / minarm_clusters clusters in
+      ## each instrument arm in the train or est order of both samples): skipped; the caller warns.
+      return(list(skipped = if (!is.null(key_dt) && ncol(key_dt) > 0L) {
+        paste(paste(names(key_dt), as.character(key_dt[1, ]), sep = "="), collapse = ", ")
+      } else {
+        "(all rows)"
+      }))
     }
 
     tau_vec <- c(
@@ -5817,6 +5849,7 @@ forest_test_core <- function(
 
     elig <- (dt$pred >= dt$tau_constraint) &
       (dt$G >= minsize) &
+      dt$arm_ok &
       dt$cand_search &
       is.finite(dt$t_stat)
 
@@ -5893,8 +5926,14 @@ forest_test_core <- function(
   grid_list  <- if (store_grid) vector("list", n_cells) else NULL
   idx_test_list <- vector("list", n_cells)
 
+  skipped_cells <- character()
+
   for (g in seq_len(n_cells)) {
     ans <- run_one_cell_idx(idx_list[[g]], keys_list[[g]], cell_id = g)
+    if (!is.null(ans$skipped)) {
+      skipped_cells <- c(skipped_cells, ans$skipped)
+      next
+    }
     train_list[[g]] <- ans$train
     idx_test_list[[g]] <- ans$idx_test
     if (store_grid) grid_list[[g]] <- ans$grid
@@ -5902,6 +5941,19 @@ forest_test_core <- function(
     if (verbose && (g %% 25L == 0L)) {
       message(sprintf("forest_test: processed %d/%d cells", g, n_cells))
     }
+  }
+
+  if (length(skipped_cells) > 0L) {
+    if (length(skipped_cells) == n_cells) {
+      stop("minsize/minarm too large: no cell can reach minsize clusters and minarm rows (minarm_clusters clusters) in each instrument arm in the train and est order of both samples.")
+    }
+    warning(
+      length(skipped_cells), " of ", n_cells, " cells skipped: they cannot reach minsize clusters and minarm rows ",
+      "(minarm_clusters clusters) in each instrument arm in the train or est order of both samples. Skipped: ",
+      paste(utils::head(skipped_cells, 5L), collapse = " | "),
+      if (length(skipped_cells) > 5L) " | ..." else "",
+      call. = FALSE
+    )
   }
 
   train_all <- data.table::rbindlist(train_list, use.names = TRUE, fill = TRUE)

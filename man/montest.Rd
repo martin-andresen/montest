@@ -23,6 +23,8 @@ montest(
   cluster = NULL,
   seed = 10101,
   minsize = 50L,
+  minarm = 10L,
+  minarm_clusters = 5L,
   gridtypeY = "equidistant",
   gridtypeD = "equisized",
   gridtypeZ = "equisized",
@@ -84,8 +86,7 @@ The formula may be one-sided and omit Y if testing only the simple first stage c
 estimated), separately from \code{fml.Z}'s covariates for \code{Z}'s own conditional
 mean -- the two need not use the same covariates (e.g. a more parsimonious variance
 model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
-main X part), so leaving it unset reproduces the previous behavior of reusing the same
-covariates used for \code{Z}'s conditional mean. This variance is always estimated with a
+main X part), i.e. the same covariates used for \code{Z}'s conditional mean. This variance is always estimated with a
 regression forest, whatever \code{parametric} says (a linear model for a squared residual
 can go negative and misspecification enters the score through a denominator); any fixed
 effects are still partialled out linearly (\code{feols}) before the forest.}
@@ -115,22 +116,10 @@ cross-fitting nuisance functions and, optionally, forest predictions. Set to
   underlying bias there; the closed-form conditional variance \eqn{v(X)=e(X)(1-e(X))} used
   in the score is then computed fresh from the corrected \eqn{e(X)}, so it reflects the
   correction automatically with no separate rescaling step. For the binary representation,
-  \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]} after the shift (as
-  before, since it must remain a valid probability -- see \code{aipw.clip}). Not applied
+  \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]} after the shift (since it must remain a valid probability -- see \code{aipw.clip}). Not applied
   when \code{doubly.robust=FALSE} and \code{target="overlap"} (see \code{target}), since
   that path already uses each row's own empirical variance instead of the closed form, and
   needs \code{Z.hat} untouched to reproduce the classical FWL/OLS coefficient exactly.
-
-  (An earlier version of this correction instead left \code{Z.hat} unshifted for the binary
-  representation and rescaled \eqn{v(X)} multiplicatively by a Hajek/self-normalized-IPW
-  constant. That conflated two different roles: \eqn{v(X)} here is the semiparametric-
-  efficient AIPW/FWL score denominator -- the scale that makes the score's expectation equal
-  the causal estimand -- not an inverse-probability weight that itself needs to self-
-  normalize to 1. Rescaling only the score's denominator, with no matching adjustment to the
-  weight used when aggregating scores into the final statistic, is not a valid Hajek ratio;
-  it silently shrank the score's variance without correcting its mean under the null,
-  deflating the reported standard error and inflating the Type-I error rate. The additive
-  shift above targets the same finite-sample bias without changing the score's scale.)
 
   This design-level shift is computed once, at whatever \code{sample}/\code{margins} level
   \code{stabilize.scores} operates on -- not separately within an adaptively-found
@@ -199,6 +188,11 @@ inference is used in forest-based testing. CART testing cannot be combined with 
 
 \item{minsize}{Integer minimum effective sample size or minimum cluster count required
 for subset search and testing. Default 50.}
+
+\item{minarm, minarm_clusters}{Integers. For the local (forest/CART) tests with a binary instrument: the
+minimum number of rows and of distinct clusters with the instrument equal to 1, and with it equal to 0,
+required in every candidate subgroup. Subgroups without instrument variation identify nothing and
+otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5.}
 
 \item{gridtypeY, gridtypeD, gridtypeZ}{Character strings controlling how continuous
 variables are discretized before stacking. Must be one of \code{"equisized"} or
@@ -458,14 +452,19 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
   This is only allowed for a binary treatment (D with at most 2 support points in the data); an error is
   thrown otherwise. There are a total of (K-1) such conditions.
-  \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
-  and exclusion conditional on instrument validity. This is only allowed for a binary treatment and a genuinely
-  binary instrument (Z with at most 2 support points in the data -- an arbitrary margin/threshold cut of a
-  multivalued Z does not correspond to their theory), and \code{fml} may not include fixed effects (MW's Q
-  statistic uses Z.hat directly as a propensity weight with no AIPW/FWL orthogonalization protecting it).
-  \code{linearZ}/\code{linearD} are disallowed in combination with \code{"MW"} for the same reason: its moment
-  conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
-  Unlike \code{"simple"}, \code{"KR"} and \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search, \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search and the MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW conditions.
+  \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which test monotonicity
+  and exclusion conditional on instrument validity. A multivalued instrument is handled by stacking adjacent
+  contrasts (see \code{zmargin}), each of which is a binary-instrument MW problem. A multivalued treatment is allowed
+  with \code{local = TRUE}: the endpoint treatment values give the pointwise MW sign restrictions, and the interior
+  values use outcome sets learned on the training half (\code{mw_sets = "datadriven"}; \code{"endpoints"} drops
+  interior values). \code{fml} may not include fixed effects (MW's Q statistic uses Z.hat directly as a propensity
+  weight, with no AIPW/FWL orthogonalization protecting it), and \code{linearZ}/\code{linearD} are disallowed because
+  the MW moment conditions are always indicator-based, never slope-based. Unlike \code{"simple"}, \code{"KR"} and
+  \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search,
+  \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search
+  itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search, and for a binary treatment the
+  MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW
+  conditions.
 }
 
 \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),
@@ -504,7 +503,7 @@ data=fct_datasim(setup="A",dgp=2,n=3000)
 
 # Simple monotonicity-style test
 out <- montest(
-  ~Xvar1+Xvar2+Xvar3|D~Z,
+  Y~Xvar1+Xvar2+Xvar3|D~Z,
   data = data,
   condition = "simple")
 
@@ -512,11 +511,10 @@ out <- montest(
 out2 <- montest(
   Y~Xvar1+Xvar2+Xvar3|D~Z,
   data = data,
-  X = c("Xvar1", "Xvar2", "Xvar3"),
   condition = c("simple","KR","MW"))
 }
 
 }
 \seealso{
-montestplot LATEtest
+\code{\link{montestplot}}, \code{\link{seqtest}}
 }

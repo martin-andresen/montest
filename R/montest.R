@@ -20,8 +20,7 @@
 #'   estimated), separately from \code{fml.Z}'s covariates for \code{Z}'s own conditional
 #'   mean -- the two need not use the same covariates (e.g. a more parsimonious variance
 #'   model for stability). Defaults to \code{fml.Z} (which itself defaults to \code{fml}'s
-#'   main X part), so leaving it unset reproduces the previous behavior of reusing the same
-#'   covariates used for \code{Z}'s conditional mean. This variance is always estimated with a
+#'   main X part), i.e. the same covariates used for \code{Z}'s conditional mean. This variance is always estimated with a
 #'   regression forest, whatever \code{parametric} says (a linear model for a squared residual
 #'   can go negative and misspecification enters the score through a denominator); any fixed
 #'   effects are still partialled out linearly (\code{feols}) before the forest.
@@ -85,22 +84,10 @@
 #'   underlying bias there; the closed-form conditional variance \eqn{v(X)=e(X)(1-e(X))} used
 #'   in the score is then computed fresh from the corrected \eqn{e(X)}, so it reflects the
 #'   correction automatically with no separate rescaling step. For the binary representation,
-#'   \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]} after the shift (as
-#'   before, since it must remain a valid probability -- see \code{aipw.clip}). Not applied
+#'   \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]} after the shift (since it must remain a valid probability -- see \code{aipw.clip}). Not applied
 #'   when \code{doubly.robust=FALSE} and \code{target="overlap"} (see \code{target}), since
 #'   that path already uses each row's own empirical variance instead of the closed form, and
 #'   needs \code{Z.hat} untouched to reproduce the classical FWL/OLS coefficient exactly.
-#'
-#'   (An earlier version of this correction instead left \code{Z.hat} unshifted for the binary
-#'   representation and rescaled \eqn{v(X)} multiplicatively by a Hajek/self-normalized-IPW
-#'   constant. That conflated two different roles: \eqn{v(X)} here is the semiparametric-
-#'   efficient AIPW/FWL score denominator -- the scale that makes the score's expectation equal
-#'   the causal estimand -- not an inverse-probability weight that itself needs to self-
-#'   normalize to 1. Rescaling only the score's denominator, with no matching adjustment to the
-#'   weight used when aggregating scores into the final statistic, is not a valid Hajek ratio;
-#'   it silently shrank the score's variance without correcting its mean under the null,
-#'   deflating the reported standard error and inflating the Type-I error rate. The additive
-#'   shift above targets the same finite-sample bias without changing the score's scale.)
 #'
 #'   This design-level shift is computed once, at whatever \code{sample}/\code{margins} level
 #'   \code{stabilize.scores} operates on -- not separately within an adaptively-found
@@ -160,6 +147,10 @@
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing cannot be combined with cluster.
 #' @param seed Integer random seed, default 10101, set to NULL to disable setting seed
+#' @param minarm,minarm_clusters Integers. For the local (forest/CART) tests with a binary instrument: the
+#'   minimum number of rows and of distinct clusters with the instrument equal to 1, and with it equal to 0,
+#'   required in every candidate subgroup. Subgroups without instrument variation identify nothing and
+#'   otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5.
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
 #' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
@@ -322,14 +313,19 @@
 #'   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
 #'   This is only allowed for a binary treatment (D with at most 2 support points in the data); an error is
 #'   thrown otherwise. There are a total of (K-1) such conditions.
-#'   \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which tests monotonicity
-#'   and exclusion conditional on instrument validity. This is only allowed for a binary treatment and a genuinely
-#'   binary instrument (Z with at most 2 support points in the data -- an arbitrary margin/threshold cut of a
-#'   multivalued Z does not correspond to their theory), and \code{fml} may not include fixed effects (MW's Q
-#'   statistic uses Z.hat directly as a propensity weight with no AIPW/FWL orthogonalization protecting it).
-#'   \code{linearZ}/\code{linearD} are disallowed in combination with \code{"MW"} for the same reason: its moment
-#'   conditions are always indicator-based, never slope-based. There are a total of 2K such conditions.
-#'   Unlike \code{"simple"}, \code{"KR"} and \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search, \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search and the MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW conditions.
+#'   \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which test monotonicity
+#'   and exclusion conditional on instrument validity. A multivalued instrument is handled by stacking adjacent
+#'   contrasts (see \code{zmargin}), each of which is a binary-instrument MW problem. A multivalued treatment is allowed
+#'   with \code{local = TRUE}: the endpoint treatment values give the pointwise MW sign restrictions, and the interior
+#'   values use outcome sets learned on the training half (\code{mw_sets = "datadriven"}; \code{"endpoints"} drops
+#'   interior values). \code{fml} may not include fixed effects (MW's Q statistic uses Z.hat directly as a propensity
+#'   weight, with no AIPW/FWL orthogonalization protecting it), and \code{linearZ}/\code{linearD} are disallowed because
+#'   the MW moment conditions are always indicator-based, never slope-based. Unlike \code{"simple"}, \code{"KR"} and
+#'   \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search,
+#'   \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search
+#'   itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search, and for a binary treatment the
+#'   MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW
+#'   conditions.
 #' }
 #'
 #' \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),
@@ -391,7 +387,7 @@
 #'
 #' # Simple monotonicity-style test
 #' out <- montest(
-#'   ~Xvar1+Xvar2+Xvar3|D~Z,
+#'   Y~Xvar1+Xvar2+Xvar3|D~Z,
 #'   data = data,
 #'   condition = "simple")
 #'
@@ -399,15 +395,14 @@
 #' out2 <- montest(
 #'   Y~Xvar1+Xvar2+Xvar3|D~Z,
 #'   data = data,
-#'   X = c("Xvar1", "Xvar2", "Xvar3"),
 #'   condition = c("simple","KR","MW"))
 #' }
 #'
-#' @seealso montestplot LATEtest
+#' @seealso \code{\link{montestplot}}, \code{\link{seqtest}}
 #' @export
 
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,
+                 stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,minarm=10L,minarm_clusters=5L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
@@ -1318,17 +1313,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       "condition = \"AHS\" requires a genuinely binary treatment D (J <= 2 ",
       "support points in the data); D has ", J_true, " here. Use \"simple\" or ",
       "\"KR\" for a multivalued treatment.",
-      call. = FALSE
-    )
-  }
-  if (K_true>2&("MW" %in% condition)) {
-    stop(
-      "condition = \"MW\" requires a genuinely binary instrument Z (K <= 2 ",
-      "support points in the data); Z has ", K_true, " here. Mourifie and Wan's ",
-      "(2017) conditions are derived for a true binary instrument -- testing ",
-      "them against an arbitrary margin/threshold cut of a multivalued Z ",
-      "would not correspond to their theory. Use \"simple\", \"KR\", or ",
-      "\"AHS\" for a multivalued instrument.",
       call. = FALSE
     )
   }
@@ -3330,13 +3314,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
+  ## Binary instrument arm (1/0; NA for continuous-Z rows, which get no arm guard): forest_test()/
+  ## CART_test() only consider leaves with at least `minarm` rows and `minarm_clusters` clusters in
+  ## each arm, since a leaf without instrument variation identifies nothing.
+  arm_arg <- NULL
+  if (local) {
+    data[, .arm := data.table::fifelse(z_use_linear_score %in% TRUE, NA_integer_, as.integer(get(Z) > 0.5))]
+    arm_arg <- ".arm"
+  }
   ## stack = FALSE with a selection rule: no selection inside the block; it is applied
   ## jointly over all blocks afterwards (finalize_deferred_selection()).
   if (defer_selection) selectmargins <- character()
 
   if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
-  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,minarm=minarm,minarm_clusters=minarm_clusters,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
+  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,minarm=minarm,minarm_clusters=minarm_clusters,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
   time=rbind(time,"Find promising subset and test"=proc.time())
   if (!local) rownames(time)[nrow(time)] <- "Construct test results"
