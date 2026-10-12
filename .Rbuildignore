@@ -4,3 +4,4 @@
 ^README\.Rmd$
 usethis::use_build_ignore("sims")
 ^data-raw$
+^\.claude$

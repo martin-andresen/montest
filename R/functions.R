@@ -4245,14 +4245,16 @@ forest_test <- function(
     tr <- data.table::as.data.table(fit$results)[train == TRUE & relevant == 1L]
 
     if (nrow(tr) == 0L) return(Inf)
-    if (!("p.raw" %in% names(tr))) return(Inf)
+    if (!("t" %in% names(tr))) return(Inf)
 
-    pp <- tr$p.raw
-    pp <- pp[is.finite(pp)]
+    ## Log scale: pnorm(t) underflows to 0 for t < ~-38, which would tie all designs.
+    ## The smallest Holm-adjusted p is m * min(p), i.e. log(m) + min(log p), capped at 1.
+    tt <- tr$t
+    tt <- tt[is.finite(tt)]
 
-    if (!length(pp)) return(Inf)
+    if (!length(tt)) return(Inf)
 
-    min(stats::p.adjust(pp, method = "holm"), na.rm = TRUE)
+    min(0, log(length(tt)) + min(stats::pnorm(tt, log.p = TRUE)))
   }
 
   run_core <- function(pool_eff, select_eff) {
@@ -7094,4 +7096,53 @@ restore_aliases <- function(x, map) {
   ord <- order(-nchar(map))
   for (k in ord) x <- gsub(map[[k]], names(map)[k], x, fixed = TRUE)
   x
+}
+
+
+## Free physical memory in bytes (NA if it cannot be determined).
+free_ram_bytes <- function() {
+  out <- tryCatch({
+    if (.Platform$OS.type == "windows") {
+      x <- system2("powershell",
+                   c("-NoProfile", "-Command", shQuote("(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory")),
+                   stdout = TRUE, stderr = FALSE)
+      as.numeric(x[1L]) * 1024
+    } else if (file.exists("/proc/meminfo")) {
+      x <- grep("^MemAvailable:", readLines("/proc/meminfo"), value = TRUE)
+      as.numeric(gsub("[^0-9]", "", x)) * 1024
+    } else {
+      NA_real_
+    }
+  }, error = function(e) NA_real_, warning = function(w) NA_real_)
+  if (length(out) != 1L || !is.finite(out) || out <= 0) NA_real_ else out
+}
+
+## Stops before `mi` is crossed with `data` (joined on `keys`) if the crossed data would
+## not fit in free memory. Rows are counted exactly from the key counts; memory is
+## rows * columns * 8 bytes, times 3 for the working copies made later.
+check_cross_memory <- function(data, mi, mc_keys__, stack) {
+  if (length(mc_keys__)) {
+    dk <- data[, .N, by = mc_keys__]
+    mk <- mi[, .N, by = mc_keys__]
+    if ("zmargin" %in% mc_keys__) {
+      dk[, zmargin := as.numeric(zmargin)]
+      mk[, zmargin := as.numeric(zmargin)]
+    }
+    m <- merge(dk, mk, by = mc_keys__)
+    n_rows <- sum(as.numeric(m$N.x) * as.numeric(m$N.y))
+  } else {
+    n_rows <- as.numeric(nrow(data)) * as.numeric(nrow(mi))
+  }
+  est <- n_rows * (ncol(data) + ncol(mi)) * 8 * 3
+  if (est < 2^30) return(invisible(NULL))
+  avail <- free_ram_bytes()
+  if (is.finite(avail) && est > 0.8 * avail) {
+    stop("The data crossed with the margin index would have about ", format(round(n_rows), big.mark = ","),
+         " rows, needing roughly ", round(est / 2^30, 1), " GB, but only ", round(avail / 2^30, 1),
+         " GB of memory are free. ",
+         if (isTRUE(stack)) "Try stack = FALSE, or " else "Try ",
+         "fewer margins (e.g. smaller Dsubsets/Ysubsets, joint = FALSE), or set memcheck = FALSE to skip this check.",
+         call. = FALSE)
+  }
+  invisible(NULL)
 }
