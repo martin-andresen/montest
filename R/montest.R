@@ -225,12 +225,12 @@
 #' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval")}
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is all eligible margins
 #'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block", "yval", "equation")}
+#'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is all eligible margins except \code{"sample"}
 #'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{pool}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param local Logical, default \code{TRUE}. If \code{FALSE}, the local (subgroup) search is skipped entirely:
 #'   there is no sample split (\code{sample} is 1 for all observations), no \code{forest_test}/CART search, and the
@@ -250,6 +250,11 @@
 #'   \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
 #'   \code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
 #'   because the random number stream differs.
+#' @param memcheck Logical, default \code{TRUE}. Before crossing the margin index with the data, the number of rows
+#'   and the memory of the crossed data are estimated (rows times columns times 8 bytes, times 3 for working copies).
+#'   If the estimate exceeds 80\% of the free physical memory, \code{montest()} stops with an error suggesting
+#'   \code{stack = FALSE} or fewer margins. Set \code{memcheck = FALSE} to skip the check. The check is silently
+#'   skipped if free memory cannot be determined.
 #' @param block Optional name of a column in \code{data} indexing independent testing problems that have been stacked
 #'   in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} and \code{"MWDY2"} conditions). Only for
 #'   \code{condition = "KR"} or \code{"MW"} (for \code{"MW"}, outcomes are residualized and the nuisances fitted
@@ -406,7 +411,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,local=TRUE,stack=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
+                 doubly.robust=NULL,local=TRUE,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
@@ -597,6 +602,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   stopifnot(is.logical(stack), length(stack) == 1L, !is.na(stack))
   stopifnot(is.logical(progress), length(progress) == 1L, !is.na(progress))
   select_given <- !missing(select)
+  select_input <- select
   if (!local) {
     ## No sample split: cross-fitting across the two outer halves is not
     ## possible, so nuisances fall back to OOB predictions (or to the inner
@@ -773,8 +779,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   else if (is.null(select)==FALSE) select=match.arg(select,pool_vocab,several.ok=TRUE)
 
   ## Defaults: whatever the user specifies in one of pool/select is left out of the other's default.
-  pool_default <- c("sample", "zmargin", "dval")
-  select_default <- c("condition", "block", "yval", "equation")
+  ## By default every eligible margin is adaptive (in both); "sample" can only be pooled.
+  pool_default <- pool_vocab
+  select_default <- setdiff(pool_vocab, "sample")
   if (is.null(pool)) pool <- setdiff(pool_default, if (is.null(select)) character() else select)
   if (is.null(select)) select <- setdiff(select_default, if (is.null(pool_input)) character() else pool)
   select <- intersect(select, pool_vocab)
@@ -795,6 +802,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     ## The default and "all" resolve to the poolable dimensions.
     if (is.null(pool_input) || any(pool_input == "all")) {
       pool <- intersect(pool, c("zmargin", "sample"))
+      ## Default select must not overlap pool in zmargin (no adaptive design without stacking).
+      if (is.null(select_input)) select <- setdiff(select, "zmargin")
     } else if (length(setdiff(pool, c("zmargin", "sample"))) > 0L) {
       stop("With stack = FALSE, `pool` may only contain \"zmargin\" and \"sample\"; got: ",
            paste(setdiff(pool, c("zmargin", "sample")), collapse = ", "), ".", call. = FALSE)
@@ -2397,6 +2406,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   ## With `block`, each cell only uses the rows of its own block.
   blk_key <- if (has_block) "block" else NULL
+
+  if (isTRUE(memcheck)) check_cross_memory(data, mi, c(if ("zmargin" %in% names(data) && "zmargin" %in% names(mi)) "zmargin", blk_key), stack)
 
   if ("zmargin" %in% names(data) && "zmargin" %in% names(mi)) {
     ## Make sure both join columns have the same type.

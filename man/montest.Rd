@@ -50,6 +50,7 @@ montest(
   doubly.robust = NULL,
   local = TRUE,
   stack = TRUE,
+  memcheck = TRUE,
   block = NULL,
   mw_sets = c("datadriven", "endpoints"),
   progress = interactive(),
@@ -243,13 +244,13 @@ required within each sample half and margin cell considered for residual variati
 \item{pool}{Character vector controlling which dimensions are pooled when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval")}
+\code{"sample"}, \code{"all"}, and \code{"none"}. The default is all eligible margins
 (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block", "yval", "equation")}
+\code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is all eligible margins except \code{"sample"}
 (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{pool}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
@@ -341,6 +342,12 @@ only pre-selected estimates are reported. This uses much less memory with many m
 \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
 \code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
 because the random number stream differs.}
+
+\item{memcheck}{Logical, default \code{TRUE}. Before crossing the margin index with the data, the number of rows
+and the memory of the crossed data are estimated (rows times columns times 8 bytes, times 3 for working copies).
+If the estimate exceeds 80\% of the free physical memory, \code{montest()} stops with an error suggesting
+\code{stack = FALSE} or fewer margins. Set \code{memcheck = FALSE} to skip the check. The check is silently
+skipped if free memory cannot be determined.}
 
 \item{block}{Optional name of a column in \code{data} indexing independent testing problems that have been stacked
 in one dataset (used by \code{\link{seqtest}} for the \code{"KRDY2"} and \code{"MWDY2"} conditions). Only for
