@@ -306,8 +306,8 @@
 #'  \item \code{condition="simple"} tests the sharp condition of a nonnegative first stage everywhere, which tests monotonicity,
 #'   but not exclusion in addition to instrument exogeneity. There are a total of (J-1)(K-1) such conditions.
 #'  \item \code{condition="KR"} tests the sharp Kwan-Roth (2026) / Sun (2023) conditions for instrument validity,
-#'  which require exclusion and monotonicity in addition to instrument exogeneity. There are in total (K-1)(L + (J-1)(2^L-2))
-#'   such conditions. If option joint=FALSE, montest tests only the (K-1)JK cellwise conditions with only one outcome value in the set A.
+#'  which require exclusion and monotonicity in addition to instrument exogeneity. There are in total (K-1)(L + (2^L-2) + (J-2)(2^L-1))
+#'   such conditions (the lowest value of the treatment contributes the L singleton sets, the highest value the 2^L-2 proper subsets of the outcome support, and each interior value all 2^L-1 subsets, the full set giving the first-stage condition at that threshold; Kwon and Roth show that the interior values are needed for sharpness). If option joint=FALSE, montest tests only the (K-1)JK cellwise conditions with only one outcome value in the set A.
 #'   With a binary treatment and instrument, these conditions collapse to the conditions from Balke and Pearl (1997). Outcome variable Y must be specified.
 #'   \item \code{condition="AHS"} tests the non-sharp condition from Andresen-Huber-Sloczynski of a nonnegative
 #'   first stage conditional on Y, which require monotonicity and exclusion in addition to instrument exogeneity.
