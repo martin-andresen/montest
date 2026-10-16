@@ -18,7 +18,10 @@ Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D
 the MW conditions are never run by default.}
 
 \item{...}{Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
-the margins sequentially).}
+the margins sequentially).
+For \code{"KRD"} and \code{"KRDY"}, seqtest first bins both treatments (D1 and D2) with \code{Dsubsets}
+and Y with \code{Ysubsets}, whatever role a variable plays in the condition (\code{montest} alone would bin
+D2, as an outcome, with \code{Ysubsets}); the other conditions pass these arguments on unchanged.}
 }
 \value{
 An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for

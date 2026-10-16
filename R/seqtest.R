@@ -62,6 +62,9 @@
 #'   the MW conditions are never run by default.
 #' @param ... Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
 #'   the margins sequentially).
+#'   For \code{"KRD"} and \code{"KRDY"}, seqtest first bins both treatments (D1 and D2) with \code{Dsubsets}
+#'   and Y with \code{Ysubsets}, whatever role a variable plays in the condition (\code{montest} alone would bin
+#'   D2, as an outcome, with \code{Ysubsets}); the other conditions pass these arguments on unchanged.
 #'
 #' @return An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
 #'   that condition plus \code{condition} and \code{call}. With several conditions, one full
@@ -152,8 +155,30 @@ seqtest <- function(fml, data, condition = NULL, ...) {
     if (cond %in% c("KRD", "KRDY", "MWD", "MWDY")) {
       ## D2 (and Y for the *DY versions) as outcomes, D1 as the treatment
       f <- make_fml(c(D2, if (grepl("Y$", cond)) Y), as.name(D1))
-      fits[[cond]] <- do.call(montest, c(list(fml = f, data = data,
-                                              condition = substr(cond, 1L, 2L)), dots))
+      dat_c <- data
+      dots_c <- dots
+      if (cond %in% c("KRD", "KRDY")) {
+        ## Bin the treatments (D1, D2) with Dsubsets and the outcome Y with Ysubsets, whatever role
+        ## a variable plays in this condition: montest() would bin D2, as an outcome, with Ysubsets.
+        ## After this step every variable has at most max(Dsubsets, Ysubsets) values, so montest()'s own
+        ## binning (both subsets arguments are set to that maximum) leaves the data unchanged.
+        nd <- if (is.null(dots$Dsubsets)) 4L else dots$Dsubsets
+        ny <- if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets
+        wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
+        gtd <- if (is.null(dots$gridtypeD)) "equisized" else dots$gridtypeD
+        gty <- if (is.null(dots$gridtypeY)) "equidistant" else dots$gridtypeY
+        for (v in c(D1, D2)) {
+          dat_c <- binarize_var(dat_c, v, ngroups = nd, gridtype = gtd, wvar = wvar, newvar = v)
+        }
+        if (grepl("Y$", cond)) {
+          for (v in Y) {
+            dat_c <- binarize_var(dat_c, v, ngroups = ny, gridtype = gty, wvar = wvar, newvar = v)
+          }
+        }
+        dots_c$Dsubsets <- dots_c$Ysubsets <- max(nd, ny)
+      }
+      fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat_c,
+                                              condition = substr(cond, 1L, 2L)), dots_c))
     } else if (cond == "KRDY2") {
       ## Two KR problems stacked as blocks of one montest() call:
       ##   block 1: treatment D1, outcome = joint code of (D2, binned Y)
