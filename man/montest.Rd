@@ -50,7 +50,7 @@ montest(
   linearZ = FALSE,
   target = NULL,
   doubly.robust = NULL,
-  local = TRUE,
+  local = NULL,
   stack = TRUE,
   memcheck = TRUE,
   block = NULL,
@@ -254,7 +254,7 @@ treatment effect \code{pred / sqrt(pred_var)} (the causal forest's own predictiv
 prediction, so rows are ranked by the strength of evidence rather than the size of the point estimate. This makes the
 ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
 \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
-Only with \code{local = TRUE} and \code{testtype = "forest"}.}
+Only with covariates and \code{testtype = "forest"}.}
 
 \item{priority}{Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
 \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
@@ -265,7 +265,7 @@ and the key used in the other half uses the \code{v(X)} fit on the search half o
 (\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Fixed effects in the formula are partialled out
 linearly before the forest (as for the variance of \code{Z}), so the fitted \code{v} can be non-positive; see
 \code{priority.floor}. Cannot be combined with \code{studentize}.
-Only with \code{local = TRUE} and \code{testtype = "forest"}.}
+Only with covariates and \code{testtype = "forest"}.}
 
 \item{priority.floor}{Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
@@ -317,14 +317,20 @@ overrides this regardless of \code{parametric}; see \code{target} for how the tw
 Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"}; has no effect on
 \code{"MW"}, which does not use this scoring machinery.}
 
-\item{local}{Logical, default \code{TRUE}. If \code{FALSE}, the local (subgroup) search is skipped entirely:
-there is no sample split (\code{sample} is 1 for all observations), no \code{forest_test}/CART search, and the
+\item{local}{Removed; supplying it is an error. Whether the sample is split and the subgroup search is run is now
+inferred. The search (causal forest plus \code{forest_test}/CART) runs whenever the forest covariates (the X part of
+\code{fml}, or \code{fml.C}) are non-empty or \code{condition} includes \code{"MW"} or \code{"AHS"}, which use \code{Y}
+as a feature. Without covariates (only \code{"simple"}/\code{"KR"}) there is no heterogeneity to search over:
+\itemize{
+\item If \code{select} selects over margin cells (the default whenever zmargin, dval, yval or condition margins
+exist), the sample is still split, cells are selected on one half and reported on the other (the causal forest
+then uses a constant feature, so \code{shrink}, \code{studentize}, \code{priority} and \code{testtype = "CART"} have no role).
+\item Otherwise (e.g. \code{select = "none"}) there is no model selection and hence no sample split: the
 estimates are computed globally within each margin cell, using the same centering / re-centering as the local
-test-side moment. These global estimates are stored in \code{$results} (with \code{train = FALSE}) and feed
-\code{$minp}; \code{$global}, \code{$grid}, \code{$Xmeans}, \code{$shares} are \code{NULL}. \code{pool} still works
-(\code{"sample"} is moot), \code{select}, \code{shrink}, \code{testtype}, \code{screen}, \code{gridpoints} and the CART
-tuning parameters have no role. Outer cross-fitting is unavailable, so nuisances use out-of-bag predictions (or
-\code{inner.folds}). With \code{doubly.robust = FALSE} no causal forest is fit at all.}
+test-side moment. These are stored in \code{$results} (with \code{train = FALSE}) and feed \code{$minp};
+\code{$global}, \code{$grid}, \code{$Xmeans}, \code{$shares} are \code{NULL}. Nuisances use out-of-bag predictions
+(or \code{inner.folds}); \code{crossfit} has no effect, and \code{montestplot()} is unavailable.
+}}
 
 \item{stack}{Logical, default \code{TRUE}. If \code{TRUE} the margin index (condition, dval, yval, equation) is
 crossed with the data and everything is estimated on the stacked data. If \code{FALSE}, the tests are run
@@ -334,7 +340,7 @@ jointly over all blocks on the training side, and test-sample rows that were not
 only pre-selected estimates are reported. This uses much less memory with many margins. With
 \code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} and \code{"sample"} (the default, and
 \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
-\code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
+\code{testtype = "CART"} still requires \code{pool = "none"}. Works when there is no subgroup search. Results are not numerically identical to \code{stack = TRUE}
 because the random number stream differs.}
 
 \item{memcheck}{Logical, default \code{TRUE}. Before crossing the margin index with the data, the number of rows
@@ -454,17 +460,15 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   thrown otherwise. There are a total of (K-1) such conditions.
   \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which test monotonicity
   and exclusion conditional on instrument validity. A multivalued instrument is handled by stacking adjacent
-  contrasts (see \code{zmargin}), each of which is a binary-instrument MW problem. A multivalued treatment is allowed
-  with \code{local = TRUE}: the endpoint treatment values give the pointwise MW sign restrictions, and the interior
+  contrasts (see \code{zmargin}), each of which is a binary-instrument MW problem. A multivalued treatment is allowed: the endpoint treatment values give the pointwise MW sign restrictions, and the interior
   values use outcome sets learned on the training half (\code{mw_sets = "datadriven"}; \code{"endpoints"} drops
   interior values). \code{fml} may not include fixed effects (MW's Q statistic uses Z.hat directly as a propensity
   weight, with no AIPW/FWL orthogonalization protecting it), and \code{linearZ}/\code{linearD} are disallowed because
   the MW moment conditions are always indicator-based, never slope-based. Unlike \code{"simple"}, \code{"KR"} and
   \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search,
   \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search
-  itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search, and for a binary treatment the
-  MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW
-  conditions.
+  itself localizes jointly in \code{(Y, X)}. MW therefore always runs the search, also without covariates in \code{fml} (the search
+  then localizes in \code{Y} only).
 }
 
 \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),

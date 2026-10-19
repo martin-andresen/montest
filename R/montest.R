@@ -159,7 +159,7 @@
 #'   prediction, so rows are ranked by the strength of evidence rather than the size of the point estimate. This makes the
 #'   ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
 #'   \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
-#'   Only with \code{local = TRUE} and \code{testtype = "forest"}.
+#'   Only with covariates and \code{testtype = "forest"}.
 #' @param priority Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
 #'   \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
 #'   of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
@@ -169,7 +169,7 @@
 #'   (\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Fixed effects in the formula are partialled out
 #'   linearly before the forest (as for the variance of \code{Z}), so the fitted \code{v} can be non-positive; see
 #'   \code{priority.floor}. Cannot be combined with \code{studentize}.
-#'   Only with \code{local = TRUE} and \code{testtype = "forest"}.
+#'   Only with covariates and \code{testtype = "forest"}.
 #' @param priority.floor Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 #'   at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
 #'   non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.
@@ -223,14 +223,20 @@
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
 #'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is all eligible margins except \code{"sample"}
 #'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{pool}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
-#' @param local Logical, default \code{TRUE}. If \code{FALSE}, the local (subgroup) search is skipped entirely:
-#'   there is no sample split (\code{sample} is 1 for all observations), no \code{forest_test}/CART search, and the
+#' @param local Removed; supplying it is an error. Whether the sample is split and the subgroup search is run is now
+#'   inferred. The search (causal forest plus \code{forest_test}/CART) runs whenever the forest covariates (the X part of
+#'   \code{fml}, or \code{fml.C}) are non-empty or \code{condition} includes \code{"MW"} or \code{"AHS"}, which use \code{Y}
+#'   as a feature. Without covariates (only \code{"simple"}/\code{"KR"}) there is no heterogeneity to search over:
+#'   \itemize{
+#'   \item If \code{select} selects over margin cells (the default whenever zmargin, dval, yval or condition margins
+#'   exist), the sample is still split, cells are selected on one half and reported on the other (the causal forest
+#'   then uses a constant feature, so \code{shrink}, \code{studentize}, \code{priority} and \code{testtype = "CART"} have no role).
+#'   \item Otherwise (e.g. \code{select = "none"}) there is no model selection and hence no sample split: the
 #'   estimates are computed globally within each margin cell, using the same centering / re-centering as the local
-#'   test-side moment. These global estimates are stored in \code{$results} (with \code{train = FALSE}) and feed
-#'   \code{$minp}; \code{$global}, \code{$grid}, \code{$Xmeans}, \code{$shares} are \code{NULL}. \code{pool} still works
-#'   (\code{"sample"} is moot), \code{select}, \code{shrink}, \code{testtype}, \code{screen}, \code{gridpoints} and the CART
-#'   tuning parameters have no role. Outer cross-fitting is unavailable, so nuisances use out-of-bag predictions (or
-#'   \code{inner.folds}). With \code{doubly.robust = FALSE} no causal forest is fit at all.
+#'   test-side moment. These are stored in \code{$results} (with \code{train = FALSE}) and feed \code{$minp};
+#'   \code{$global}, \code{$grid}, \code{$Xmeans}, \code{$shares} are \code{NULL}. Nuisances use out-of-bag predictions
+#'   (or \code{inner.folds}); \code{crossfit} has no effect, and \code{montestplot()} is unavailable.
+#'   }
 #' @param stack Logical, default \code{TRUE}. If \code{TRUE} the margin index (condition, dval, yval, equation) is
 #'   crossed with the data and everything is estimated on the stacked data. If \code{FALSE}, the tests are run
 #'   sequentially, one block of the margin index at a time (still stacked across \code{zmargin}), and all train and
@@ -239,7 +245,7 @@
 #'   only pre-selected estimates are reported. This uses much less memory with many margins. With
 #'   \code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} and \code{"sample"} (the default, and
 #'   \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
-#'   \code{testtype = "CART"} still requires \code{pool = "none"}. Works with \code{local = FALSE}. Results are not numerically identical to \code{stack = TRUE}
+#'   \code{testtype = "CART"} still requires \code{pool = "none"}. Works when there is no subgroup search. Results are not numerically identical to \code{stack = TRUE}
 #'   because the random number stream differs.
 #' @param memcheck Logical, default \code{TRUE}. Before crossing the margin index with the data, the number of rows
 #'   and the memory of the crossed data are estimated (rows times columns times 8 bytes, times 3 for working copies).
@@ -315,17 +321,15 @@
 #'   thrown otherwise. There are a total of (K-1) such conditions.
 #'   \item \code{condition = "MW"} tests the sharp conditions from Mourifie and Wan (2017), which test monotonicity
 #'   and exclusion conditional on instrument validity. A multivalued instrument is handled by stacking adjacent
-#'   contrasts (see \code{zmargin}), each of which is a binary-instrument MW problem. A multivalued treatment is allowed
-#'   with \code{local = TRUE}: the endpoint treatment values give the pointwise MW sign restrictions, and the interior
+#'   contrasts (see \code{zmargin}), each of which is a binary-instrument MW problem. A multivalued treatment is allowed: the endpoint treatment values give the pointwise MW sign restrictions, and the interior
 #'   values use outcome sets learned on the training half (\code{mw_sets = "datadriven"}; \code{"endpoints"} drops
 #'   interior values). \code{fml} may not include fixed effects (MW's Q statistic uses Z.hat directly as a propensity
 #'   weight, with no AIPW/FWL orthogonalization protecting it), and \code{linearZ}/\code{linearD} are disallowed because
 #'   the MW moment conditions are always indicator-based, never slope-based. Unlike \code{"simple"}, \code{"KR"} and
 #'   \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search,
 #'   \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search
-#'   itself localizes jointly in \code{(Y, X)}. With \code{local = FALSE} there is no search, and for a binary treatment the
-#'   MW statistic reduces to a global first-stage-type test within the margins, which is not a meaningful test of the MW
-#'   conditions.
+#'   itself localizes jointly in \code{(Y, X)}. MW therefore always runs the search, also without covariates in \code{fml} (the search
+#'   then localizes in \code{Y} only).
 #' }
 #'
 #' \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),
@@ -406,7 +410,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,local=TRUE,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
+                 doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
@@ -494,27 +498,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   FE_expr <- v$FE_expr
   has_FE <- !is.null(FE_expr)
 
-  ## Forest/search features are required.
-  ## The main X part of fml is used for heterogeneous-effect / subset search.
+  ## Whether the causal forest / subgroup search has covariates. Without them (and without
+  ## MW/AHS, which use Y as a feature) the test reduces to the global estimates in each margin
+  ## cell (see `local` below).
   has_X_expr_forest <- !is.null(X_expr_forest) &&
     !identical(X_expr_forest, quote(1)) &&
     length(all.vars(X_expr_forest)) > 0L
-
-  if (!has_X_expr_forest) {
-    stop(
-      "The main X part of `fml` is empty, so montest has no covariates for ",
-      "forest/CART subset search.\n\n",
-      "Please specify at least one variable before the first `|` in `fml`, e.g.\n",
-      "  Y ~ X1 + X2 | fe1 + fe2 | D ~ Z\n\n",
-      "If you only want fixed effects for identification, include any FE variable ",
-      "also in the X part when it is meaningful as a moderator, e.g.\n",
-      "  Y ~ year | group + year | D ~ Z\n",
-      "or use `factor(year)` if you want year dummies as forest features.\n\n",
-      "The FE part after `|` is absorbed for identification; it does not by itself ",
-      "create forest/search features.",
-      call. = FALSE
-    )
-  }
 
   X_expr_Z <- parse_one_sided_rhs(fml.Z, "fml.Z")
   X_expr_Q <- parse_one_sided_rhs(fml.Q, "fml.Q")
@@ -522,7 +511,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (is.null(X_expr_Z)) X_expr_Z <- X_expr_main
   if (is.null(X_expr_Q)) X_expr_Q <- X_expr_main
 
-  has_X_expr_forest <- !is.null(X_expr_forest) && !identical(X_expr_forest, quote(1))
   has_X_expr_Z <- !is.null(X_expr_Z) && !identical(X_expr_Z, quote(1))
   has_X_expr_Q <- !is.null(X_expr_Q) && !identical(X_expr_Q, quote(1))
 
@@ -593,30 +581,22 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   } else {
     crossfit <- match.arg(crossfit, c("Z", "Q", "C", "Y"), several.ok = TRUE)
   }
-  stopifnot(is.logical(local), length(local) == 1L, !is.na(local))
+  if (!is.null(local)) {
+    stop("The `local` argument has been removed. The subgroup search is now run automatically whenever the forest ",
+         "covariates (`fml`, `fml.C`) are non-empty or `condition` includes \"MW\"/\"AHS\" (which use Y as a feature); ",
+         "with no covariates, the sample is split only if `select` selects over margins, and otherwise the global ",
+         "estimates in each margin cell are reported.", call. = FALSE)
+  }
   stopifnot(is.logical(stack), length(stack) == 1L, !is.na(stack))
   stopifnot(is.logical(progress), length(progress) == 1L, !is.na(progress))
   select_given <- !missing(select)
   select_input <- select
-  if (!local) {
-    ## No sample split: cross-fitting across the two outer halves is not
-    ## possible, so nuisances fall back to OOB predictions (or to the inner
-    ## folds if `inner.folds` is given, which are unaffected by the split).
-    if (is.null(inner.folds) && length(crossfit)) {
-      message("local = FALSE: no outer sample split, so `crossfit` has no effect without `inner.folds`; out-of-bag predictions are used.")
-      crossfit <- character()
-    }
-    if (shrink > 0) {
-      warning("`shrink` has no effect when local = FALSE (no subgroup search); ignoring.", call. = FALSE)
-      shrink <- 0
-    }
-  }
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
   stopifnot(is.logical(studentize), length(studentize) == 1L, !is.na(studentize))
-  if (studentize && (testtype != "forest" || !isTRUE(local))) {
-    warning("`studentize` only applies with local = TRUE and testtype = \"forest\"; ignoring.", call. = FALSE)
+  if (studentize && testtype != "forest") {
+    warning("`studentize` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
     studentize <- FALSE
   }
   ## TODO: remove `studentize` once `priority` has settled.
@@ -624,7 +604,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   stopifnot(is.numeric(priority.floor), length(priority.floor) == 1L,
             is.finite(priority.floor), priority.floor > 0, priority.floor <= 1)
   priority.var <- match.arg(priority.var)
-  if (priority && !isTRUE(local)) priority <- FALSE
   if (priority && testtype != "forest") {
     warning("`priority` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
     priority <- FALSE
@@ -781,12 +760,53 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (is.null(select)) select <- setdiff(select_default, if (is.null(pool_input)) character() else pool)
   select <- intersect(select, pool_vocab)
 
+  ## Whether to split the sample and search (`local`) or to report the global estimates in each
+  ## margin cell. The search needs features for the causal forest: the covariates in `fml`/`fml.C`,
+  ## or Y itself for "MW"/"AHS". Without features there is nothing to search over, but if `select`
+  ## selects among margin cells (which exist: zmargin, dval, yval, condition) the sample is still
+  ## split, selecting cells on one half and reporting the other (forest on a constant feature).
+  ## Otherwise there is no model selection, hence no split.
+  has_feat <- has_X_expr_forest || any(condition %in% c("MW", "AHS"))
+  possible_sel <- c(
+    if (!isTRUE(linearZ) && data.table::uniqueN(data[[Z]], na.rm = TRUE) > 2L) "zmargin",
+    if (("KR" %in% condition) || (!isTRUE(linearD) && data.table::uniqueN(data[[D]], na.rm = TRUE) > 2L)) "dval",
+    if ("KR" %in% condition) "yval",
+    if (length(condition) > 1L) "condition",
+    if (has_block) "block"
+  )
+  local <- has_feat || length(intersect(select, possible_sel)) > 0L
+
   if (!local) {
-    ## `select` has no role without a local search and `sample` is moot.
-    if (select_given && length(select) > 0L) warning("`select` has no effect when local = FALSE; ignoring.", call. = FALSE)
+    ## No model selection: `select` has no role and `sample` is moot.
+    if (select_given && length(select) > 0L) warning("`select` has no effect without covariates when there are no margins to select over; ignoring.", call. = FALSE)
     select <- character()
     pool <- setdiff(pool, "sample")
+    ## No outer sample split: cross-fitting across the two outer halves is not
+    ## possible, so nuisances fall back to OOB predictions (or to the inner
+    ## folds if `inner.folds` is given, which are unaffected by the split).
+    if (is.null(inner.folds) && length(crossfit)) {
+      message("No outer sample split (no covariates and nothing to select over): `crossfit` has no effect without `inner.folds`; out-of-bag predictions are used.")
+      crossfit <- character()
+    }
   }
+  if (!has_feat) {
+    ## Forest on a constant feature: shrinkage, studentizing and priority have no content.
+    if (shrink > 0) {
+      warning("`shrink` has no effect without covariates; ignoring.", call. = FALSE)
+      shrink <- 0
+    }
+    if (studentize) {
+      warning("`studentize` has no effect without covariates; ignoring.", call. = FALSE)
+      studentize <- FALSE
+    }
+    if (local && testtype == "CART") {
+      warning("`testtype = \"CART\"` needs covariates; using \"forest\".", call. = FALSE)
+      testtype <- "forest"
+    }
+  }
+  ## The score-variance model behind `priority` needs covariates.
+  if (!has_X_expr_forest) priority <- FALSE
+  need_pvar <- (shrink > 0) || studentize
 
   if ("sample" %in% intersect(pool,select)) {
     stop("Sample cannot appear in both pool and select. Adaptive selection or pooling across sample halves might invalidate sample splitting.")
@@ -1301,10 +1321,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## multivalued Z and defeat this guard entirely.
   ## Multivalued D with MW: endpoint rows are the pointwise MW sign
   ## restrictions; interior rows use outcome sets learned on the training
-  ## half (mw_sets = "datadriven"). Both need the local forest search.
-  if (J_true>2&("MW" %in% condition)&!isTRUE(local)) {
-    stop("condition = \"MW\" with a multivalued treatment requires local = TRUE.", call. = FALSE)
-  }
+  ## half (mw_sets = "datadriven"). Both need the local forest search, which MW always runs.
   if (J_true>2&("MW" %in% condition)&isTRUE(linearD)) {
     stop("condition = \"MW\" with a multivalued treatment is not compatible with linearD = TRUE.", call. = FALSE)
   }
@@ -1327,7 +1344,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       call. = FALSE
     )
   }
-  if (J==2&K==2&is.null(X)==TRUE&!any(condition %in% c("AHS","MW","KR"))) {
+  if (J==2&K==2&!has_X_expr_forest&!any(condition %in% c("AHS","MW","KR"))) {
     stop("Nothing to test with a binary treatment, a binary instrument, the simple first stage condition and no variables in X.")
   }
 
@@ -1503,6 +1520,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
         call. = FALSE
       )
     }
+  }
+
+  ## No covariates: the causal forest of "simple"/"KR" rows runs on a constant feature (its
+  ## prediction is then the global effect estimate); "AHS"/"MW" rows have Y as a feature.
+  X_forest_cf <- X_forest
+  if (is.null(X_forest_cf)) {
+    data[, xconst__ := 0]
+    X_forest_cf <- "xconst__"
   }
 
   ## Under parametric = FALSE, estimate_conditional_mean() re-derives its own
@@ -3002,7 +3027,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
       forest_type = "causal",
       y_name = "Q",
-      x_names = X_forest,
+      x_names = X_forest_cf,
 
       margins = margins,
 

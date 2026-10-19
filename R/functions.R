@@ -3603,7 +3603,7 @@ fit_models <- function(DT,
     res1_o <- if (!is.null(fit2) && length(idx1)) {
       predict_with_optional_var(fit2, X_all[rid[idx1], , drop = FALSE])
     } else {
-      ## Opposite sample empty (local = FALSE) or no forest: NA, unused.
+      ## Opposite sample empty (no search) or no forest: NA, unused.
       na_res(length(idx1))
     }
 

@@ -89,8 +89,8 @@
 montestplot <- function(object, sample = NULL, margins = NULL, grid = TRUE, numX = 10) {
 
   if (isFALSE(object$options$local)) {
-    stop("`montestplot()` is not available for results from `montest(local = FALSE)`: ",
-         "there is no tested subset, search grid or covariate balance to plot.", call. = FALSE)
+    stop("`montestplot()` is not available for results without a subgroup search (no covariates and no ",
+         "selection over margins): there is no tested subset, search grid or covariate balance to plot.", call. = FALSE)
   }
 
   ## montest()'s fixed vocabulary of pool/select dimensions. Xmeans/
