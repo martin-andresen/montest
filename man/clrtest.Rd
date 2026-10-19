@@ -48,7 +48,8 @@ clrtest(
 \value{
 An object of class \code{clrtest}: \code{stat} (maximum studentized estimate over the selected grid), \code{cv},
   \code{pval} (share of simulated suprema at least \code{stat}), \code{reject}, \code{bounds}, \code{det}, \code{bandwidth},
-  \code{n_grid}, \code{n_selected}, \code{theta} and \code{se} (per-inequality estimates on the full grid), \code{settings}.
+  \code{n_grid} (points used), \code{n_dropped} (grid points removed because the standard error is zero or undefined,
+  e.g. when the moment is identically zero in the window), \code{n_selected}, \code{theta} and \code{se} (per-inequality estimates on the full grid), \code{settings}.
 }
 \description{
 R port of the Stata command \code{clrtest, method("local")} (Chernozhukov, Kim, Lee and Rosen, 2015,

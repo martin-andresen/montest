@@ -32,8 +32,8 @@
 #' @param m Numeric vector or \eqn{n \times k} matrix of moment values with \eqn{E[m|X] \ge 0} under the null.
 #' @param X Vector, matrix or data frame with the conditioning variables (any number of columns; a warning is
 #'   issued above three).
-#' @param stat \code{"KS"} (default) or \code{"CvM"}.
-#' @param S \code{"S1"} (sum, default) or \code{"S3"} (max); identical when \eqn{k = 1}.
+#' @param stat \code{"CvM"} (default; the statistic the paper focuses on and its simulation base case) or \code{"KS"}.
+#' @param S \code{"S3"} (max, default; the paper's base case is CvM with the Max function) or \code{"S1"} (sum); identical when \eqn{k = 1}.
 #' @param discrete Logical vector, one entry per column of \code{X}. Default: a column is discrete if it has at
 #'   most \code{maxlev} distinct values.
 #' @param maxlev See \code{discrete}.
@@ -56,7 +56,7 @@
 #' @references Andrews, D. W. K. and X. Shi (2013), Inference based on conditional moment inequalities,
 #'   Econometrica 81(2), 609-666.
 #' @export
-cmitest <- function(m, X, stat = c("KS", "CvM"), S = c("S1", "S3"), discrete = NULL, maxlev = 10,
+cmitest <- function(m, X, stat = c("CvM", "KS"), S = c("S3", "S1"), discrete = NULL, maxlev = 10,
                     r1 = NULL, min_obs = 15, maxboxes = Inf, include_all = FALSE, eps = 0.05, kappa = NULL, B = NULL,
                     reps = 1000, alpha = 0.05, eta = 1e-6, seed = NULL) {
   stat <- match.arg(stat)

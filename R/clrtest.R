@@ -40,7 +40,8 @@
 #' @param seed Seed for the draws (Stata \code{seed(0)}); the previous RNG state is restored on exit. \code{NULL} for no seeding.
 #' @return An object of class \code{clrtest}: \code{stat} (maximum studentized estimate over the selected grid), \code{cv},
 #'   \code{pval} (share of simulated suprema at least \code{stat}), \code{reject}, \code{bounds}, \code{det}, \code{bandwidth},
-#'   \code{n_grid}, \code{n_selected}, \code{theta} and \code{se} (per-inequality estimates on the full grid), \code{settings}.
+#'   \code{n_grid} (points used), \code{n_dropped} (grid points removed because the standard error is zero or undefined,
+#'   e.g. when the moment is identically zero in the window), \code{n_selected}, \code{theta} and \code{se} (per-inequality estimates on the full grid), \code{settings}.
 #' @references Chernozhukov, V., S. Lee and A. M. Rosen (2013), Intersection bounds: estimation and inference, Econometrica 81(2), 667-737.
 #'   Chernozhukov, V., W. Kim, S. Lee and A. M. Rosen (2015), Implementing intersection bounds in Stata, Stata Journal 15(1), 21-44.
 #' @export
@@ -89,6 +90,19 @@ clrtest <- function(y, x, grid = NULL, ngrid = NULL, grid_step = 0.01, alpha = 0
 
   ## ---- local linear estimates, standard errors, and standardized simulated process
   est <- lapply(seq_len(J), function(i) .clr_estimate(y[, i], x[, i], grid[[i]], h[i]))
+  ## grid points with no usable local variation (e.g. the moment is exactly zero for every unit in the window)
+  ## give 0/0 in the studentization; no inference is possible there, so they are dropped and counted
+  est <- lapply(est, function(e) {
+    ok <- is.finite(e$ghat) & is.finite(e$se) & e$se > 0 & is.finite(e$nrm) & e$nrm > 0
+    e$n_dropped <- sum(!ok)
+    if (e$n_dropped > 0L) {
+      e$ghat <- e$ghat[ok]; e$se <- e$se[ok]; e$Sv <- e$Sv[ok, , drop = FALSE]; e$nrm <- e$nrm[ok]
+    }
+    e
+  })
+  n_dropped <- vapply(est, `[[`, 0L, "n_dropped")
+  ng <- ng - n_dropped
+  if (any(ng == 0L)) stop("No grid point with positive standard error.")
   rnd <- as.integer(rnd)
   chunk <- max(1L, min(rnd, floor(2e7 / n)))
   W <- lapply(ng, function(m) matrix(0, m, rnd))       # standardized process, rows = grid points
@@ -133,7 +147,8 @@ clrtest <- function(y, x, grid = NULL, ngrid = NULL, grid_step = 0.01, alpha = 0
     det <- stats::setNames(as.integer(bounds < 0), levels)
   }
   structure(list(stat = stat, cv = cvf(1 - alpha), pval = mean(sup2 >= stat), reject = stat >= cvf(1 - alpha),
-                 bounds = bounds, det = det, bandwidth = h, n_grid = ng, n_selected = nsel, theta = theta, se = se,
+                 bounds = bounds, det = det, bandwidth = h, n_grid = ng, n_dropped = n_dropped, n_selected = nsel,
+                 theta = theta, se = se,
                  settings = list(alpha = alpha, ais = ais, undersmooth = undersmooth, rnd = rnd, n = n, J = J)),
             class = "clrtest")
 }

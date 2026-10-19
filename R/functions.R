@@ -4263,13 +4263,17 @@ forest_test <- function(
   }
 
   design_score <- function(fit, pool_eff, select_eff, design_row) {
-    tr <- data.table::as.data.table(fit$results)[train == TRUE & relevant == 1L]
+    ## All candidate train cells (not just screen survivors): K = number of cells the
+    ## design searched over, so a design that selects over more margins pays for it, and an
+    ## empty screen is not scored as an uncorrected p. Cutoff-grid search is common to all
+    ## designs and cancels in the ranking.
+    tr <- data.table::as.data.table(fit$results)[train == TRUE]
 
     if (nrow(tr) == 0L) return(Inf)
     if (!("t" %in% names(tr))) return(Inf)
 
     ## Log scale: pnorm(t) underflows to 0 for t < ~-38, which would tie all designs.
-    ## The smallest Holm-adjusted p is m * min(p), i.e. log(m) + min(log p), capped at 1.
+    ## The smallest Holm-adjusted p is K * min(p), i.e. log(K) + min(log p), capped at 1.
     tt <- tr$t
     tt <- tt[is.finite(tt)]
 

@@ -7,8 +7,8 @@
 cmitest(
   m,
   X,
-  stat = c("KS", "CvM"),
-  S = c("S1", "S3"),
+  stat = c("CvM", "KS"),
+  S = c("S3", "S1"),
   discrete = NULL,
   maxlev = 10,
   r1 = NULL,
@@ -30,9 +30,9 @@ cmitest(
 \item{X}{Vector, matrix or data frame with the conditioning variables (any number of columns; a warning is
 issued above three).}
 
-\item{stat}{\code{"KS"} (default) or \code{"CvM"}.}
+\item{stat}{\code{"CvM"} (default; the statistic the paper focuses on and its simulation base case) or \code{"KS"}.}
 
-\item{S}{\code{"S1"} (sum, default) or \code{"S3"} (max); identical when \eqn{k = 1}.}
+\item{S}{\code{"S3"} (max, default; the paper's base case is CvM with the Max function) or \code{"S1"} (sum); identical when \eqn{k = 1}.}
 
 \item{discrete}{Logical vector, one entry per column of \code{X}. Default: a column is discrete if it has at
 most \code{maxlev} distinct values.}

@@ -69,3 +69,14 @@ test_that("x can be a vector or a matrix with one column per inequality", {
   expect_equal(v$stat, m$stat)
   expect_error(clrtest(y, x[-1]))
 })
+
+test_that("grid points without local variation are dropped, not fatal", {
+  set.seed(7)
+  n <- 1200
+  x <- rnorm(n)
+  y <- ifelse(x > 1, 0, -0.3 + rnorm(n))                 # identically zero in the right tail
+  r <- clrtest(y, x, rnd = 500, seed = 1, bandwidth = 0.2)
+  expect_gt(r$n_dropped, 0)
+  expect_true(is.finite(r$pval))
+  expect_equal(r$n_grid + r$n_dropped, length(seq(quantile(x, .025), quantile(x, .975), by = 0.01)))
+})
