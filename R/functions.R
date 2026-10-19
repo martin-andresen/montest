@@ -4559,14 +4559,21 @@ crv1_mean <- function(score,
     w_rp <- if (is.null(w)) rep(1.0, n_rp) else as.numeric(w)
     ok_rp <- is.finite(V_rp) & is.finite(w_rp) & w_rp >= 0
 
+    ## Rows that never went through make_scores_vec() (condition "MW", whose score is the plain
+    ## indicator-weighted Q) carry no treatment residual, outcome residual or variance term. They
+    ## have nothing to recenter and keep their own score; only rows with FWL/AIPW components are
+    ## recentered. (Mixed calls such as condition = "all" pass both kinds of rows.)
+    no_fwl_rp <- !is.finite(V_rp) & !is.finite(U_rp) & !is.finite(v_rp)
+
     Vbar_rp <- if (any(ok_rp)) {
       stats::weighted.mean(V_rp[ok_rp], w = w_rp[ok_rp])
     } else {
       0
     }
 
-    score <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
-    rank_adj <- rank_adj + 1
+    score_rp <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
+    score <- ifelse(no_fwl_rp, as.numeric(score), score_rp)
+    if (!all(no_fwl_rp)) rank_adj <- rank_adj + 1
   }
 
   if (isTRUE(center)) {

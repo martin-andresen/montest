@@ -3543,6 +3543,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
 
   ################ 7: Multiple hypothesis testing and output #####################
+    if (anyNA(res$results[train==FALSE,p.raw])) {
+      warning("montest: ", sum(is.na(res$results[train==FALSE,p.raw])), " test-side hypothesis/hypotheses have a missing p-value (",
+              "e.g. a group with no usable observations); adjusted p-values treat them as 1 and minp.raw may be NA.", call. = FALSE)
+    }
     if (nrow(res$results[train==FALSE])==1) {
       res$minwhere=NA
       res$minp=rep(res$results[train==FALSE,p.raw],6)
