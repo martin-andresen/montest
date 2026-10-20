@@ -215,8 +215,7 @@
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"block"} (seqtest), \code{"all"} (every margin except \code{"sample"}), and \code{"none"}. \code{"sample"} cannot be selected over (selecting a sample direction uses both halves' outcomes). The default is \code{c("condition", "block")}
-#'   (those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#'   \code{"block"} (seqtest), \code{"all"} (every margin except \code{"sample"}), and \code{"none"}. \code{"sample"} cannot be selected over (selecting a sample direction uses both halves' outcomes). The default is no selection: \code{condition} and \code{block} appear in neither \code{pool} nor \code{select}, so each condition and block is tested on its own and the tests are corrected as one family (Holm), which keeps the sample halves pooled. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param local Removed; supplying it is an error. Whether the sample is split and the subgroup search is run is now
 #'   inferred. The search (causal forest plus \code{forest_test}/CART) runs whenever the forest covariates (the X part of
 #'   \code{fml}, or \code{fml.C}) are non-empty or \code{condition} includes \code{"MW"} or \code{"AHS"}, which use \code{Y}
@@ -752,9 +751,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   ## Defaults: whatever the user specifies in one of pool/select is left out of the other's default.
   ## No adaptivity over margins by default: pool across sample, dval, zmargin, yval and equation,
-  ## select across condition and block (a margin cannot be in both).
+  ## select nothing; condition and block are in neither, so each is tested on its own (Holm across them)
+  ## and the sample halves stay pooled (a margin cannot be in both pool and select).
   pool_default <- intersect(c("zmargin", "dval", "yval", "equation", "sample"), pool_vocab)
-  select_default <- intersect(c("condition", "block"), pool_vocab)
+  select_default <- character()
   if (is.null(pool)) pool <- setdiff(pool_default, if (is.null(select)) character() else select)
   if (is.null(select)) select <- setdiff(select_default, if (is.null(pool_input)) character() else pool)
   select <- intersect(select, pool_vocab)
