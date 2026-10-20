@@ -243,7 +243,7 @@ testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block")}
+\code{"block"} (seqtest), \code{"all"} (every margin except \code{"sample"}), and \code{"none"}. \code{"sample"} cannot be selected over (selecting a sample direction uses both halves' outcomes). The default is \code{c("condition", "block")}
 (those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}

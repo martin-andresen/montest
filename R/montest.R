@@ -215,7 +215,7 @@
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block")}
+#'   \code{"block"} (seqtest), \code{"all"} (every margin except \code{"sample"}), and \code{"none"}. \code{"sample"} cannot be selected over (selecting a sample direction uses both halves' outcomes). The default is \code{c("condition", "block")}
 #'   (those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param local Removed; supplying it is an error. Whether the sample is split and the subgroup search is run is now
 #'   inferred. The search (causal forest plus \code{forest_test}/CART) runs whenever the forest covariates (the X part of
@@ -735,9 +735,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   )
 
   if ((sum(select=="none")==1)&(sum(select=="all")==1)) stop("Do not specify both none and all in select().")
-  else if (sum(select=="all")==1) select=pool_vocab
+  else if (sum(select=="all")==1) select=setdiff(pool_vocab,"sample")
   else if (sum(select=="none")==1) select=character()
   else if (is.null(select)==FALSE) select=match.arg(select,pool_vocab,several.ok=TRUE)
+  if ("sample" %in% select) {
+    stop("`sample` cannot be in `select`: choosing which sample direction to carry forward uses both halves' ",
+         "outcomes, and each half is the held-out half of the other direction. Leave it out of `select` ",
+         "(`pool` it, or leave it in neither to test the two directions separately).", call. = FALSE)
+  }
 
   ## Defaults: whatever the user specifies in one of pool/select is left out of the other's default.
   ## No adaptivity over margins by default: pool across sample, dval, zmargin, yval and equation,
@@ -804,9 +809,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (!has_X_expr_forest) priority <- FALSE
   need_pvar <- (shrink > 0)
 
-  if ("sample" %in% intersect(pool,select)) {
-    stop("Sample cannot appear in both pool and select.")
-  }
   ## A margin is pooled, selected over, or neither; the defaults never overlap, so any overlap
   ## comes from what the user specified.
   if (length(intersect(pool, select)) > 0L) {
@@ -1020,12 +1022,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       )
     }
 
-    allowed_select <- c("zmargin","dval","yval","condition","equation","sample")
+    allowed_select <- c("zmargin","dval","yval","condition","equation")
     bad_select <- setdiff(select, allowed_select)
     if (length(bad_select) > 0L) {
       stop(
         "Invalid `select` for testtype = \"CART\". ",
-        "For CART, `select` may only contain \"zmargin\",\"dval\",\"yval\",\"condition\",\"equation\",\"sample\". ",
+        "For CART, `select` may only contain \"zmargin\",\"dval\",\"yval\",\"condition\",\"equation\". ",
         "Invalid entries: ",
         paste(bad_select, collapse = ", "),
         call. = FALSE
