@@ -25,7 +25,7 @@ montest(
   minsize = 50L,
   minarm = 10L,
   minarm_clusters = 5L,
-  gridtypeY = "equidistant",
+  gridtypeY = "equisized",
   gridtypeD = "equisized",
   gridtypeZ = "equisized",
   stratify = TRUE,
@@ -195,7 +195,7 @@ otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5
 
 \item{gridtypeY, gridtypeD, gridtypeZ}{Character strings controlling how continuous
 variables are discretized before stacking. Must be one of \code{"equisized"} or
-\code{"equidistant"}.}
+\code{"equidistant"}. All default to \code{"equisized"} (equal-count quantile bins).}
 
 \item{joint}{specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.}
 

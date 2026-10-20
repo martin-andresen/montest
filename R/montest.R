@@ -178,7 +178,7 @@
 #'   \code{linearD}, \code{"MW"}, continuous \code{Q}) keep the forest. Ignored if \code{priority = FALSE}.
 #' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
 #'   variables are discretized before stacking. Must be one of \code{"equisized"} or
-#'   \code{"equidistant"}.
+#'   \code{"equidistant"}. All default to \code{"equisized"} (equal-count quantile bins).
 #' @param Ysubsets,Dsubsets,Zsubsets Integers giving the number of bins used when
 #'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Integer >1 required.
 #' @param Y.res Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
@@ -401,7 +401,7 @@
 
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,minarm=10L,minarm_clusters=5L,
-                 gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
+                 gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
