@@ -164,7 +164,7 @@ seqtest <- function(fml, data, condition = NULL, ...) {
         ny <- if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets
         wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
         gtd <- if (is.null(dots$gridtypeD)) "equisized" else dots$gridtypeD
-        gty <- if (is.null(dots$gridtypeY)) "equidistant" else dots$gridtypeY
+        gty <- if (is.null(dots$gridtypeY)) "equisized" else dots$gridtypeY
         for (v in c(D1, D2)) {
           dat_c <- binarize_var(dat_c, v, ngroups = nd, gridtype = gtd, wvar = wvar, newvar = v)
         }
@@ -192,7 +192,7 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       ybins <- paste0(Y, ".seqbin__")
       for (k in seq_along(Y)) {
         dat <- binarize_var(dat, Y[k], ngroups = if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets,
-                            gridtype = if (is.null(dots$gridtypeY)) "equidistant" else dots$gridtypeY,
+                            gridtype = if (is.null(dots$gridtypeY)) "equisized" else dots$gridtypeY,
                             wvar = wvar, newvar = ybins[k])
       }
       ylab <- do.call(paste, c(lapply(seq_along(Y), function(k) paste0(Y[k], "=", dat[[ybins[k]]])), sep = ","))
