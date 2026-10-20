@@ -154,12 +154,6 @@
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
 #' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
-#' @param studentize Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the studentized predicted
-#'   treatment effect \code{pred / sqrt(pred_var)} (the causal forest's own predictive variance) instead of on the raw
-#'   prediction, so rows are ranked by the strength of evidence rather than the size of the point estimate. This makes the
-#'   ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
-#'   \code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
-#'   Only with covariates and \code{testtype = "forest"}.
 #' @param priority Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
 #'   \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
 #'   of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
@@ -168,7 +162,7 @@
 #'   and the key used in the other half uses the \code{v(X)} fit on the search half only. Reported cutoffs
 #'   (\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Fixed effects in the formula are partialled out
 #'   linearly before the forest (as for the variance of \code{Z}), so the fitted \code{v} can be non-positive; see
-#'   \code{priority.floor}. Cannot be combined with \code{studentize}.
+#'   \code{priority.floor}.
 #'   Only with covariates and \code{testtype = "forest"}.
 #' @param priority.floor Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 #'   at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
@@ -217,12 +211,12 @@
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
 #'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
-#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
+#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select}. If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
 #'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block")}
-#'   (those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#'   (those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param local Removed; supplying it is an error. Whether the sample is split and the subgroup search is run is now
 #'   inferred. The search (causal forest plus \code{forest_test}/CART) runs whenever the forest covariates (the X part of
 #'   \code{fml}, or \code{fml.C}) are non-empty or \code{condition} includes \code{"MW"} or \code{"AHS"}, which use \code{Y}
@@ -230,7 +224,7 @@
 #'   \itemize{
 #'   \item If \code{select} selects over margin cells (the default whenever zmargin, dval, yval or condition margins
 #'   exist), the sample is still split, cells are selected on one half and reported on the other (the causal forest
-#'   then uses a constant feature, so \code{shrink}, \code{studentize}, \code{priority} and \code{testtype = "CART"} have no role).
+#'   then uses a constant feature, so \code{shrink}, \code{priority} and \code{testtype = "CART"} have no role).
 #'   \item Otherwise (e.g. \code{select = "none"}) there is no model selection and hence no sample split: the
 #'   estimates are computed globally within each margin cell, using the same centering / re-centering as the local
 #'   test-side moment. These are stored in \code{$results} (with \code{train = FALSE}) and feed \code{$minp};
@@ -409,7 +403,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,minarm=10L,minarm_clusters=5L,
                  gridtypeY="equidistant",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,studentize=FALSE,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
@@ -593,16 +587,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   stopifnot(is.logical(stack), length(stack) == 1L, !is.na(stack))
   stopifnot(is.logical(progress), length(progress) == 1L, !is.na(progress))
   select_given <- !missing(select)
-  select_input <- select
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
   if (testtype=="CART") shrink=0
-  stopifnot(is.logical(studentize), length(studentize) == 1L, !is.na(studentize))
-  if (studentize && testtype != "forest") {
-    warning("`studentize` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
-    studentize <- FALSE
-  }
-  ## TODO: remove `studentize` once `priority` has settled.
   stopifnot(is.logical(priority), length(priority) == 1L, !is.na(priority))
   stopifnot(is.numeric(priority.floor), length(priority.floor) == 1L,
             is.finite(priority.floor), priority.floor > 0, priority.floor <= 1)
@@ -611,10 +598,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     warning("`priority` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
     priority <- FALSE
   }
-  if (priority && studentize) {
-    stop("`priority` and `studentize` both rescale the sort key and cannot be combined.", call. = FALSE)
-  }
-  need_pvar <- (shrink > 0) || studentize
+  need_pvar <- (shrink > 0)
   if ((is.null(cluster)==FALSE)&("CART" %in% testtype)) stop("Clustering not supported with testtype = CART.")
   if (testtype=="CART" && !is.null(gridpoints)) {
     warning(
@@ -757,7 +741,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   ## Defaults: whatever the user specifies in one of pool/select is left out of the other's default.
   ## No adaptivity over margins by default: pool across sample, dval, zmargin, yval and equation,
-  ## select across condition and block (a margin in both pool and select is adaptive, only on request).
+  ## select across condition and block (a margin cannot be in both).
   pool_default <- intersect(c("zmargin", "dval", "yval", "equation", "sample"), pool_vocab)
   select_default <- intersect(c("condition", "block"), pool_vocab)
   if (is.null(pool)) pool <- setdiff(pool_default, if (is.null(select)) character() else select)
@@ -806,14 +790,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
   }
   if (!has_feat) {
-    ## Forest on a constant feature: shrinkage, studentizing and priority have no content.
+    ## Forest on a constant feature: shrinkage and priority have no content.
     if (shrink > 0) {
       warning("`shrink` has no effect without covariates; ignoring.", call. = FALSE)
       shrink <- 0
-    }
-    if (studentize) {
-      warning("`studentize` has no effect without covariates; ignoring.", call. = FALSE)
-      studentize <- FALSE
     }
     if (local && testtype == "CART") {
       warning("`testtype = \"CART\"` needs covariates; using \"forest\".", call. = FALSE)
@@ -822,17 +802,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   }
   ## The score-variance model behind `priority` needs covariates.
   if (!has_X_expr_forest) priority <- FALSE
-  need_pvar <- (shrink > 0) || studentize
+  need_pvar <- (shrink > 0)
 
   if ("sample" %in% intersect(pool,select)) {
-    stop("Sample cannot appear in both pool and select. Adaptive selection or pooling across sample halves might invalidate sample splitting.")
+    stop("Sample cannot appear in both pool and select.")
   }
-  ## Adaptivity over margins is disabled: the defaults never overlap, so any overlap comes from
-  ## what the user specified.
+  ## A margin is pooled, selected over, or neither; the defaults never overlap, so any overlap
+  ## comes from what the user specified.
   if (length(intersect(pool, select)) > 0L) {
     stop("`pool` and `select` must not share margins; found in both: ",
-         paste(intersect(pool, select), collapse = ", "),
-         ". Adaptive pooling/selection over margins is disabled.", call. = FALSE)
+         paste(intersect(pool, select), collapse = ", "), ".", call. = FALSE)
   }
 
   if (!stack) {
@@ -840,14 +819,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     ## The default and "all" resolve to the poolable dimensions.
     if (is.null(pool_input) || any(pool_input == "all")) {
       pool <- intersect(pool, c("zmargin", "sample"))
-      ## Default select must not overlap pool in zmargin (no adaptive design without stacking).
-      if (is.null(select_input)) select <- setdiff(select, "zmargin")
     } else if (length(setdiff(pool, c("zmargin", "sample"))) > 0L) {
       stop("With stack = FALSE, `pool` may only contain \"zmargin\" and \"sample\"; got: ",
            paste(setdiff(pool, c("zmargin", "sample")), collapse = ", "), ".", call. = FALSE)
-    }
-    if ("zmargin" %in% intersect(pool, select)) {
-      stop("With stack = FALSE, \"zmargin\" cannot appear in both `pool` and `select` (no adaptive design).", call. = FALSE)
     }
   }
 
@@ -3247,7 +3221,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## CART_test() when they actually exist (e.g. not for an MW-only run,
   ## which never populates `.resid_treat`/`.resid_outcome`) -- otherwise
   ## `use_centered_test` is all-FALSE and these arguments would be dead
-  ## weight, but forest_test_core()/CART_test() validate any non-NULL
+  ## weight, but forest_test()/CART_test() validate any non-NULL
   ## `resid_treat`/`resid_outcome` column name actually exists in `data`.
   center_arg <- if (resid_cols_exist) "use_centered_test" else NULL
   resid_treat_arg <- if (resid_cols_exist) ".resid_treat" else NULL
@@ -3336,17 +3310,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   }
 
 
-  ## Sort key for the subgroup search: raw prediction, or prediction / forest SE.
+  ## Sort key for the subgroup search: raw prediction, or the priority pred / v(X).
   ## `pred` itself is untouched (it is also the tau baseline for recentering).
   pred_arg <- NULL
   pred_o_arg <- NULL
-  if (studentize) {
-    studentize_te(data, pred = "pred", pred_var = "pred_var", pred_o = "pred_o",
-                  pred_o_var = "pred_o_var", margins = margins, sample = "sample",
-                  out_pred = "pred_t", out_pred_o = "pred_o_t")
-    pred_arg <- "pred_t"
-    pred_o_arg <- "pred_o_t"
-  }
   ## `priority`: shrunk (if `shrink`) prediction over the score variance fitted above.
   if (priority) {
     priority_te(data, pred = "pred", pred_v = pr_v, pred_o = "pred_o", pred_o_v = pr_vo,

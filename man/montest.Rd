@@ -42,7 +42,6 @@ montest(
   pool = NULL,
   select = NULL,
   shrink = 0,
-  studentize = FALSE,
   priority = TRUE,
   priority.floor = 0.01,
   priority.var = c("model", "scores"),
@@ -239,22 +238,15 @@ required within each sample half and margin cell considered for residual variati
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
 \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
-(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
+(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select}. If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
 \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block")}
-(those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+(those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
-
-\item{studentize}{Logical, default \code{FALSE}. If \code{TRUE}, the subgroup search sorts on the studentized predicted
-treatment effect \code{pred / sqrt(pred_var)} (the causal forest's own predictive variance) instead of on the raw
-prediction, so rows are ranked by the strength of evidence rather than the size of the point estimate. This makes the
-ranking comparable across pooled margins and conditions whose scores differ in scale or noise. Applied after
-\code{shrink} if both are used. Reported cutoffs (\code{tau_cutoff}, grid \code{tau}) are then in t-like units.
-Only with covariates and \code{testtype = "forest"}.}
 
 \item{priority}{Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
 \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
@@ -264,7 +256,7 @@ to \code{pred} before dividing. Each outer sample half's own key uses an out-of-
 and the key used in the other half uses the \code{v(X)} fit on the search half only. Reported cutoffs
 (\code{tau_cutoff}, grid \code{tau}) are in units of \code{pred / v}. Fixed effects in the formula are partialled out
 linearly before the forest (as for the variance of \code{Z}), so the fitted \code{v} can be non-positive; see
-\code{priority.floor}. Cannot be combined with \code{studentize}.
+\code{priority.floor}.
 Only with covariates and \code{testtype = "forest"}.}
 
 \item{priority.floor}{Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
@@ -324,7 +316,7 @@ as a feature. Without covariates (only \code{"simple"}/\code{"KR"}) there is no 
 \itemize{
 \item If \code{select} selects over margin cells (the default whenever zmargin, dval, yval or condition margins
 exist), the sample is still split, cells are selected on one half and reported on the other (the causal forest
-then uses a constant feature, so \code{shrink}, \code{studentize}, \code{priority} and \code{testtype = "CART"} have no role).
+then uses a constant feature, so \code{shrink}, \code{priority} and \code{testtype = "CART"} have no role).
 \item Otherwise (e.g. \code{select = "none"}) there is no model selection and hence no sample split: the
 estimates are computed globally within each margin cell, using the same centering / re-centering as the local
 test-side moment. These are stored in \code{$results} (with \code{train = FALSE}) and feed \code{$minp};

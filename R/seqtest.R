@@ -69,7 +69,7 @@
 #'   \code{montest} object per condition (named by condition, each with its own
 #'   \code{minp}), plus a top-level \code{minp} (a single named vector) in which the test-sample
 #'   p-values of all cells of all conditions are corrected as one family (Holm, Hochberg, BH, BY and Cauchy
-#'   combination), \code{condition} and \code{call}. Pooling or adaptive selection across conditions
+#'   combination), \code{condition} and \code{call}. Pooling or selection across conditions
 #'   (\code{pool}/\code{select = "condition"}) is not available; each condition is fit separately.
 #'
 #' @seealso montest

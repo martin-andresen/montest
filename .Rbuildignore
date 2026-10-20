@@ -5,3 +5,4 @@
 usethis::use_build_ignore("sims")
 ^data-raw$
 ^\.claude$
+^dev$

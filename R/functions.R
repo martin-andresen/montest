@@ -176,37 +176,6 @@ shrink_te_crossfit <- function(data,
   invisible(DT)
 }
 
-## Studentized sort keys: pred / sqrt(pred_var) (own-sample OOB) and
-## pred_o / sqrt(pred_o_var) (opposite-sample forest), written to `out_pred` /
-## `out_pred_o`. Variances are floored at 1% of the positive median within each
-## margin cell x sample (non-finite/zero -> that median) so near-zero forest
-## variances cannot produce infinite keys. Cells with no usable variance fall
-## back to the raw prediction. `pred`/`pred_o` are not modified.
-studentize_te <- function(data, pred, pred_var, pred_o, pred_o_var,
-                          margins = NULL, sample = "sample",
-                          out_pred = "pred_t", out_pred_o = "pred_o_t",
-                          floor_frac = 0.01) {
-  stopifnot(data.table::is.data.table(data))
-  byvars <- c(as.character(margins), as.character(sample))
-  stud <- function(y, v) {
-    ok <- is.finite(v) & v > 0
-    if (!any(ok)) return(y)
-    med <- stats::median(v[ok])
-    v[!ok] <- med
-    y / sqrt(pmax(v, floor_frac * med))
-  }
-  ## Copy the column names to non-column-named locals: inside `[.data.table`'s
-  ## j, a column called "pred" would shadow the argument of the same name.
-  cy <- as.character(pred); cv <- as.character(pred_var)
-  cyo <- as.character(pred_o); cvo <- as.character(pred_o_var)
-  data[, (out_pred) := stud(.SD[[cy]], .SD[[cv]]), by = byvars, .SDcols = c(cy, cv)]
-  data[, (out_pred_o) := stud(.SD[[cyo]], .SD[[cvo]]), by = byvars, .SDcols = c(cyo, cvo)]
-  invisible(data)
-}
-
-
-
-
 ## Closed-form centered-score variance Var(S - tau | X) for a binary instrument and a two-point
 ## outcome Q in {a, b}, from the nuisances alone. With e = P(Z=1|X), m = E[Q|X], tau = E[Q|X,Z=1] -
 ## E[Q|X,Z=0] (the working model E[Q|X,Z] = m + tau (Z - e) is automatic for binary Z), the
@@ -3146,7 +3115,7 @@ make_scores_vec <- function(Y,
       ## unlike the test-side estimator (crv1_mean(center=TRUE), which
       ## never forms a per-row score at all), this score genuinely is
       ## consumed row-by-row -- CART_test() fits rpart() directly on it,
-      ## and forest_test_core()'s grid search sums w*score per candidate
+      ## and forest_test()'s grid search sums w*score per candidate
       ## cutoff. The aggregate through-origin ratio itself is unaffected by
       ## how v is floored (v always cancels out of w_eff*score), so this
       ## costs nothing where it matters and only stabilizes the per-row
@@ -4145,7 +4114,7 @@ x_rank <- function(data, idx = NULL, x_vars = NULL, has_FE = FALSE) {
 ## ===== 3b. x_rank_const() =================================================
 ## Cheap constant approximation to x_rank(), for use where the exact per-idx
 ## qr()-based computation would be evaluated far too often to afford (the
-## training-side cutoff/leaf search in forest_test_core()/CART_test(), run at
+## training-side cutoff/leaf search in forest_test()/CART_test(), run at
 ## every candidate rather than once per final held-out test). X is
 ## continuous, so its design-matrix rank is almost always exactly
 ## length(x_vars) + (1 for the intercept, when there's no FE to absorb it),
@@ -4192,277 +4161,6 @@ arm_ok_prefix <- function(arm, cl, minarm = 10L, minarm_clusters = 5L) {
     cumsum(!is.na(key)) >= minarm & cumsum(first) >= minarm_clusters
   }
   ok_arm(1L) & ok_arm(0L)
-}
-
-####### FIND OPTIMAL CUTOFF AND TEST #############
-forest_test <- function(
-    data,
-    cluster = NULL,
-    weight  = NULL,
-    sample  = "sample",
-    pred    = "pred",
-    pred_o  = "pred_o",
-    sort_pred = NULL,
-    sort_pred_o = NULL,
-    scores  = "scores",
-    scores_test = NULL,
-    x_names = NULL,
-    minsize = 50L,
-    arm = NULL,
-    minarm = 10L,
-    minarm_clusters = 5L,
-    margins = NULL,
-    pool = NULL,
-    select = NULL,
-    gridpoints = NULL,
-    store_grid = TRUE,
-    verbose = FALSE,
-    screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant", "power"),
-    alpha = 0.05,
-    fe_expr = NULL,
-    fe_rank_adj = !is.null(fe_expr),
-    fe_rank_conservative = TRUE,
-    x_rank_vars = character(0),
-    sandwich = NULL,
-    center = NULL,
-    resid_treat = NULL,
-    resid_outcome = NULL,
-    sample_weight = NULL,
-    recenter_propensity = FALSE,
-    recenter_binary = FALSE,
-    v = NULL,
-    center_inv_v = FALSE,
-    defer_selection = FALSE
-) {
-  screen <- match.arg(screen)
-
-  if (is.null(pool)) pool <- character()
-  if (is.null(select)) select <- character()
-  if (is.null(margins)) margins <- character()
-
-  pool <- unique(as.character(pool))
-  select <- unique(as.character(select))
-  margins <- as.character(margins)
-
-  sample_col <- as.character(sample)
-  stopifnot(length(sample_col) == 1L)
-
-  adaptive_dims <- intersect(pool, select)
-
-  if (isTRUE(defer_selection) && length(adaptive_dims) > 0L) {
-    stop("Internal error: adaptive pool/select designs are incompatible with deferred selection.")
-  }
-
-  if (sample_col %in% adaptive_dims) {
-    stop(
-      "`sample` cannot appear in both `pool` and `select`.\n",
-      "This would adaptively choose between sample-pooled and sample-separated ",
-      "testing using both sample halves. Put `sample` in either `pool` or `select`, ",
-      "but not both."
-    )
-  }
-
-  design_score <- function(fit, pool_eff, select_eff, design_row) {
-    ## All candidate train cells (not just screen survivors): K = number of cells the
-    ## design searched over, so a design that selects over more margins pays for it, and an
-    ## empty screen is not scored as an uncorrected p. Cutoff-grid search is common to all
-    ## designs and cancels in the ranking.
-    tr <- data.table::as.data.table(fit$results)[train == TRUE]
-
-    if (nrow(tr) == 0L) return(Inf)
-    if (!("t" %in% names(tr))) return(Inf)
-
-    ## Log scale: pnorm(t) underflows to 0 for t < ~-38, which would tie all designs.
-    ## The smallest Holm-adjusted p is K * min(p), i.e. log(K) + min(log p), capped at 1.
-    tt <- tr$t
-    tt <- tt[is.finite(tt)]
-
-    if (!length(tt)) return(Inf)
-
-    min(0, log(length(tt)) + min(stats::pnorm(tt, log.p = TRUE)))
-  }
-
-  run_core <- function(pool_eff, select_eff) {
-    forest_test_core(
-      data = data,
-      cluster = cluster,
-      weight = weight,
-      sample = sample,
-      pred = pred,
-      pred_o = pred_o,
-      sort_pred = sort_pred,
-      sort_pred_o = sort_pred_o,
-      scores = scores,
-      scores_test = scores_test,
-      x_names = x_names,
-      minsize = minsize,
-      arm = arm,
-      minarm = minarm,
-      minarm_clusters = minarm_clusters,
-      margins = margins,
-      pool = pool_eff,
-      select = select_eff,
-      gridpoints = gridpoints,
-      store_grid = store_grid,
-      verbose = verbose,
-      screen = screen,
-      alpha = alpha,
-      fe_expr = fe_expr,
-      fe_rank_adj = fe_rank_adj,
-      fe_rank_conservative = fe_rank_conservative,
-      x_rank_vars = x_rank_vars,
-      sandwich = sandwich,
-      center = center,
-      resid_treat = resid_treat,
-      resid_outcome = resid_outcome,
-      sample_weight = sample_weight,
-      recenter_propensity = recenter_propensity,
-      recenter_binary = recenter_binary,
-      v = v,
-      center_inv_v = center_inv_v,
-      defer_selection = defer_selection
-    )
-  }
-
-  if (length(adaptive_dims) == 0L) {
-    out <- run_core(pool, select)
-    out$adaptive_dims <- character()
-    out$adaptive_design <- NA_character_
-    out$adaptive_scores <- NULL
-    return(out)
-  }
-
-  pool_base <- setdiff(pool, adaptive_dims)
-  select_base <- setdiff(select, adaptive_dims)
-
-  design_opts_by_dim <- lapply(adaptive_dims, function(dd) {
-      c(
-        "pooled_before_search",
-        "selected_then_separate"
-      )
-  })
-
-  names(design_opts_by_dim) <- adaptive_dims
-
-  design_grid <- data.table::as.data.table(
-    expand.grid(design_opts_by_dim, stringsAsFactors = FALSE)
-  )
-
-  make_eff <- function(design_row) {
-    pool_eff <- pool_base
-    select_eff <- select_base
-
-    for (dd in adaptive_dims) {
-      choice <- as.character(design_row[[dd]])
-
-
-
-        if (choice == "pooled_before_search") {
-          ## Pool this non-sample margin before the forest/grid search.
-          pool_eff <- c(pool_eff, dd)
-
-        } else if (choice == "selected_then_separate") {
-          ## Select over this non-sample margin and keep final tests separate.
-          select_eff <- c(select_eff, dd)
-
-        } else if (choice == "selected_then_pooled") {
-          stop(
-            "Internal error: selected_then_pooled is no longer allowed for non-sample margins."
-          )
-
-        } else {
-          stop("Unknown adaptive design choice: ", choice)
-        }
-    }
-
-    pool_eff <- unique(pool_eff)
-    select_eff <- unique(select_eff)
-
-    ## Non-sample overlap should never be passed to the core.
-    bad_overlap <- setdiff(intersect(pool_eff, select_eff), sample_col)
-    if (length(bad_overlap) > 0L) {
-      stop(
-        "Internal error: adaptive design produced non-sample overlap: ",
-        paste(bad_overlap, collapse = ", ")
-      )
-    }
-
-    ## Sample overlap should also never be passed to the core.
-    if (sample_col %in% pool_eff && sample_col %in% select_eff) {
-      stop("Internal error: adaptive design produced sample in both pool and select.")
-    }
-
-    list(
-      pool = pool_eff,
-      select = select_eff
-    )
-  }
-
-  design_name <- function(design_row) {
-    paste(
-      paste(names(design_row), as.character(unlist(design_row)), sep = "="),
-      collapse = "; "
-    )
-  }
-
-  fits <- vector("list", nrow(design_grid))
-  scores_design <- rep(Inf, nrow(design_grid))
-  names_design <- character(nrow(design_grid))
-  pool_designs <- vector("list", nrow(design_grid))
-  select_designs <- vector("list", nrow(design_grid))
-
-  for (ii in seq_len(nrow(design_grid))) {
-    eff <- make_eff(design_grid[ii])
-    names_design[ii] <- design_name(design_grid[ii])
-    pool_designs[[ii]] <- eff$pool
-    select_designs[[ii]] <- eff$select
-
-    fits[[ii]] <- run_core(eff$pool, eff$select)
-
-    scores_design[ii] <- design_score(
-      fit = fits[[ii]],
-      pool_eff = eff$pool,
-      select_eff = eff$select,
-      design_row = design_grid[ii]
-    )
-  }
-
-  flex_score <- vapply(names_design, function(x) {
-    parts <- strsplit(x, "; ", fixed = TRUE)[[1]]
-
-    sum(vapply(parts, function(p) {
-      dim <- sub("=.*$", "", p)
-      val <- sub("^[^=]+=", "", p)
-
-      if (dim == sample_col && val == "selected_then_pooled") return(0L)
-      if (dim == sample_col && val == "selected_then_separate") return(1L)
-
-      if (val == "pooled_before_search") return(0L)
-      if (val == "selected_then_separate") return(1L)
-
-      99L
-    }, integer(1)))
-  }, integer(1))
-
-  winner_i <- which.min(scores_design + 1e-12 * flex_score)
-
-  out <- fits[[winner_i]]
-
-  out$adaptive_dims <- adaptive_dims
-  out$adaptive_design <- names_design[winner_i]
-  out$adaptive_scores <- data.table::data.table(
-    design_id = seq_along(names_design),
-    design = names_design,
-    score = scores_design,
-    winner = seq_along(names_design) == winner_i,
-    pool = vapply(pool_designs, function(z) paste(z, collapse = ","), character(1L)),
-    select = vapply(select_designs, function(z) paste(z, collapse = ","), character(1L))
-  )[order(score)]
-
-  out$adaptive_pool <- pool_designs[[winner_i]]
-  out$adaptive_select <- select_designs[[winner_i]]
-
-  out
 }
 
 crv1_mean <- function(score,
@@ -4896,15 +4594,17 @@ power_union <- function(a, Sigma, alpha_j) {
 }
 
 ## Training-side screen over candidate groups ordered by their training t-statistic
-## (smallest = most negative = most promising). Shared by forest_test_core() and the
+## (smallest = most negative = most promising). Shared by forest_test() and the
 ## stack = FALSE post-hoc selection.
 ##
-## screen = "power": keep the top-j candidates (by training t) that maximize the predicted
+## screen = "power": keep the set of candidates that maximizes the predicted
 ## probability that at least one of them is rejected by a Holm test on the held-out half.
 ## The held-out statistics are predicted as N(-t, (1 + phi) R) (plug-in with prediction
 ## variance, no prior; R = training-side correlation of the estimators, from `u`, the
 ## cluster-level influence vectors indexed by `train_row_id`; identity if unavailable).
-## The model only affects which cells are carried forward, never the validity of the test.
+## The set is found by greedy forward search (options(montest.power_search = "prefix") restricts
+## it to nested sets of the t-ranked cells). The model only affects which cells are carried
+## forward, never the validity of the test.
 ## The final Holm runs over all selected rows of all groups (including the other sample
 ## direction when sample is not pooled): assuming every group selects as many cells as this one,
 ## the family has n_groups * j members and the level is alpha / (n_groups * j).
@@ -4927,10 +4627,34 @@ select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen =
     R <- NULL
     if (!is.null(u) && "train_row_id" %in% names(d)) R <- cell_corr_from_u(u[d$train_row_id[seq_len(Kmax)]])
     if (is.null(R)) R <- diag(Kmax)
-    pw <- vapply(seq_len(Kmax), function(j) {
-      power_union(a[seq_len(j)], (1 + phi) * R[seq_len(j), seq_len(j), drop = FALSE], alpha / (n_groups * j))
-    }, numeric(1))
-    return(d[seq_len(which(pw >= max(pw) - 1e-9)[1L])])
+    ## drop candidates that are (numerically) identical to a stronger one: a singular covariance
+    ## would make a duplicate look like a second independent chance
+    keep <- rep(TRUE, Kmax)
+    for (i in seq_len(Kmax)) if (keep[i]) keep[seq_len(Kmax) > i & abs(R[i, ]) > 0.9999] <- FALSE
+    pos <- which(keep)
+    a <- a[pos]; R <- R[pos, pos, drop = FALSE]
+    pw_set <- function(S) {
+      power_union(a[S], (1 + phi) * R[S, S, drop = FALSE], alpha / (n_groups * length(S)))
+    }
+    if (identical(getOption("montest.power_search", "greedy"), "prefix")) {
+      ## nested sets of the t-ranked cells
+      pw <- vapply(seq_along(a), function(j) pw_set(seq_len(j)), numeric(1))
+      S <- seq_len(which(pw >= max(pw) - 1e-9)[1L])
+    } else {
+      ## greedy forward search: start from the strongest cell, add the cell with the largest gain
+      ## in predicted power given the correlation with the set, stop when none improves it
+      S <- 1L
+      cur <- pw_set(S)
+      repeat {
+        cand <- setdiff(seq_along(a), S)
+        if (!length(cand)) break
+        gains <- vapply(cand, function(k) pw_set(c(S, k)), numeric(1))
+        b <- which.max(gains)
+        if (gains[b] <= cur + 1e-9) break
+        S <- c(S, cand[b]); cur <- gains[b]
+      }
+    }
+    return(d[pos[sort(S)]])
   }
 
   if (screen == "negative") {
@@ -4977,7 +4701,7 @@ select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen =
 
 ## Selection among the training cells in `train_all` (needs columns cell_id, sample, t,
 ## train_row_id and all margin columns). Returns the selected rows of `train_all`.
-## Extracted unchanged from forest_test_core() so that stack = FALSE can apply the
+## Extracted unchanged from forest_test() so that stack = FALSE can apply the
 ## identical rule after the per-block fits have been appended.
 select_train_cells <- function(train_all,
                                select_margins,
@@ -5195,7 +4919,7 @@ finalize_deferred_selection_cart <- function(res, margins, select, alpha, screen
 ## defer_selection = TRUE (all training cells kept, all test rows computed, `train_cells`
 ## returned with globally unique cell_id/train_row_id and the global margin columns).
 ## Applies the training-side selection jointly over all blocks, exactly as the stacked
-## forest_test_core() would have, and drops the test rows (and Xmeans/shares rows) of
+## forest_test() would have, and drops the test rows (and Xmeans/shares rows) of
 ## everything that was not selected.
 finalize_deferred_selection <- function(res, margins, pool, select, alpha, screen,
                                         sample_col = "sample") {
@@ -5301,7 +5025,8 @@ finalize_deferred_selection <- function(res, margins, pool, select, alpha, scree
   res
 }
 
-forest_test_core <- function(
+####### FIND OPTIMAL CUTOFF AND TEST #############
+forest_test <- function(
     data,
     cluster = NULL,
     weight  = NULL,
@@ -5429,11 +5154,7 @@ forest_test_core <- function(
   select_sample <- sample_col %in% select
 
   if (pool_sample && select_sample) {
-    stop(
-      "forest_test_core() does not accept sample in both `pool` and `select`. ",
-      "Use forest_test(), which evaluates sample-pooled and sample-separated ",
-      "as separate adaptive designs."
-    )
+    stop("`sample` cannot appear in both `pool` and `select`.")
   }
 
   pool_margins   <- intersect(pool, margins)
@@ -5443,7 +5164,7 @@ forest_test_core <- function(
 
   if (length(overlap_margins) > 0L) {
     stop(
-      "forest_test_core() does not allow any margin or sample in both `pool` and `select`: ",
+      "forest_test() does not allow any margin or sample in both `pool` and `select`: ",
       paste(overlap_margins, collapse = ", ")
     )
   }
@@ -6699,7 +6420,7 @@ global_means_crv1 <- function(
     dt_all[, (by_cols) := data[, .SD, .SDcols = by_cols]]
   }
 
-  ## Same final-moment logic as forest_test_core()'s run_test_moment():
+  ## Same final-moment logic as forest_test()'s run_test_moment():
   ## centered (with-intercept) fit when every row of the group is eligible,
   ## else the narrower recenter_propensity fix (only for cells NOT eligible
   ## for centering), else the plain through-origin moment.
@@ -6800,7 +6521,7 @@ global_means_crv1 <- function(
 
 ## local = FALSE: no sample split and no subgroup search -- just the global
 ## (per margin-cell) estimates, via the same final-moment logic
-## (centered / recenter_propensity / plain) forest_test_core() uses on the
+## (centered / recenter_propensity / plain) forest_test() uses on the
 ## test side. Returns the same list shape as forest_test()/CART_test(), with
 ## the global table as `results` (and no grid/Xmeans/shares/global).
 global_test <- function(

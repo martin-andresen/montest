@@ -72,3 +72,27 @@ test_that("montest runs with screen = 'power' and guards unsupported settings", 
   expect_error(montest(y ~ x | d ~ z, data = dat, condition = "MW", progress = FALSE,
                        screen = "power", stack = FALSE), "not available")
 })
+
+test_that("greedy search skips a strong cell that is redundant with a chosen one", {
+  set.seed(11)
+  nm <- as.character(1:200)
+  base <- rnorm(200)
+  u <- mk_u(list(setNames(base, nm),
+                 setNames(base + rnorm(200, sd = 0.3), nm),    # B: strong, highly correlated with A
+                 setNames(rnorm(200), nm)))                    # C: weaker, independent
+  d <- mk(c(-3, -2.9, -2))                                     # rows A, B, C
+  on.exit(options(montest.power_search = NULL), add = TRUE)
+  options(montest.power_search = "prefix")
+  expect_equal(sort(select_groups_screen(d, screen = "power", u = u)$id), 1:3)   # best prefix
+  options(montest.power_search = "greedy")
+  expect_equal(sort(select_groups_screen(d, screen = "power", u = u)$id), c(1L, 3L))
+})
+
+test_that("identical cells are not counted as a second chance", {
+  nm <- as.character(1:100)
+  set.seed(12)
+  v <- setNames(rnorm(100), nm)
+  u <- mk_u(list(v, v))
+  d <- mk(c(-3, -3))
+  expect_equal(nrow(select_groups_screen(d, screen = "power", u = u)), 1L)
+})

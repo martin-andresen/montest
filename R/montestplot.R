@@ -190,7 +190,7 @@ montestplot <- function(object, sample = NULL, margins = NULL, grid = TRUE, numX
 
     if (length(rows) == 0L) {
       ## The winning cell's test statistic was pooled across sample halves
-      ## (montest()'s adaptive pool = "sample" design), but Xmeans/XSD are
+      ## (montest()'s pool = "sample" design), but Xmeans/XSD are
       ## always kept by-sample, so no single row matches exactly. Fall back
       ## to averaging the per-sample rows sharing the remaining keys.
       target_nosample <- target[, setdiff(names(target), "sample"), with = FALSE]
