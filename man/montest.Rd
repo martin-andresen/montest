@@ -238,14 +238,14 @@ required within each sample half and margin cell considered for residual variati
 \item{pool}{Character vector controlling which dimensions are pooled when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. The default is all eligible margins
-(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
+\code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
+(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is all eligible margins except \code{"sample"}
-(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{pool}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+\code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block")}
+(those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
@@ -372,7 +372,7 @@ With \code{stack = FALSE} a single bar runs over the margin blocks, covering all
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}
 
-\item{screen}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.}
+\item{screen}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to stepdown, described below. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups (including the other sample direction when sample is not pooled); the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.}
 
 \item{parametric}{A boolean indicating whether nuisances should be estimated using the parametric functional form specified or using semiparametric methods (the default). In the latter case,
 all fixed effects are residualized as specified in the FE part of the formula, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.

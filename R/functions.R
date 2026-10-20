@@ -4217,7 +4217,7 @@ forest_test <- function(
     gridpoints = NULL,
     store_grid = TRUE,
     verbose = FALSE,
-    screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant"),
+    screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant", "power"),
     alpha = 0.05,
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
@@ -4854,10 +4854,62 @@ crv1_mean <- function(score,
 }
 
 
+## Correlation of the chosen train statistics of K cells from their cluster-level influence
+## vectors (see run_one_cell_idx(): sum_g infl_g^2 * G/df == se^2). Cells share a cluster when
+## the same unit appears in several stacked rows. Returns NULL (caller falls back to identity)
+## if influence vectors are missing or do not reproduce the reported standard errors.
+cell_corr_from_u <- function(u_list) {
+  K <- length(u_list)
+  if (K == 0L || any(vapply(u_list, is.null, logical(1)))) return(NULL)
+  cl <- sort(unique(unlist(lapply(u_list, function(z) names(z$u)))))
+  M <- matrix(0, length(cl), K)
+  for (i in seq_len(K)) M[match(names(u_list[[i]]$u), cl), i] <- u_list[[i]]$u
+  sc <- vapply(u_list, function(z) sqrt(z$G / z$df), numeric(1))
+  V <- crossprod(M) * outer(sc, sc)
+  se <- vapply(u_list, function(z) z$se, numeric(1))
+  if (!all(is.finite(V)) || !all(is.finite(se)) || any(abs(sqrt(diag(V)) / se - 1) > 1e-4)) {
+    warning("screen = \"power\": influence-based standard errors do not match the reported ones; ",
+            "ignoring correlations between cells in a group.", call. = FALSE)
+    return(NULL)
+  }
+  stats::cov2cor(V + diag(1e-10, K))
+}
+
+## P(at least one rejection) when U = -T ~ N(a, Sigma) and cell k is rejected if U_k >= qnorm(1 - alpha_j).
+## Genz-Bretz is randomized: the seed is fixed per call and the caller's RNG state restored.
+power_union <- function(a, Sigma, alpha_j) {
+  cc <- stats::qnorm(1 - alpha_j)
+  if (length(a) == 1L) return(1 - stats::pnorm(cc, a, sqrt(Sigma[1L, 1L])))
+  had_seed <- exists(".Random.seed", envir = globalenv(), inherits = FALSE)
+  if (had_seed) old_seed <- get(".Random.seed", envir = globalenv())
+  on.exit({
+    if (had_seed) assign(".Random.seed", old_seed, envir = globalenv())
+    else if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) rm(".Random.seed", envir = globalenv())
+  }, add = TRUE)
+  set.seed(20240101L)
+  pr <- tryCatch(
+    mvtnorm::pmvnorm(upper = rep(cc, length(a)), mean = a, sigma = Sigma,
+                     algorithm = mvtnorm::GenzBretz(abseps = 1e-5, maxpts = 50000L))[1L],
+    error = function(e) prod(stats::pnorm(cc, a, sqrt(diag(Sigma))))
+  )
+  1 - pr
+}
+
 ## Training-side screen over candidate groups ordered by their training t-statistic
 ## (smallest = most negative = most promising). Shared by forest_test_core() and the
 ## stack = FALSE post-hoc selection.
-select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen = "stepdown") {
+##
+## screen = "power": keep the top-j candidates (by training t) that maximize the predicted
+## probability that at least one of them is rejected by a Holm test on the held-out half.
+## The held-out statistics are predicted as N(-t, (1 + phi) R) (plug-in with prediction
+## variance, no prior; R = training-side correlation of the estimators, from `u`, the
+## cluster-level influence vectors indexed by `train_row_id`; identity if unavailable).
+## The model only affects which cells are carried forward, never the validity of the test.
+## The final Holm runs over all selected rows of all groups (including the other sample
+## direction when sample is not pooled): assuming every group selects as many cells as this one,
+## the family has n_groups * j members and the level is alpha / (n_groups * j).
+select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen = "stepdown",
+                                 u = NULL, phi = getOption("montest.power_phi", 1), n_groups = 1L) {
   tt <- dt_grp[[t_col]]
   ok <- is.finite(tt)
   if (!any(ok)) return(dt_grp[0])
@@ -4867,6 +4919,19 @@ select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen =
 
   if (screen == "none") return(d)
   if (screen == "minimum") return(d[1L])
+
+  if (screen == "power") {
+    Kmax <- min(nrow(d), 10L)
+    a <- -d[[t_col]][seq_len(Kmax)]
+    if (Kmax == 1L || a[1L] <= 0) return(d[1L])
+    R <- NULL
+    if (!is.null(u) && "train_row_id" %in% names(d)) R <- cell_corr_from_u(u[d$train_row_id[seq_len(Kmax)]])
+    if (is.null(R)) R <- diag(Kmax)
+    pw <- vapply(seq_len(Kmax), function(j) {
+      power_union(a[seq_len(j)], (1 + phi) * R[seq_len(j), seq_len(j), drop = FALSE], alpha / (n_groups * j))
+    }, numeric(1))
+    return(d[seq_len(which(pw >= max(pw) - 1e-9)[1L])])
+  }
 
   if (screen == "negative") {
     thr <- stats::qnorm(alpha / nrow(d))
@@ -4922,7 +4987,8 @@ select_train_cells <- function(train_all,
                                sample_col,
                                alpha,
                                screen,
-                               sample_pool_after_margin_select) {
+                               sample_pool_after_margin_select,
+                               train_u = NULL) {
 
   select_keep_ids <- function(cand, choose_by, id_by, alpha) {
     choose_by <- intersect(choose_by, names(cand))
@@ -4932,8 +4998,10 @@ select_train_cells <- function(train_all,
       stop("No valid id columns found in cand.")
     }
 
+    n_groups <- if (length(choose_by) == 0L) 1L else nrow(unique(cand[, .SD, .SDcols = choose_by]))
+
     if (length(choose_by) == 0L) {
-      out <- select_groups_screen(cand, alpha = alpha, screen = screen)
+      out <- select_groups_screen(cand, alpha = alpha, screen = screen, u = train_u, n_groups = n_groups)
       return(unique(out[, .SD, .SDcols = id_by]))
     }
 
@@ -4944,7 +5012,7 @@ select_train_cells <- function(train_all,
     out <- cand[
       ,
       {
-        sel <- select_groups_screen(.SD, alpha = alpha, screen = screen)
+        sel <- select_groups_screen(.SD, alpha = alpha, screen = screen, u = train_u, n_groups = n_groups)
 
         if (length(id_nonby) > 0L) {
           sel[, .SD, .SDcols = id_nonby]
@@ -4977,7 +5045,7 @@ select_train_cells <- function(train_all,
 
     cand <- train_all[
       ,
-      .(sel_t = mean(t, na.rm = TRUE)),
+      .(sel_t = mean(t, na.rm = TRUE), train_row_id = train_row_id[1L]),
       by = cand_by
     ]
 
@@ -5014,7 +5082,7 @@ select_train_cells <- function(train_all,
 
     cand <- train_all[
       ,
-      .(sel_t = mean(t, na.rm = TRUE)),
+      .(sel_t = mean(t, na.rm = TRUE), train_row_id = train_row_id[1L]),
       by = agg_by
     ]
 
@@ -5030,16 +5098,20 @@ select_train_cells <- function(train_all,
       "cell_id"
     ))
 
+    n_groups <- if (length(choose_by) == 0L) 1L else nrow(unique(cand[, .SD, .SDcols = choose_by]))
+
     if (length(choose_by) == 0L) {
       keep_ids <- select_groups_screen(
         cand,
         alpha = alpha,
-        screen = screen
+        screen = screen,
+        u = train_u,
+        n_groups = n_groups
       )[, .SD, .SDcols = id_by]
     } else {
       keep_ids <- cand[
         ,
-        select_groups_screen(.SD, alpha = alpha, screen = screen),
+        select_groups_screen(.SD, alpha = alpha, screen = screen, u = train_u, n_groups = n_groups),
         by = choose_by
       ][, .SD, .SDcols = id_by]
     }
@@ -5251,7 +5323,7 @@ forest_test_core <- function(
     gridpoints = NULL,
     store_grid = TRUE,
     verbose = FALSE,
-    screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant"),
+    screen = c("stepdown", "none", "minimum", "negative", "nonpositive", "fgk_relevant", "power"),
     alpha = 0.05,
     fe_expr = NULL,
     fe_rank_adj = !is.null(fe_expr),
@@ -5266,11 +5338,14 @@ forest_test_core <- function(
     recenter_binary = FALSE,
     v = NULL,
     center_inv_v = FALSE,
-    defer_selection = FALSE
+    defer_selection = FALSE,
+    return_u = FALSE
 ) {
 
   stopifnot(data.table::is.data.table(data))
   screen <- match.arg(screen)
+  ## influence vectors of the chosen train statistics: needed by screen = "power" (cross-cell correlations)
+  need_u <- isTRUE(return_u) || screen == "power"
 
   sample_col <- as.character(sample)
   pred_col   <- as.character(pred)
@@ -5867,6 +5942,24 @@ forest_test_core <- function(
     res <- dt[elig, .SD[which.min(t_stat)], by = sample,
               .SDcols = c("G", "N", "m", "se", "t_stat", "pred",
                           ".fe_rank_running", "df")]
+    ## Cluster-level influence of each chosen train statistic (for cross-cell covariances).
+    ## infl_g = (sum over g's rows up to the cutoff of a - m*bsand) / SW  (uncentered), or
+    ## M_g / varden (centered); sum_g infl_g^2 * G/df == se^2.
+    u_out <- NULL
+    if (isTRUE(need_u)) {
+      u_out <- lapply(seq_len(nrow(res)), function(i) {
+        s_i <- res$sample[i]; N_i <- res$N[i]
+        rows <- dt[sample == s_i & N <= N_i]
+        last <- rows[.N]
+        infl <- if (isTRUE(cell_centered)) {
+          M <- rows$rw * (rows$V - last$Vbar) * ((rows$U - last$Ubar) - last$m * (rows$V - last$Vbar))
+          tapply(M, rows$cl, sum) / last$varden
+        } else {
+          tapply(rows$a - last$m * rows$bsand, rows$cl, sum) / last$SW
+        }
+        list(sample = s_i, G = res$G[i], df = res$df[i], se = res$se[i], u = infl)
+      })
+    }
     cut1 <- res[sample == 1L, pred]
     cut2 <- res[sample == 2L, pred]
 
@@ -5927,7 +6020,8 @@ forest_test_core <- function(
     list(
       train = train_out,
       grid = grid_out,
-      idx_test = idx_test_by_sample
+      idx_test = idx_test_by_sample,
+      u = u_out
     )
   }
 
@@ -5936,6 +6030,7 @@ forest_test_core <- function(
   train_list <- vector("list", n_cells)
   grid_list  <- if (store_grid) vector("list", n_cells) else NULL
   idx_test_list <- vector("list", n_cells)
+  u_list <- vector("list", n_cells)
 
   skipped_cells <- character()
 
@@ -5947,6 +6042,7 @@ forest_test_core <- function(
     }
     train_list[[g]] <- ans$train
     idx_test_list[[g]] <- ans$idx_test
+    u_list[[g]] <- ans$u
     if (store_grid) grid_list[[g]] <- ans$grid
 
     if (verbose && (g %% 25L == 0L)) {
@@ -5969,6 +6065,12 @@ forest_test_core <- function(
 
   train_all <- data.table::rbindlist(train_list, use.names = TRUE, fill = TRUE)
   train_all[, train_row_id := .I]
+
+  train_u_all <- NULL
+  if (isTRUE(need_u)) {
+    train_u_all <- unlist(u_list, recursive = FALSE)
+    if (length(train_u_all) != nrow(train_all)) stop("Internal error: train_u does not align with train_all.")
+  }
 
 
 
@@ -5995,7 +6097,8 @@ forest_test_core <- function(
       sample_col = sample_col,
       alpha = alpha,
       screen = screen,
-      sample_pool_after_margin_select = sample_pool_after_margin_select
+      sample_pool_after_margin_select = sample_pool_after_margin_select,
+      train_u = train_u_all
     )
   }
 
@@ -6524,6 +6627,7 @@ forest_test_core <- function(
   if (!is.null(shares)) out$shares <- shares
   if (!store_grid) out$grid <- NULL
   if (isTRUE(defer_selection)) out$train_cells <- train_all
+  if (isTRUE(return_u)) out$train_u <- train_u_all
 
   out
 }

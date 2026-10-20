@@ -20,7 +20,7 @@ test_that("no covariates and no selection: global estimates, no sample split", {
 
 test_that("no covariates with selection over margins: sample is split", {
   d <- make_nocov_data()
-  out <- montest(Y ~ 1 | D ~ Z, data = d, condition = "simple", progress = FALSE)
+  out <- montest(Y ~ 1 | D ~ Z, data = d, condition = "simple", select = "zmargin", progress = FALSE)
   expect_true(out$options$local)
   expect_true(any(out$results$train))
   expect_true(any(!out$results$train))

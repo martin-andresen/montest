@@ -216,13 +216,13 @@
 #' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is all eligible margins
-#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
+#'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
+#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is all eligible margins except \code{"sample"}
-#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{pool}. Margins (except "sample") can appear in both \code{pool} and \code{select}, implying adaptive pooling. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#'   \code{"sample"}, \code{"block"} (seqtest), \code{"all"}, and \code{"none"}. The default is \code{c("condition", "block")}
+#'   (those that exist for the requested conditions/data), minus anything the user specifies in \code{pool}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param local Removed; supplying it is an error. Whether the sample is split and the subgroup search is run is now
 #'   inferred. The search (causal forest plus \code{forest_test}/CART) runs whenever the forest covariates (the X part of
 #'   \code{fml}, or \code{fml.C}) are non-empty or \code{condition} includes \code{"MW"} or \code{"AHS"}, which use \code{Y}
@@ -270,7 +270,7 @@
 #'   \code{stack = TRUE} there is one bar per step (titled like the entries of \code{$time}): the nuisance fits and the
 #'   causal forests, each running over margin cells and sample halves (the Z step only with a multivalued instrument).
 #'   With \code{stack = FALSE} a single bar runs over the margin blocks, covering all steps of each block.
-#' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none". Defaults to stepdown, described below.
+#' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to stepdown, described below. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups (including the other sample direction when sample is not pooled); the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
 #' @param Zparameters,Yparameters,Qparameters,Cparameters,Sparameters,Rparameters Named lists of
@@ -572,7 +572,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## make_scores_vec().
   need_ols_v <- !isTRUE(doubly.robust) && identical(target, "overlap")
 
-  screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant"))
+  screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant","power"))
+  if (screen == "power" && (identical(testtype, "CART") || !isTRUE(stack))) {
+    stop("`screen = \"power\"` needs the cross-cell covariances of the forest search; it is not available with `testtype = \"CART\"` or `stack = FALSE`.", call. = FALSE)
+  }
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
   gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
@@ -753,9 +756,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   else if (is.null(select)==FALSE) select=match.arg(select,pool_vocab,several.ok=TRUE)
 
   ## Defaults: whatever the user specifies in one of pool/select is left out of the other's default.
-  ## By default every eligible margin is adaptive (in both); "sample" can only be pooled.
-  pool_default <- pool_vocab
-  select_default <- setdiff(pool_vocab, "sample")
+  ## No adaptivity over margins by default: pool across sample, dval, zmargin, yval and equation,
+  ## select across condition and block (a margin in both pool and select is adaptive, only on request).
+  pool_default <- intersect(c("zmargin", "dval", "yval", "equation", "sample"), pool_vocab)
+  select_default <- intersect(c("condition", "block"), pool_vocab)
   if (is.null(pool)) pool <- setdiff(pool_default, if (is.null(select)) character() else select)
   if (is.null(select)) select <- setdiff(select_default, if (is.null(pool_input)) character() else pool)
   select <- intersect(select, pool_vocab)
@@ -810,6 +814,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   if ("sample" %in% intersect(pool,select)) {
     stop("Sample cannot appear in both pool and select. Adaptive selection or pooling across sample halves might invalidate sample splitting.")
+  }
+  ## Adaptivity over margins is disabled: the defaults never overlap, so any overlap comes from
+  ## what the user specified.
+  if (length(intersect(pool, select)) > 0L) {
+    stop("`pool` and `select` must not share margins; found in both: ",
+         paste(intersect(pool, select), collapse = ", "),
+         ". Adaptive pooling/selection over margins is disabled.", call. = FALSE)
   }
 
   if (!stack) {
