@@ -264,7 +264,7 @@
 #'   \code{stack = TRUE} there is one bar per step (titled like the entries of \code{$time}): the nuisance fits and the
 #'   causal forests, each running over margin cells and sample halves (the Z step only with a multivalued instrument).
 #'   With \code{stack = FALSE} a single bar runs over the margin blocks, covering all steps of each block.
-#' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to stepdown, described below. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups (including the other sample direction when sample is not pooled); the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.
+#' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to \code{"power"} (\code{"stepdown"} with \code{testtype = "CART"} or \code{stack = FALSE}, where \code{"power"} is not available), described below. \code{"stepdown"} is the Holm stepdown screen on the training t-statistics. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups (including the other sample direction when sample is not pooled); the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
 #' @param Zparameters,Yparameters,Qparameters,Cparameters,Sparameters,Rparameters Named lists of
@@ -405,7 +405,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
-                 cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="stepdown",parametric=FALSE,
+                 cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
 
@@ -566,10 +566,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## make_scores_vec().
   need_ols_v <- !isTRUE(doubly.robust) && identical(target, "overlap")
 
+  screen_given <- !missing(screen)
   screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant","power"))
-  if (screen == "power" && (identical(testtype, "CART") || !isTRUE(stack))) {
-    stop("`screen = \"power\"` needs the cross-cell covariances of the forest search; it is not available with `testtype = \"CART\"` or `stack = FALSE`.", call. = FALSE)
-  }
   gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
   gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
   gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
@@ -589,6 +587,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   select_given <- !missing(select)
   stopifnot(shrink >= 0, shrink <= 1)
   testtype=match.arg(testtype,c("forest","CART"))
+  ## screen = "power" needs the cross-cell covariances of the forest search: the default falls back to
+  ## the stepdown screen where they are not available, an explicit request is an error.
+  if (screen == "power" && (testtype == "CART" || !isTRUE(stack))) {
+    if (screen_given) {
+      stop("`screen = \"power\"` needs the cross-cell covariances of the forest search; it is not available with `testtype = \"CART\"` or `stack = FALSE`.", call. = FALSE)
+    }
+    screen <- "stepdown"
+  }
   if (testtype=="CART") shrink=0
   stopifnot(is.logical(priority), length(priority) == 1L, !is.na(priority))
   stopifnot(is.numeric(priority.floor), length(priority.floor) == 1L,
