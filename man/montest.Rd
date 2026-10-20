@@ -239,7 +239,7 @@ required within each sample half and margin cell considered for residual variati
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
 \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
-(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
+(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},

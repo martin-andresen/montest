@@ -217,7 +217,7 @@
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
 #'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
-#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
+#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select} (adaptive pooling over margins is disabled). If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
@@ -779,6 +779,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     if (has_block) "block"
   )
   local <- has_feat || length(intersect(select, possible_sel)) > 0L
+
+  ## Pooling the sample halves is only valid when no data-driven choice of cells determines the
+  ## tests: the cells selected by both sample directions would be pooled, and that choice uses
+  ## both halves' outcomes (each half is the held-out half of the other direction). With
+  ## effective selection (a selected margin with at least two cells) `sample` is therefore tested
+  ## separately by direction instead of pooled.
+  eff_select <- intersect(select, c(possible_sel, if (any(condition %in% c("KR", "MW"))) "equation"))
+  if (length(eff_select) > 0L && "sample" %in% pool) {
+    pool <- setdiff(pool, "sample")
+    message("`sample` removed from `pool`: pooling the sample halves is not valid when cells are selected over (",
+            paste(eff_select, collapse = ", "), "); each sample direction is tested separately.")
+  }
 
   if (!local) {
     ## No model selection: `select` has no role and `sample` is moot.
