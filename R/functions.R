@@ -247,23 +247,38 @@ priority_var_closed <- function(data, rows, margins, zhat, out_v, out_vo,
 ## `out_pred` / `out_pred_o`. Variances are floored at `floor_frac` times the positive median
 ## within each margin cell x sample (non-finite -> that median; non-positive -> the floor);
 ## cells with no positive variance fall back to the raw prediction.
+## `w` (optional column name): the weight of the weighted mean that the search and the test use
+## (`w_eff`, which carries `target`). That statistic, sum(w s) / sqrt(sum(w^2 v)), is a function of
+## the additive statistics sum(w tau) and sum(w^2 v), so the Neill (2012) priority is tau / (w v).
+## The weight is floored at `floor_frac` times its positive median, like the variance. With `w`
+## NULL or constant the key is the unweighted pred / v.
 priority_te <- function(data, pred, pred_v, pred_o, pred_o_v,
                         margins = NULL, sample = "sample",
                         out_pred = "pred_p", out_pred_o = "pred_o_p",
-                        floor_frac = 0.01) {
+                        floor_frac = 0.01, w = NULL) {
   stopifnot(data.table::is.data.table(data))
   byvars <- c(as.character(margins), as.character(sample))
-  scale_by <- function(y, v) {
+  floor_med <- function(v) {
     ok <- is.finite(v) & v > 0
-    if (!any(ok)) return(y)
+    if (!any(ok)) return(NULL)
     med <- stats::median(v[ok])
     v[!is.finite(v)] <- med
-    y / pmax(v, floor_frac * med)
+    pmax(v, floor_frac * med)
+  }
+  scale_by <- function(y, v, ww = NULL) {
+    vf <- floor_med(v)
+    if (is.null(vf)) return(y)
+    if (!is.null(ww)) {
+      wf <- floor_med(ww)
+      if (!is.null(wf)) vf <- vf * wf
+    }
+    y / vf
   }
   cy <- as.character(pred); cv <- as.character(pred_v)
   cyo <- as.character(pred_o); cvo <- as.character(pred_o_v)
-  data[, (out_pred) := scale_by(.SD[[cy]], .SD[[cv]]), by = byvars, .SDcols = c(cy, cv)]
-  data[, (out_pred_o) := scale_by(.SD[[cyo]], .SD[[cvo]]), by = byvars, .SDcols = c(cyo, cvo)]
+  cw <- if (is.null(w)) NULL else as.character(w)
+  data[, (out_pred) := scale_by(.SD[[cy]], .SD[[cv]], if (!is.null(cw)) .SD[[cw]]), by = byvars, .SDcols = c(cy, cv, cw)]
+  data[, (out_pred_o) := scale_by(.SD[[cyo]], .SD[[cvo]], if (!is.null(cw)) .SD[[cw]]), by = byvars, .SDcols = c(cyo, cvo, cw)]
   invisible(data)
 }
 

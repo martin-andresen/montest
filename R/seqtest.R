@@ -25,6 +25,15 @@
 #'     constructed treatment D1 - D2 (shifted by 1 and scored linearly), i.e.
 #'     \code{montest(~ X | FE | D1 - D2 + 1 ~ Z, condition = "simple", linearD = TRUE)}. D2 need not be
 #'     nested in D1. Rejected unless D1 and D2 are both binary.}
+#'   \item{\code{"FSS"}}{The flipped first stage difference, i.e. the first stage sum
+#'     \eqn{E[D1|Z=1]-E[D1|Z=0] + E[D2|Z=1]-E[D2|Z=0] \ge 0}, which is the first stage difference for D1 and
+#'     1 - D2 (and equals the sum of the concordant-cell conditions (1,1) and (0,0) of the KR conditions with D2
+#'     as outcome, whereas \code{"FSD"} is the sum of the discordant-cell conditions). It is tested as the simple first
+#'     stage condition for the constructed treatment D1 + D2 (support \{0,1,2\}, scored linearly), i.e.
+#'     \code{montest(~ X | FE | D1 + D2 ~ Z, condition = "simple", linearD = TRUE)}. It has power when D2 moves
+#'     against D1 among compliers (e.g. a programme that is rarely repeated), where the complier slack is in the
+#'     discordant cells. Together with \code{"FSD"}, the conditions imply \eqn{|\Delta E[D2]| \le \Delta E[D1]}.
+#'     Rejected unless D1 and D2 are both binary.}
 #'   \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
 #'     i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
 #'     binary and \code{fml} may not contain fixed effects. D1 may be multivalued and ordered: the endpoint
@@ -54,10 +63,10 @@
 #' @param fml A formula \code{Y ~ X | FE | D1 + D2 ~ Z}. Y may be omitted (\code{~ X | D1 + D2 ~ Z}) unless
 #'   \code{"KRDY"} is requested, and may contain several variables joined by \code{+}.
 #' @param data A \code{data.frame} or \code{data.table}.
-#' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"MWD"},
-#'   \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+#' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"FSS"},
+#'   \code{"MWD"}, \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 #'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
-#'   the MW conditions are never run by default.
+#'   \code{"FSS"} and the MW conditions are never run by default.
 #' @param ... Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
 #'   the margins sequentially).
 #'   For \code{"KRD"} and \code{"KRDY"}, seqtest first bins both treatments (D1 and D2) with \code{Dsubsets}
@@ -105,7 +114,7 @@ seqtest <- function(fml, data, condition = NULL, ...) {
   fsd_ok <- two_valued(data[[D1]]) && two_valued(data[[D2]])
 
   ################ conditions ################
-  allowed <- c("KRD", "KRDY", "KRDY2", "FSD", "MWD", "MWDY", "MWDY2")
+  allowed <- c("KRD", "KRDY", "KRDY2", "FSD", "FSS", "MWD", "MWDY", "MWDY2")
   if (is.null(condition)) {
     condition <- c("KRD", if (!is.null(Y)) "KRDY", if (fsd_ok) "FSD")
   } else {
@@ -132,8 +141,10 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       stop("Condition ", cn, " requires an outcome Y on the left hand side of `fml`.", call. = FALSE)
     }
   }
-  if ("FSD" %in% condition && !fsd_ok) {
-    stop("Condition FSD requires both D1 (", D1, ") and D2 (", D2, ") to be binary.", call. = FALSE)
+  for (cn in intersect(c("FSD", "FSS"), condition)) {
+    if (!fsd_ok) {
+      stop("Condition ", cn, " requires both D1 (", D1, ") and D2 (", D2, ") to be binary.", call. = FALSE)
+    }
   }
 
   ################ build formulas ################
@@ -258,10 +269,12 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       ## {0,1} instead of {-1,0}.
       d1 <- as.integer(data[[D1]] == max(data[[D1]], na.rm = TRUE))
       d2 <- as.integer(data[[D2]] == max(data[[D2]], na.rm = TRUE))
-      dd <- "Dseq_diff"
+      ## FSS (flipped): D1 + D2, which already has support {0,1,2}; its first stage is the sum of
+      ## the first stages, i.e. the first stage difference for D1 and 1 - D2.
+      dd <- if (cond == "FSS") "Dseq_sum" else "Dseq_diff"
       while (dd %in% names(data)) dd <- paste0(dd, "_")
       dat <- data.table::copy(data)
-      data.table::set(dat, j = dd, value = d1 - d2 + 1L)
+      data.table::set(dat, j = dd, value = if (cond == "FSS") d1 + d2 else d1 - d2 + 1L)
       f <- make_fml(NULL, as.name(dd))
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat, condition = "simple", linearD = TRUE), dots))
     }

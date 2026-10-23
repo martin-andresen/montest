@@ -12,10 +12,10 @@ seqtest(fml, data, condition = NULL, ...)
 
 \item{data}{A \code{data.frame} or \code{data.table}.}
 
-\item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"MWD"},
-\code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+\item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"FSS"},
+\code{"MWD"}, \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
-the MW conditions are never run by default.}
+\code{"FSS"} and the MW conditions are never run by default.}
 
 \item{...}{Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
 the margins sequentially).
@@ -58,6 +58,15 @@ all other arguments straight through. The conditions are
     constructed treatment D1 - D2 (shifted by 1 and scored linearly), i.e.
     \code{montest(~ X | FE | D1 - D2 + 1 ~ Z, condition = "simple", linearD = TRUE)}. D2 need not be
     nested in D1. Rejected unless D1 and D2 are both binary.}
+  \item{\code{"FSS"}}{The flipped first stage difference, i.e. the first stage sum
+    \eqn{E[D1|Z=1]-E[D1|Z=0] + E[D2|Z=1]-E[D2|Z=0] \ge 0}, which is the first stage difference for D1 and
+    1 - D2 (and equals the sum of the concordant-cell conditions (1,1) and (0,0) of the KR conditions with D2
+    as outcome, whereas \code{"FSD"} is the sum of the discordant-cell conditions). It is tested as the simple first
+    stage condition for the constructed treatment D1 + D2 (support \{0,1,2\}, scored linearly), i.e.
+    \code{montest(~ X | FE | D1 + D2 ~ Z, condition = "simple", linearD = TRUE)}. It has power when D2 moves
+    against D1 among compliers (e.g. a programme that is rarely repeated), where the complier slack is in the
+    discordant cells. Together with \code{"FSD"}, the conditions imply \eqn{|\Delta E[D2]| \le \Delta E[D1]}.
+    Rejected unless D1 and D2 are both binary.}
   \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
     i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
     binary and \code{fml} may not contain fixed effects. D1 may be multivalued and ordered: the endpoint

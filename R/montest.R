@@ -38,7 +38,7 @@
 #'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted from the formula, only \code{"simple"} is allowed.
 #' @param target a scalar equal to either "all" (default) or "overlap" to determine whether the function should target the average treatment effect (all) in the relevant subsample, or the overlap-adjusted / weighted ATE ("overlap").
-#'   Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"} (not \code{"MW"}, whose own moment is untouched by \code{target} -- see \code{doubly.robust}), across both instrument representations (binary or
+#'   Applies to \code{"simple"}, \code{"KR"}, \code{"AHS"} and \code{"MW"} (for \code{"MW"}, whose scores are inverse probability weighted contrasts, \code{"overlap"} weights each row by \eqn{e(1-e)} with \eqn{e} the estimated instrument propensity; see \code{doubly.robust}), across both instrument representations (binary or
 #'   continuous). These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X, so
 #'   \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. When \code{doubly.robust=TRUE}, \code{target} changes only the
 #'   weight used when aggregating scores into the final test statistic, not the per-row score formula itself. When \code{doubly.robust=FALSE}, \code{target} additionally selects which conditional-variance
@@ -155,7 +155,9 @@
 #'   for subset search and testing. Default 50.
 #' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
 #' @param priority Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
-#'   \code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
+#'   \code{pred / (w v(X))} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{w} is the row weight of the
+#'   weighted mean that the search and the test use (user weights and \code{target}; \code{w = 1} without weights and with
+#'   \code{target = "all"}, in which case the key is \code{pred / v(X)}; rows with \code{doubly.robust = FALSE} keep \code{w = 1}) and \code{v(X)} is the conditional variance
 #'   of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
 #'   \code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
 #'   to \code{pred} before dividing. Each outer sample half's own key uses an out-of-bag \code{v(X)} fit on that half only,
@@ -2651,27 +2653,26 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     is_MW_bin <- is_MW & is.na(dval_mw__)
     is_MW_mv  <- is_MW & !is.na(dval_mw__)
 
+    ## Scores are the plain IPW contrast ipw = Z/e - (1-Z)/(1-e) times a pseudo-outcome,
+    ## so E[score | X, W] is the local (Z-induced) density change and `target` applies as
+    ## for the other conditions: target = "all" averages the local effects with equal
+    ## weights, target = "overlap" weights them by e(1-e) (see w_eff below).
+    ipw__ <- data[[Zcol]] / data[[zhat]] - (1 - data[[Zcol]]) / (1 - data[[zhat]])
+
     data[
       is_MW_bin,
-      Q := equation * (
-        (1 - get(zhat)) * get(Dcol) * get(Zcol) -
-          get(zhat) * get(Dcol) * (1 - get(Zcol))
-      ) +
-        (1 - equation) * (
-          get(zhat) * (1 - get(Dcol)) * (1 - get(Zcol)) -
-            (1 - get(zhat)) * (1 - get(Dcol)) * get(Zcol)
-        )
+      Q := (equation * get(Dcol) - (1 - equation) * (1 - get(Dcol))) * ipw__[is_MW_bin]
     ]
 
-    ## Multivalued D. Scores are e(1-e) times the IPW contrast, as above.
+    ## Multivalued D. Scores are pseudo-outcome times the IPW contrast, as above.
     ## equation = 0: inflow side, equation = 1: outflow side.
     ##   Endpoints (pointwise sign restrictions, W stays a forest feature):
-    ##     dmin, eq 0:  -1{D = dmin} (Z - e)      (g_dmin <= 0)
-    ##     dmax, eq 1:   1{D = dmax} (Z - e)      (g_dmax >= 0)
+    ##     dmin, eq 0:  -1{D = dmin} ipw      (g_dmin <= 0)
+    ##     dmax, eq 1:   1{D = dmax} ipw      (g_dmax >= 0)
     ##   Interior m (budget bounds; outcome sets learned on the training half):
-    ##     eq 0: Q = 1{D >= m} - 1{D = m} 1{ghat_m > 0},  score = Q (Z - e)
-    ##     eq 1: Q = 1{D >  m} + 1{D = m} 1{ghat_m < 0},  score = Q (Z - e)
-    ##   with ghat_m = E[1{D = m}(Z - e) | W, X]. `Q` uses the row's own-half
+    ##     eq 0: Q = 1{D >= m} - 1{D = m} 1{ghat_m > 0},  score = Q ipw
+    ##     eq 1: Q = 1{D >  m} + 1{D = m} 1{ghat_m < 0},  score = Q ipw
+    ##   with ghat_m = E[1{D = m} ipw | W, X]. `Q` uses the row's own-half
     ##   (out-of-bag) ghat for the sorting/search stage; `Q_test` uses ghat from
     ##   the OPPOSITE half's forest, for the final held-out test.
     data[, Q_test := NA_real_]
@@ -2685,13 +2686,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       is_end1 <- is_MW_mv & data[["equation"]] == 1 & data[["dval"]] == data[["dmax_mw__"]]
       is_int  <- is_MW_mv & !is_end0 & !is_end1
 
-      data[is_end0, Q := -as.numeric(get(Dcol) == dval) * (get(Zcol) - get(zhat))]
-      data[is_end1, Q :=  as.numeric(get(Dcol) == dval) * (get(Zcol) - get(zhat))]
+      data[is_end0, Q := -as.numeric(get(Dcol) == dval) * ipw__[is_end0]]
+      data[is_end1, Q :=  as.numeric(get(Dcol) == dval) * ipw__[is_end1]]
 
       if (any(is_int)) {
         data[, mw_int__ := is_int]
         data[, s_m__ := NA_real_]
-        data[is_int, s_m__ := as.numeric(get(Dcol) == dval) * (get(Zcol) - get(zhat))]
+        data[is_int, s_m__ := as.numeric(get(Dcol) == dval) * ipw__[is_int]]
 
         ## One ghat_m forest per (m, zmargin, block), shared by both sides:
         ## fit on the inflow rows, plus outflow rows with no inflow counterpart.
@@ -2733,8 +2734,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
           q_out <- as.numeric(Dv >  dv) + as.numeric(Dv == dv) * as.numeric(g < 0)
           q01 <- ifelse(data[["equation"]] == 0, q_in, q_out)
           ## MW is IPW (singly robust) throughout, whatever `doubly.robust` is:
-          ## the score is the pseudo-outcome times (Z - e), as for the endpoints.
-          q01 * (data[[Zcol]] - data[[zhat]])
+          ## the score is the pseudo-outcome times the IPW contrast, as for the endpoints.
+          q01 * ipw__
         }
         q_own__  <- mw_Q(data[["ghat_own__"]])
         q_test__ <- mw_Q(data[["ghat_opp__"]])
@@ -3167,10 +3168,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## ~5% once weighted by scores_v as target=="overlap" already was. So for
   ## doubly.robust=FALSE, this reweighting is not a `target` preference at
   ## all -- it is required for validity regardless of `target`, which is why
-  ## the gate below is on `!isTRUE(doubly.robust)`, not on `target`. MW is
-  ## deliberately excluded either way -- it was never touched by `target`
-  ## even before this refactor (its own plug-in moment doesn't go through
-  ## make_scores_vec() at all).
+  ## the gate below is on `!isTRUE(doubly.robust)`, not on `target`. MW's scores
+  ## are plain IPW contrasts (valid local estimates whatever `doubly.robust` is),
+  ## so MW follows `target` only: "overlap" weights by e(1-e), computed directly
+  ## from the clipped propensity (MW rows have no `scores_v`, which must stay NA
+  ## for them -- see crv1_mean()'s recentering).
   ## ------------------------------------------------------------
 
   data[, w_eff := if (is.null(weight)) 1 else get(weight)]
@@ -3180,6 +3182,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       condition %in% c("simple", "KR", "AHS"),
       w_eff := w_eff * scores_v
     ]
+  }
+
+  if (identical(target, "overlap") && any(data$condition == "MW")) {
+    data[condition == "MW", w_eff := w_eff * get(zhat) * (1 - get(zhat))]
   }
 
   ## ------------------------------------------------------------
@@ -3324,10 +3330,15 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   pred_o_arg <- NULL
   ## `priority`: shrunk (if `shrink`) prediction over the score variance fitted above.
   if (priority) {
+    ## The key is pred / (w_eff * v): w_eff (user weight and `target`) is the weight of the mean the
+    ## search and test use. Rows on the centered (doubly.robust = FALSE) path ignore w_eff in the
+    ## search, so they keep the unweighted key.
+    data[, w_pr__ := data.table::fifelse(use_centered_test, 1, w_eff)]
     priority_te(data, pred = "pred", pred_v = pr_v, pred_o = "pred_o", pred_o_v = pr_vo,
                 margins = margins, sample = "sample",
-                out_pred = "pred_p", out_pred_o = "pred_o_p", floor_frac = priority.floor)
-    data[, c(pr_v, pr_vo) := NULL]
+                out_pred = "pred_p", out_pred_o = "pred_o_p", floor_frac = priority.floor,
+                w = "w_pr__")
+    data[, c(pr_v, pr_vo, "w_pr__") := NULL]
     pred_arg <- "pred_p"
     pred_o_arg <- "pred_o_p"
   }

@@ -248,7 +248,9 @@ testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
 \item{priority}{Logical, default \code{TRUE}. If \code{TRUE}, the subgroup search sorts on the priority
-\code{pred / v(X)} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{v(X)} is the conditional variance
+\code{pred / (w v(X))} (Neill, 2012, JRSS-B) instead of on the raw prediction, where \code{w} is the row weight of the
+weighted mean that the search and the test use (user weights and \code{target}; \code{w = 1} without weights and with
+\code{target = "all"}, in which case the key is \code{pred / v(X)}; rows with \code{doubly.robust = FALSE} keep \code{w = 1}) and \code{v(X)} is the conditional variance
 of the scores around the predicted effect, \eqn{E[(S-\tau(X))^2|X]}, estimated by a regression forest (covariates
 \code{fml.varS}, options \code{Sparameters}). \code{v(X)} is fit on the unshrunk predictions; \code{shrink} then applies
 to \code{pred} before dividing. Each outer sample half's own key uses an out-of-bag \code{v(X)} fit on that half only,
@@ -286,7 +288,7 @@ multivalued Z rather than cut-and-stack. Only meaningful for \code{"simple"} and
 with them. Downgraded to FALSE with a warning if Z is binary in the data.}
 
 \item{target}{a scalar equal to either "all" (default) or "overlap" to determine whether the function should target the average treatment effect (all) in the relevant subsample, or the overlap-adjusted / weighted ATE ("overlap").
-Applies to \code{"simple"}, \code{"KR"}, and \code{"AHS"} (not \code{"MW"}, whose own moment is untouched by \code{target} -- see \code{doubly.robust}), across both instrument representations (binary or
+Applies to \code{"simple"}, \code{"KR"}, \code{"AHS"} and \code{"MW"} (for \code{"MW"}, whose scores are inverse probability weighted contrasts, \code{"overlap"} weights each row by \eqn{e(1-e)} with \eqn{e} the estimated instrument propensity; see \code{doubly.robust}), across both instrument representations (binary or
 continuous). These are genuinely different estimands whenever the underlying effect is heterogeneous in X: each row's score has conditional expectation equal to the *local* effect at that row's X, so
 \code{"all"} targets the plain (unweighted) average of those local effects, while \code{"overlap"} targets their variance-weighted average. When \code{doubly.robust=TRUE}, \code{target} changes only the
 weight used when aggregating scores into the final test statistic, not the per-row score formula itself. When \code{doubly.robust=FALSE}, \code{target} additionally selects which conditional-variance
