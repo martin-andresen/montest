@@ -191,7 +191,10 @@ for subset search and testing. Default 50.}
 \item{minarm, minarm_clusters}{Integers. For the local (forest/CART) tests with a binary instrument: the
 minimum number of rows and of distinct clusters with the instrument equal to 1, and with it equal to 0,
 required in every candidate subgroup. Subgroups without instrument variation identify nothing and
-otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5.}
+otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5, except for
+\code{condition = "MW"} (forest search), whose cells use 20 and 20 unless you set them: its inverse
+probability weighted scores are dominated by a few \eqn{1/e} or \eqn{1/(1-e)} weights when an arm has few rows, and the
+t-test then over-rejects.}
 
 \item{gridtypeY, gridtypeD, gridtypeZ}{Character strings controlling how continuous
 variables are discretized before stacking. Must be one of \code{"equisized"} or

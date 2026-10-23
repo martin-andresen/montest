@@ -5057,6 +5057,8 @@ forest_test <- function(
     arm = NULL,
     minarm = 10L,
     minarm_clusters = 5L,
+    minarm_col = NULL,
+    minarm_clusters_col = NULL,
     margins = NULL,
     pool = NULL,
     select = NULL,
@@ -5324,6 +5326,16 @@ forest_test <- function(
   }
 
   run_one_cell_idx <- function(idx, key_dt = NULL, cell_id = NA_integer_) {
+    ## Optional per-row overrides of minarm / minarm_clusters (e.g. a larger minimum for MW cells,
+    ## whose IPW scores are unstable when an arm has few rows): the cell uses the largest value of its rows.
+    if (!is.null(minarm_col)) {
+      mv <- data[[minarm_col]][idx]; mv <- mv[is.finite(mv)]
+      if (length(mv)) minarm <- max(mv)
+    }
+    if (!is.null(minarm_clusters_col)) {
+      mv <- data[[minarm_clusters_col]][idx]; mv <- mv[is.finite(mv)]
+      if (length(mv)) minarm_clusters <- max(mv)
+    }
     s  <- samp[idx]
     pr <- sortv[idx]
     po <- sortov[idx]

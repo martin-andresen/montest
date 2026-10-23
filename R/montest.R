@@ -150,7 +150,10 @@
 #' @param minarm,minarm_clusters Integers. For the local (forest/CART) tests with a binary instrument: the
 #'   minimum number of rows and of distinct clusters with the instrument equal to 1, and with it equal to 0,
 #'   required in every candidate subgroup. Subgroups without instrument variation identify nothing and
-#'   otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5.
+#'   otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5, except for
+#'   \code{condition = "MW"} (forest search), whose cells use 20 and 20 unless you set them: its inverse
+#'   probability weighted scores are dominated by a few \eqn{1/e} or \eqn{1/(1-e)} weights when an arm has few rows, and the
+#'   t-test then over-rejects.
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
 #' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
@@ -416,6 +419,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## `options` in the return value for the resolved (post-default) values
   ## instead.
   mc <- match.call()
+  ## Whether the user chose minarm / minarm_clusters: if not, MW cells get larger defaults (see below).
+  minarm_default <- missing(minarm)
+  minarm_clusters_default <- missing(minarm_clusters)
 
   time=rbind(start=proc.time())
   if (!is.null(seed)) set.seed(seed)
@@ -3356,12 +3362,28 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     data[, .arm := data.table::fifelse(z_use_linear_score %in% TRUE, NA_integer_, as.integer(get(Z) > 0.5))]
     arm_arg <- ".arm"
   }
+  ## MW scores are inverse probability weighted without an outcome nuisance, so a subgroup in which
+  ## an instrument arm has few rows is dominated by a handful of 1/e or 1/(1-e) weights and its
+  ## t-test over-rejects. Unless the user set them, MW cells require at least 20 rows and 20 clusters
+  ## in each arm (other conditions: `minarm`, `minarm_clusters`). Forest search only.
+  minarm_col_arg <- NULL
+  minarm_clusters_col_arg <- NULL
+  if (local && "MW" %in% data$condition) {
+    if (minarm_default) {
+      data[, .minarm := data.table::fifelse(condition == "MW", max(as.numeric(minarm), 20), as.numeric(minarm))]
+      minarm_col_arg <- ".minarm"
+    }
+    if (minarm_clusters_default) {
+      data[, .minarm_clusters := data.table::fifelse(condition == "MW", max(as.numeric(minarm_clusters), 20), as.numeric(minarm_clusters))]
+      minarm_clusters_col_arg <- ".minarm_clusters"
+    }
+  }
   ## stack = FALSE with a selection rule: no selection inside the block; it is applied
   ## jointly over all blocks afterwards (finalize_deferred_selection()).
   if (defer_selection) selectmargins <- character()
 
   if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,minarm=minarm,minarm_clusters=minarm_clusters,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,minarm=minarm,minarm_clusters=minarm_clusters,minarm_col=minarm_col_arg,minarm_clusters_col=minarm_clusters_col_arg,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
   if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,minarm=minarm,minarm_clusters=minarm_clusters,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
   time=rbind(time,"Find promising subset and test"=proc.time())

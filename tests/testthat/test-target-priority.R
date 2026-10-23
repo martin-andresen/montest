@@ -51,3 +51,22 @@ test_that("MW honours target, for binary and multivalued treatments", {
     expect_true(is.finite(r$minp[["p.holm"]]))
   }
 })
+
+test_that("MW cells default to minarm = minarm_clusters = 20, other conditions keep 10 and 5", {
+  set.seed(5)
+  n <- 1500
+  x <- rnorm(n); v <- rnorm(n)
+  z <- rbinom(n, 1, pmin(pmax(plogis(3.5 * x), 0.02), 0.98))
+  dd <- as.integer(v + z > -0.5) + as.integer(v + z > 0.7)
+  y <- as.integer(0.5 * dd + 0.5 * x + 0.5 * v + rlogis(n) > 0.5)
+  d <- data.frame(Y = y, D = dd, Z = z, x = x)
+  GRF <- list(num.trees = 100L, num.threads = 1)
+  run <- function(...) suppressWarnings(montest(Y ~ x | D ~ Z, data = d, condition = "MW", progress = FALSE, pool = "none",
+                                                Zparameters = GRF, Qparameters = GRF, Cparameters = GRF, ...))$results
+  def <- run()
+  m20 <- run(minarm = 20L, minarm_clusters = 20L)
+  m10 <- run(minarm = 10L, minarm_clusters = 5L)
+  expect_equal(def$p.raw, m20$p.raw)
+  expect_equal(def$coef, m20$coef)
+  expect_false(isTRUE(all.equal(def$coef, m10$coef)))
+})
