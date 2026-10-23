@@ -431,8 +431,8 @@ CART_test <- function(
     prune = TRUE,
     minsize = 50L,
     arm = NULL,
-    minarm = 10L,
-    minarm_clusters = 5L,
+    arm_weight = NULL,
+    miness = 10,
     screen = c("stepdown","none", "minimum", "negative", "nonpositive", "fgk_relevant"),
     store_trees = FALSE,
     verbose = FALSE,
@@ -850,7 +850,8 @@ CART_test <- function(
         score  = score_group,
         w      = w_group,
         w_sandwich = w_sandwich_group,
-        arm    = if (!is.null(arm)) as.integer(df_group[[as.character(arm)]]) else NA_integer_
+        arm    = if (!is.null(arm)) as.integer(df_group[[as.character(arm)]]) else NA_integer_,
+        armw   = if (!is.null(arm_weight)) as.numeric(df_group[[as.character(arm_weight)]]) else NA_real_
       )
       if (!is.null(cluster_col)) {
         dt0[, cl := as.integer(factor(cl_group, exclude = NULL))]
@@ -864,7 +865,7 @@ CART_test <- function(
         G_here <- data.table::uniqueN(cl)
         N_here <- .N
 
-        if (G_here < minsize || !utils::tail(arm_ok_prefix(arm, cl, minarm, minarm_clusters), 1L)) {
+        if (G_here < minsize || !utils::tail(arm_ok_prefix(arm, cl, armw, miness), 1L)) {
           list(
             G = G_here,
             N = N_here,
@@ -3074,7 +3075,8 @@ make_scores_vec <- function(Y,
                             doubly.robust = TRUE,
                             z_is_linear = FALSE,
                             weight = NULL,
-                            clip = 1e-3) {
+                            clip = 1e-3,
+                            clip_v = clip) {
   n <- length(Y)
 
   if (length(z_is_linear) == 1L) {
@@ -3141,7 +3143,7 @@ make_scores_vec <- function(Y,
       v[ii] <- validate_and_clip(
         v_raw_ii,
         hard_lower = 0,
-        floor = if (!is.null(clip)) clip * v_scale_ii else NULL,
+        floor = if (!is.null(clip_v)) clip_v * v_scale_ii else NULL,
         label = "row-level empirical variance for binary-Z rows (target=\"overlap\")"
       )
     } else {
@@ -3182,7 +3184,7 @@ make_scores_vec <- function(Y,
     ## than erroring, same as small propensity excursions near 0/1 already are.
     v[ii] <- validate_and_clip(
       as.numeric(Z.var.hat)[ii],
-      floor = if (!is.null(clip)) clip * v_scale else NULL,
+      floor = if (!is.null(clip_v)) clip_v * v_scale else NULL,
       label = "conditional variance v(X) for continuous-Z rows"
     )
   }
@@ -3216,6 +3218,7 @@ fit_models <- function(DT,
                        cluster_name = NULL,
                        forest_opts = NULL,
                        aipw.clip = 1e-3,
+                       aipw.clip.v = aipw.clip,
                        shrink = FALSE,
                        verbose = FALSE,
                        doubly.robust = TRUE,
@@ -3620,7 +3623,8 @@ fit_models <- function(DT,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx1],
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],
-        clip = aipw.clip
+        clip = aipw.clip,
+        clip_v = aipw.clip.v
       )
       sc1 <- res_sc1$score
       scv1 <- res_sc1$v
@@ -3639,7 +3643,8 @@ fit_models <- function(DT,
         doubly.robust = doubly.robust,
         z_is_linear = z_is_linear_all[idx2],
         weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],
-        clip = aipw.clip
+        clip = aipw.clip,
+        clip_v = aipw.clip.v
       )
       sc2 <- res_sc2$score
       scv2 <- res_sc2$v
@@ -4164,16 +4169,23 @@ rank_adj_total <- function(data, idx, fe_expr, x_vars = NULL, weight_col = NULL,
   as.integer(fe_r + x_r)
 }
 
-## Running (prefix) eligibility on the instrument arms: TRUE where the rows up to and including
-## this position hold at least `minarm` rows and `minarm_clusters` distinct clusters with
-## arm == 1 AND with arm == 0. `arm` is a 1/0 vector in sort order; all-NA arm (continuous Z, or no
-## arm supplied) imposes no constraint. A leaf without instrument variation identifies nothing.
-arm_ok_prefix <- function(arm, cl, minarm = 10L, minarm_clusters = 5L) {
+## Running (prefix) eligibility on the instrument arms: TRUE where, among the rows up to and including
+## this position, the effective sample size of the inverse probability weights in the arm
+## arm == 1 AND in the arm arm == 0 is at least `miness`. `armw` is each row's weight in its own arm
+## (1/e for arm 1, 1/(1-e) for arm 0). The effective size is (sum of the weights)^2 over the sum of squared
+## cluster totals of the weights (rows are their own clusters without clustering), i.e. the number of
+## equally weighted observations the arm is worth: it equals the row count when the weights are equal and
+## is close to 1 when a few rows carry almost all of the weight. `arm` is a 1/0 vector in sort order; an
+## all-NA arm (continuous Z, or no arm supplied) imposes no constraint, and without weights the rows count
+## equally. A leaf without instrument variation identifies nothing.
+arm_ok_prefix <- function(arm, cl, armw = NULL, miness = 10) {
   if (!length(arm) || all(is.na(arm))) return(rep(TRUE, length(arm)))
+  if (is.null(armw) || !any(is.finite(armw))) armw <- rep(1, length(arm))
   ok_arm <- function(a) {
-    key <- ifelse(arm == a, cl, NA)
-    first <- !is.na(key) & !duplicated(key)
-    cumsum(!is.na(key)) >= minarm & cumsum(first) >= minarm_clusters
+    w <- ifelse(arm == a & is.finite(armw), armw, 0)
+    s_before <- stats::ave(w, cl, FUN = cumsum) - w
+    ss <- cumsum(2 * s_before * w + w^2)
+    ifelse(ss > 0, cumsum(w)^2 / ss, 0) >= miness
   }
   ok_arm(1L) & ok_arm(0L)
 }
@@ -5055,10 +5067,8 @@ forest_test <- function(
     x_names = NULL,
     minsize = 50L,
     arm = NULL,
-    minarm = 10L,
-    minarm_clusters = 5L,
-    minarm_col = NULL,
-    minarm_clusters_col = NULL,
+    arm_weight = NULL,
+    miness = 10,
     margins = NULL,
     pool = NULL,
     select = NULL,
@@ -5270,6 +5280,7 @@ forest_test <- function(
 
   if (!is.null(arm)) stopifnot(as.character(arm) %in% names(data))
   armv <- if (!is.null(arm)) as.integer(data[[as.character(arm)]]) else rep(NA_integer_, n)
+  armwv <- if (!is.null(arm_weight)) as.numeric(data[[as.character(arm_weight)]]) else rep(NA_real_, n)
 
   fe_vars_needed <- if (!is.null(fe_expr)) unique(all.vars(fe_expr)) else character(0)
   fe_vars_needed <- fe_vars_needed[fe_vars_needed %in% names(data)]
@@ -5326,16 +5337,6 @@ forest_test <- function(
   }
 
   run_one_cell_idx <- function(idx, key_dt = NULL, cell_id = NA_integer_) {
-    ## Optional per-row overrides of minarm / minarm_clusters (e.g. a larger minimum for MW cells,
-    ## whose IPW scores are unstable when an arm has few rows): the cell uses the largest value of its rows.
-    if (!is.null(minarm_col)) {
-      mv <- data[[minarm_col]][idx]; mv <- mv[is.finite(mv)]
-      if (length(mv)) minarm <- max(mv)
-    }
-    if (!is.null(minarm_clusters_col)) {
-      mv <- data[[minarm_clusters_col]][idx]; mv <- mv[is.finite(mv)]
-      if (length(mv)) minarm_clusters <- max(mv)
-    }
     s  <- samp[idx]
     pr <- sortv[idx]
     po <- sortov[idx]
@@ -5367,6 +5368,7 @@ forest_test <- function(
       wsand  = wsand,
       cl     = cl,
       arm    = armv[idx],
+      armw   = armwv[idx],
       rid    = seq_along(idx)
     )
     if (isTRUE(cell_centered)) {
@@ -5414,7 +5416,7 @@ forest_test <- function(
     }
 
     dt[, N := seq_len(.N), by = sample]
-    dt[, arm_ok := arm_ok_prefix(arm, cl, minarm, minarm_clusters), by = sample]
+    dt[, arm_ok := arm_ok_prefix(arm, cl, armw, miness), by = sample]
 
     if (isTRUE(cell_centered)) {
       ## Centered/with-intercept theta(k) and its cluster-robust SE, at
@@ -5647,14 +5649,14 @@ forest_test <- function(
 
     tau_tr <- dt[G >= minsize & arm_ok, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
 
-    dt_est <- dt[, .(sample, pred_o, cl, w, arm)]
+    dt_est <- dt[, .(sample, pred_o, cl, w, arm, armw)]
     data.table::setorder(dt_est, sample, pred_o)
     dt_est[, G_est := cumsum(!duplicated(cl)), by = sample]
-    dt_est[, arm_ok_est := arm_ok_prefix(arm, cl, minarm, minarm_clusters), by = sample]
+    dt_est[, arm_ok_est := arm_ok_prefix(arm, cl, armw, miness), by = sample]
     tau_est <- dt_est[G_est >= minsize & arm_ok_est, .(tau_est = min(pred_o, na.rm = TRUE)), by = sample]
 
     if (nrow(tau_tr) < 2L || nrow(tau_est) < 2L) {
-      ## Infeasible cell (cannot reach minsize clusters and minarm rows / minarm_clusters clusters in
+      ## Infeasible cell (cannot reach minsize clusters and effective size miness in
       ## each instrument arm in the train or est order of both samples): skipped; the caller warns.
       return(list(skipped = if (!is.null(key_dt) && ncol(key_dt) > 0L) {
         paste(paste(names(key_dt), as.character(key_dt[1, ]), sep = "="), collapse = ", ")
@@ -5800,11 +5802,11 @@ forest_test <- function(
 
   if (length(skipped_cells) > 0L) {
     if (length(skipped_cells) == n_cells) {
-      stop("minsize/minarm too large: no cell can reach minsize clusters and minarm rows (minarm_clusters clusters) in each instrument arm in the train and est order of both samples.")
+      stop("minsize/miness too large: no cell can reach minsize clusters and effective size miness in each instrument arm in the train and est order of both samples. If the instrument weights are concentrated on a few rows (propensities near 0 or 1), a larger `aipw.clip` helps.")
     }
     warning(
-      length(skipped_cells), " of ", n_cells, " cells skipped: they cannot reach minsize clusters and minarm rows ",
-      "(minarm_clusters clusters) in each instrument arm in the train or est order of both samples. Skipped: ",
+      length(skipped_cells), " of ", n_cells, " cells skipped: they cannot reach minsize clusters and effective size miness ",
+      "in each instrument arm in the train or est order of both samples. Skipped: ",
       paste(utils::head(skipped_cells, 5L), collapse = " | "),
       if (length(skipped_cells) > 5L) " | ..." else "",
       call. = FALSE

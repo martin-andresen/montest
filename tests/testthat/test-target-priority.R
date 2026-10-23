@@ -52,7 +52,24 @@ test_that("MW honours target, for binary and multivalued treatments", {
   }
 })
 
-test_that("MW cells default to minarm = minarm_clusters = 20, other conditions keep 10 and 5", {
+test_that("arm_ok_prefix: effective size of the arm weights, cluster-aware", {
+  arm <- rep(c(1L, 0L), 20); cl <- seq_along(arm)
+  ## equal weights: effective size = row count per arm
+  ok <- arm_ok_prefix(arm, cl, rep(2, 40), miness = 10)
+  expect_equal(which(ok)[1], 20L)                 # 10 rows of each arm reached at position 20
+  expect_false(any(ok[1:19]))
+  ## one giant weight in arm 0 keeps its effective size near 1
+  w <- rep(1, 40); w[2] <- 1000
+  expect_false(tail(arm_ok_prefix(arm, cl, w, miness = 10), 1))
+  expect_true(tail(arm_ok_prefix(arm, cl, w, miness = 1.02), 1))   # (19 + 1000)^2 / (19 + 1000^2) = 1.04
+  ## all rows of an arm in one cluster: effective size is 1 whatever the row count
+  cl1 <- ifelse(arm == 0L, 1L, cl)
+  expect_false(tail(arm_ok_prefix(arm, cl1, rep(1, 40), miness = 5), 1))
+  ## no arm (continuous Z): no constraint
+  expect_true(all(arm_ok_prefix(rep(NA_integer_, 5), 1:5, NULL, 10)))
+})
+
+test_that("miness replaces minarm/minarm_clusters, and aipw.clip = 'auto' scales with n", {
   set.seed(5)
   n <- 1500
   x <- rnorm(n); v <- rnorm(n)
@@ -62,11 +79,15 @@ test_that("MW cells default to minarm = minarm_clusters = 20, other conditions k
   d <- data.frame(Y = y, D = dd, Z = z, x = x)
   GRF <- list(num.trees = 100L, num.threads = 1)
   run <- function(...) suppressWarnings(montest(Y ~ x | D ~ Z, data = d, condition = "MW", progress = FALSE, pool = "none",
-                                                Zparameters = GRF, Qparameters = GRF, Cparameters = GRF, ...))$results
+                                                Zparameters = GRF, Qparameters = GRF, Cparameters = GRF, ...))
+  expect_error(run(minarm = 10L), "unused argument")
+  expect_error(run(minarm_clusters = 5L), "unused argument")
   def <- run()
-  m20 <- run(minarm = 20L, minarm_clusters = 20L)
-  m10 <- run(minarm = 10L, minarm_clusters = 5L)
-  expect_equal(def$p.raw, m20$p.raw)
-  expect_equal(def$coef, m20$coef)
-  expect_false(isTRUE(all.equal(def$coef, m10$coef)))
+  expect_true(is.finite(def$minp[["p.holm"]]))
+  ## auto clip: 0.5 / sqrt(n / 2); a numeric value overrides it
+  expect_equal(def$options$aipw.clip, 0.5 / sqrt(n / 2))
+  expect_equal(run(aipw.clip = 0.05)$options$aipw.clip, 0.05)
+  expect_equal(run(aipw.clip = 0.02)$options$aipw.clip, 0.02)
+  ## an infeasibly large threshold stops with a message about miness
+  expect_error(run(miness = 1e6), "miness")
 })

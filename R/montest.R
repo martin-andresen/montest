@@ -104,7 +104,7 @@
 #'   correct for that. Never applied to the training-side adaptive search itself, only to the
 #'   final evaluation, and never to cells that already use the \code{target="overlap" &
 #'   doubly.robust=FALSE} centered path.
-#' @param aipw.clip Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
+#' @param aipw.clip Positive scalar in \code{(0,1)} or \code{"auto"} (the default), used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when stabilizing
 #'   binary-instrument scores (see \code{stabilize.scores}).
 #'   Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
@@ -119,6 +119,10 @@
 #'   Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
 #'   additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
 #'   the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.
+#'   With \code{"auto"} the clip is \eqn{0.5/\sqrt{n/2}} for \eqn{n} complete rows, between 1e-3 and 0.2 (about 0.022 at n = 1000): an
+#'   estimated propensity closer to 0 or 1 than that is mostly estimation noise at half-sample size, and its inverse
+#'   would dominate the inverse probability weighted scores. The floor on the fitted variance nuisance \eqn{v(X)} stays at 1e-3
+#'   in that case; a numeric value sets both.
 #' @param drop_singletons Logical, default TRUE. If \code{TRUE} and fixed effects are
 #'   present, observations belonging to a fixed-effect "singleton" (an FE level with only
 #'   one observation -- possibly only after removing other singletons in a different FE
@@ -147,13 +151,14 @@
 #' @param cluster Optional character scalar naming a cluster identifier. Cluster-robust
 #'   inference is used in forest-based testing. CART testing cannot be combined with cluster.
 #' @param seed Integer random seed, default 10101, set to NULL to disable setting seed
-#' @param minarm,minarm_clusters Integers. For the local (forest/CART) tests with a binary instrument: the
-#'   minimum number of rows and of distinct clusters with the instrument equal to 1, and with it equal to 0,
-#'   required in every candidate subgroup. Subgroups without instrument variation identify nothing and
-#'   otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5, except for
-#'   \code{condition = "MW"} (forest search), whose cells use 20 and 20 unless you set them: its inverse
-#'   probability weighted scores are dominated by a few \eqn{1/e} or \eqn{1/(1-e)} weights when an arm has few rows, and the
-#'   t-test then over-rejects.
+#' @param miness Positive number, default 10. For the local (forest/CART) tests with a binary instrument: the
+#'   minimum effective sample size of the inverse probability weights (\eqn{1/e} for \eqn{Z=1}, \eqn{1/(1-e)} for
+#'   \eqn{Z=0}) in each instrument arm of every candidate subgroup, \eqn{(\sum w)^2 / \sum_c (\sum_{i\in c} w_i)^2} with
+#'   \eqn{c} the clusters. It is the number of equally weighted observations the arm is worth: it equals the row count
+#'   when the propensity is flat and is close to 1 when a few rows carry most of the weight. Subgroups without
+#'   instrument variation identify nothing and a subgroup whose weight sits on a few rows makes the t-test
+#'   unreliable (it over-rejects), so neither is considered. Replaces the former row and cluster counts
+#'   \code{minarm} and \code{minarm_clusters}.
 #' @param minsize Integer minimum effective sample size or minimum cluster count required
 #'   for subset search and testing. Default 50.
 #' @param shrink Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage
@@ -404,7 +409,7 @@
 #' @export
 
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 stabilize.scores=TRUE,aipw.clip=1e-3,drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,minarm=10L,minarm_clusters=5L,
+                 stabilize.scores=TRUE,aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
@@ -419,9 +424,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## `options` in the return value for the resolved (post-default) values
   ## instead.
   mc <- match.call()
-  ## Whether the user chose minarm / minarm_clusters: if not, MW cells get larger defaults (see below).
-  minarm_default <- missing(minarm)
-  minarm_clusters_default <- missing(minarm_clusters)
 
   time=rbind(start=proc.time())
   if (!is.null(seed)) set.seed(seed)
@@ -621,7 +623,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     )
   }
 
-  if (!is.null(aipw.clip)) {
+  aipw.clip_auto <- identical(aipw.clip, "auto")
+  if (!aipw.clip_auto && !is.null(aipw.clip)) {
     stopifnot(
       is.numeric(aipw.clip),
       length(aipw.clip) == 1L,
@@ -1096,6 +1099,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   }
 
   data <- data[complete.cases(data)]
+
+  ## Propensity clip. "auto": 0.5 / sqrt(n / 2), n = complete rows, at least 1e-3 and at most 0.2 -- an
+  ## estimated propensity closer to 0 or 1 than about that is mostly noise at half-sample size n / 2, and its
+  ## inverse would dominate the IPW scores. The floor on the fitted variance nuisance keeps its old value
+  ## (1e-3), so designs with a continuous instrument or fixed effects are unaffected by the sample size.
+  aipw.clip.v <- if (aipw.clip_auto) 1e-3 else aipw.clip
+  if (aipw.clip_auto) aipw.clip <- min(0.2, max(1e-3, 0.5 / sqrt(nrow(data) / 2)))
 
   if (!is.null(weight)) {
     bad_w <- data[[weight]] <= 0
@@ -3051,6 +3061,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
       forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
+      aipw.clip.v = aipw.clip.v,
       shrink = need_pvar,
       verbose = FALSE,
 
@@ -3084,6 +3095,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
       forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
+      aipw.clip.v = aipw.clip.v,
       shrink = need_pvar,
       verbose = FALSE,
 
@@ -3354,37 +3366,27 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ######################################## FIND OPTIMAL SUBSET TO TEST AND TEST IN OPPOSITE SAMPLE #####################
   poolmargins=pool[pool %in% c(margins,"sample")]
   selectmargins=select[select %in% c(margins,"sample")]
-  ## Binary instrument arm (1/0; NA for continuous-Z rows, which get no arm guard): forest_test()/
-  ## CART_test() only consider leaves with at least `minarm` rows and `minarm_clusters` clusters in
-  ## each arm, since a leaf without instrument variation identifies nothing.
+  ## Binary instrument arm (1/0; NA for continuous-Z rows, which get no arm guard) and each row's inverse
+  ## probability weight in its own arm (1/e for Z = 1, 1/(1-e) for Z = 0): forest_test()/CART_test() only
+  ## consider leaves in which the weights of each arm have effective sample size at least `miness`, since a
+  ## leaf without instrument variation identifies nothing and a leaf whose weight sits on a few rows makes
+  ## the IPW t-test unreliable.
   arm_arg <- NULL
+  armw_arg <- NULL
   if (local) {
     data[, .arm := data.table::fifelse(z_use_linear_score %in% TRUE, NA_integer_, as.integer(get(Z) > 0.5))]
+    ee__ <- pmin(pmax(as.numeric(data[[zhat]]), aipw.clip), 1 - aipw.clip)
+    data[, .armw := data.table::fifelse(.arm == 1L, 1 / ee__, 1 / (1 - ee__))]
     arm_arg <- ".arm"
-  }
-  ## MW scores are inverse probability weighted without an outcome nuisance, so a subgroup in which
-  ## an instrument arm has few rows is dominated by a handful of 1/e or 1/(1-e) weights and its
-  ## t-test over-rejects. Unless the user set them, MW cells require at least 20 rows and 20 clusters
-  ## in each arm (other conditions: `minarm`, `minarm_clusters`). Forest search only.
-  minarm_col_arg <- NULL
-  minarm_clusters_col_arg <- NULL
-  if (local && "MW" %in% data$condition) {
-    if (minarm_default) {
-      data[, .minarm := data.table::fifelse(condition == "MW", max(as.numeric(minarm), 20), as.numeric(minarm))]
-      minarm_col_arg <- ".minarm"
-    }
-    if (minarm_clusters_default) {
-      data[, .minarm_clusters := data.table::fifelse(condition == "MW", max(as.numeric(minarm_clusters), 20), as.numeric(minarm_clusters))]
-      minarm_clusters_col_arg <- ".minarm_clusters"
-    }
+    armw_arg <- ".armw"
   }
   ## stack = FALSE with a selection rule: no selection inside the block; it is applied
   ## jointly over all blocks afterwards (finalize_deferred_selection()).
   if (defer_selection) selectmargins <- character()
 
   if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,minarm=minarm,minarm_clusters=minarm_clusters,minarm_col=minarm_col_arg,minarm_clusters_col=minarm_clusters_col_arg,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
-  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,minarm=minarm,minarm_clusters=minarm_clusters,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
+  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
   time=rbind(time,"Find promising subset and test"=proc.time())
   if (!local) rownames(time)[nrow(time)] <- "Construct test results"

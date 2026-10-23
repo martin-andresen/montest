@@ -16,15 +16,14 @@ montest(
   inner.folds = NULL,
   crossfit = NULL,
   stabilize.scores = TRUE,
-  aipw.clip = 0.001,
+  aipw.clip = "auto",
   drop_singletons = TRUE,
   drop_novar_Z = TRUE,
   weight = NULL,
   cluster = NULL,
   seed = 10101,
   minsize = 50L,
-  minarm = 10L,
-  minarm_clusters = 5L,
+  miness = 10,
   gridtypeY = "equisized",
   gridtypeD = "equisized",
   gridtypeZ = "equisized",
@@ -136,7 +135,7 @@ cross-fitting nuisance functions and, optionally, forest predictions. Set to
   final evaluation, and never to cells that already use the \code{target="overlap" &
   doubly.robust=FALSE} centered path.}
 
-\item{aipw.clip}{Positive scalar in \code{(0,1)}, default 1e-3, used to trim estimated propensity
+\item{aipw.clip}{Positive scalar in \code{(0,1)} or \code{"auto"} (the default), used to trim estimated propensity
 scores when augmented inverse-probability weighted scores are constructed and when stabilizing
 binary-instrument scores (see \code{stabilize.scores}).
 Also used, for the continuous representation (a genuinely multivalued instrument, \code{linearZ=TRUE}, or any
@@ -150,7 +149,11 @@ it. Values merely close to the boundary (already inside the valid range) are cli
 less severe warning.
 Exception: when \code{doubly.robust=FALSE} and \code{target=="overlap"}, the propensity is used only
 additively (never as a divisor) in the score for binary instruments, and is deliberately left unclipped so
-the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.}
+the resulting estimate reproduces the classical Frisch-Waugh-Lovell / OLS coefficient exactly -- see \code{target}.
+With \code{"auto"} the clip is \eqn{0.5/\sqrt{n/2}} for \eqn{n} complete rows, between 1e-3 and 0.2 (about 0.022 at n = 1000): an
+estimated propensity closer to 0 or 1 than that is mostly estimation noise at half-sample size, and its inverse
+would dominate the inverse probability weighted scores. The floor on the fitted variance nuisance \eqn{v(X)} stays at 1e-3
+in that case; a numeric value sets both.}
 
 \item{drop_singletons}{Logical, default TRUE. If \code{TRUE} and fixed effects are
 present, observations belonging to a fixed-effect "singleton" (an FE level with only
@@ -188,13 +191,14 @@ inference is used in forest-based testing. CART testing cannot be combined with 
 \item{minsize}{Integer minimum effective sample size or minimum cluster count required
 for subset search and testing. Default 50.}
 
-\item{minarm, minarm_clusters}{Integers. For the local (forest/CART) tests with a binary instrument: the
-minimum number of rows and of distinct clusters with the instrument equal to 1, and with it equal to 0,
-required in every candidate subgroup. Subgroups without instrument variation identify nothing and
-otherwise produce degenerate, hugely significant t-statistics. Defaults 10 and 5, except for
-\code{condition = "MW"} (forest search), whose cells use 20 and 20 unless you set them: its inverse
-probability weighted scores are dominated by a few \eqn{1/e} or \eqn{1/(1-e)} weights when an arm has few rows, and the
-t-test then over-rejects.}
+\item{miness}{Positive number, default 10. For the local (forest/CART) tests with a binary instrument: the
+minimum effective sample size of the inverse probability weights (\eqn{1/e} for \eqn{Z=1}, \eqn{1/(1-e)} for
+\eqn{Z=0}) in each instrument arm of every candidate subgroup, \eqn{(\sum w)^2 / \sum_c (\sum_{i\in c} w_i)^2} with
+\eqn{c} the clusters. It is the number of equally weighted observations the arm is worth: it equals the row count
+when the propensity is flat and is close to 1 when a few rows carry most of the weight. Subgroups without
+instrument variation identify nothing and a subgroup whose weight sits on a few rows makes the t-test
+unreliable (it over-rejects), so neither is considered. Replaces the former row and cluster counts
+\code{minarm} and \code{minarm_clusters}.}
 
 \item{gridtypeY, gridtypeD, gridtypeZ}{Character strings controlling how continuous
 variables are discretized before stacking. Must be one of \code{"equisized"} or
