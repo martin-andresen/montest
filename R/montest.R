@@ -413,7 +413,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),progress=interactive(),
+                 doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
@@ -647,6 +647,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   }
 
   mw_sets <- match.arg(mw_sets)
+  stopifnot(is.numeric(mw_cutoff), length(mw_cutoff) == 1L, mw_cutoff >= 0)
   condition=match.arg(condition,c("simple","KR","MW","AHS","all"),several.ok=TRUE)
   if ("all" %in% condition) {
     condition=c("simple","KR","MW","AHS")
@@ -2746,8 +2747,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
           Dv <- data[[Dcol]]
           dv <- data[["dval"]]
           ## inflow vs outflow pseudo-outcome
-          q_in  <- as.numeric(Dv >= dv) - as.numeric(Dv == dv) * as.numeric(g > 0)
-          q_out <- as.numeric(Dv >  dv) + as.numeric(Dv == dv) * as.numeric(g < 0)
+          q_in  <- as.numeric(Dv >= dv) - as.numeric(Dv == dv) * as.numeric(g > mw_cutoff)
+          q_out <- as.numeric(Dv >  dv) + as.numeric(Dv == dv) * as.numeric(g < -mw_cutoff)
           q01 <- ifelse(data[["equation"]] == 0, q_in, q_out)
           ## MW is IPW (singly robust) throughout, whatever `doubly.robust` is:
           ## the score is the pseudo-outcome times the IPW contrast, as for the endpoints.
