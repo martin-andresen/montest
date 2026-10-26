@@ -3595,7 +3595,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
 
     if (!is.null(res$global)) {
-      res$global[,p.raw:=pnorm(t)]
+      res$global[,p.raw:=p_from_t(t)]
       if (nrow(res$global)>1) {
         for (m in c("holm","hochberg","BH","BY")) {
           res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]

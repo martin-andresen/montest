@@ -306,7 +306,7 @@ cart_choose_group_selection <- function(dt_grp, screen, alpha) {
 
   if (screen == "stepdown") {
     data.table::setorder(dtf, t)
-    p <- stats::pnorm(dtf$t)
+    p <- p_from_t(dtf$t)
 
     m_keep <- 1L
 
@@ -584,7 +584,7 @@ CART_test <- function(
       if (nrow(dtf) == 0L) return(integer())
 
       data.table::setorder(dtf, t)
-      p <- stats::pnorm(dtf$t)
+      p <- p_from_t(dtf$t)
 
       m_keep <- 1L
 
@@ -775,7 +775,7 @@ CART_test <- function(
         coef = o$coef,
         stderr = o$se,
         t = o$t,
-        p.raw = stats::pnorm(o$t)
+        p.raw = p_from_t(o$t)
       )
     }, by = "sample"]
 
@@ -915,7 +915,7 @@ CART_test <- function(
       }, by = leaf]
 
       train_leaf[, `:=`(train = TRUE, sample = train_s)]
-      train_leaf[, p.raw := stats::pnorm(t)]
+      train_leaf[, p.raw := p_from_t(t)]
 
       prom <- select_leaves_local(train_leaf[is.finite(t), .(leaf, t)])
       train_leaf <- add_key_cols(train_leaf, key_dt, margins)
@@ -1248,7 +1248,7 @@ CART_test <- function(
       coef = o$coef,
       stderr = o$se,
       t = o$t,
-      p.raw = stats::pnorm(o$t),
+      p.raw = p_from_t(o$t),
       relevant = NA_integer_
     )
 
@@ -4169,6 +4169,16 @@ rank_adj_total <- function(data, idx, fe_expr, x_vars = NULL, weight_col = NULL,
   as.integer(fe_r + x_r)
 }
 
+## One-sided p-value of a t-statistic against the null that the mean is nonnegative. A test whose
+## numerator and standard error are both exactly 0 (every score in the tested subset is zero, so the
+## data carry no evidence either way) has t = 0/0 = NaN and gets p = 1 (never a rejection), instead of
+## NaN, which the callers would drop silently. An NA t (test not run) stays NA.
+p_from_t <- function(t) {
+  p <- stats::pnorm(t)
+  p[is.nan(t)] <- 1
+  p
+}
+
 ## Running (prefix) eligibility on the instrument arms: TRUE where, among the rows up to and including
 ## this position, the effective sample size of the inverse probability weights in the arm
 ## arm == 1 AND in the arm arm == 0 is at least `miness`. `armw` is each row's weight in its own arm
@@ -4701,7 +4711,7 @@ select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen =
   if (screen == "stepdown") {
     keep_n <- 1L
     if (nrow(d) >= 2L) {
-      p <- stats::pnorm(d[[t_col]])
+      p <- p_from_t(d[[t_col]])
       for (r in 2:nrow(d)) {
         p_top <- p[seq_len(r)]
         p_holm <- stats::p.adjust(p_top, method = "holm")
@@ -5759,7 +5769,7 @@ forest_test <- function(
       stderr = res$se,
       t = res$t_stat,
       tau_cutoff = res$pred,
-      p.raw = stats::pnorm(res$t_stat)
+      p.raw = p_from_t(res$t_stat)
     )
 
     if (!is.null(key_dt) && ncol(key_dt) > 0L) {
@@ -6000,7 +6010,7 @@ forest_test <- function(
       stderr = o$se,
       t = o$t,
       tau_cutoff = NA_real_,
-      p.raw = stats::pnorm(o$t)
+      p.raw = p_from_t(o$t)
     )
 
     if (!is.null(selected_test_keys) && nrow(selected_test_keys) == 1L) {
@@ -6042,7 +6052,7 @@ forest_test <- function(
         stderr = o$se,
         t = o$t,
         tau_cutoff = NA_real_,
-        p.raw = stats::pnorm(o$t)
+        p.raw = p_from_t(o$t)
       )
     }, by = test_by]
 
@@ -6120,7 +6130,7 @@ forest_test <- function(
         stderr = o$se,
         t = o$t,
         tau_cutoff = NA_real_,
-        p.raw = stats::pnorm(o$t)
+        p.raw = p_from_t(o$t)
       )
     }, by = eval(if (length(pool_key) > 0L) pool_key else NULL)]
 
@@ -6192,7 +6202,7 @@ forest_test <- function(
             stderr = o$se,
             t = o$t,
             tau_cutoff = NA_real_,
-            p.raw = stats::pnorm(o$t)
+            p.raw = p_from_t(o$t)
           )
         }, by = pool_key]
 
@@ -6514,7 +6524,7 @@ global_means_crv1 <- function(
       stderr = o$se,
       t = o$t,
       tau_cutoff = NA_real_,
-      p.raw = stats::pnorm(o$t)
+      p.raw = p_from_t(o$t)
     )
 
   } else {
@@ -6536,7 +6546,7 @@ global_means_crv1 <- function(
         stderr = o$se,
         t = o$t,
         tau_cutoff = NA_real_,
-        p.raw = stats::pnorm(o$t)
+        p.raw = p_from_t(o$t)
       )
     }, by = by_cols]
 

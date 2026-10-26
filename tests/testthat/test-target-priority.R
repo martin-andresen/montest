@@ -91,3 +91,7 @@ test_that("miness replaces minarm/minarm_clusters, and aipw.clip = 'auto' scales
   ## an infeasibly large threshold stops with a message about miness
   expect_error(run(miness = 1e6), "miness")
 })
+
+test_that("p_from_t: a zero-variance subset (t = 0/0) gets p = 1, NA stays NA", {
+  expect_equal(p_from_t(c(-Inf, 0, NaN, NA, 2)), c(0, 0.5, 1, NA, stats::pnorm(2)))
+})
