@@ -52,7 +52,9 @@ montest(
   stack = TRUE,
   memcheck = TRUE,
   block = NULL,
+  kr_sums = NULL,
   mw_sets = c("datadriven", "endpoints"),
+  mw_cutoff = 0,
   progress = interactive(),
   cp = 0,
   maxrankcp = 10L,
@@ -364,6 +366,12 @@ row-aligned copies of each other (same Z, X, sample, cluster and weight in the s
 and the variance nuisance are fitted once, on the first block, and copied to the other blocks; otherwise
 they are fitted on the stacked data (with a message).}
 
+\item{kr_sums}{Internal, used by \code{\link{seqtest}} for \code{"FSDY"}/\code{"FSSY"}. A data frame with columns
+\code{label}, \code{w_hi} and \code{w_lo}; only for \code{condition = "KR"} with a binary treatment and no \code{block}.
+Replaces the KR sets A by one cell per row, with \code{yval = label} and pseudo-outcome
+\eqn{Q = 1\{D = d_{max}, W = w_{hi}\} - 1\{D = d_{min}, W = w_{lo}\}}, the sum of two KR cells' pseudo-outcomes
+(\code{W} is the binned outcome code; use a code not in the data for an empty cell).}
+
 \item{progress}{Logical, default \code{interactive()}. Show text progress bars for the time-consuming steps. With
 \code{stack = TRUE} there is one bar per step (titled like the entries of \code{$time}): the nuisance fits and the
 causal forests, each running over margin cells and sample halves (the Z step only with a multivalued instrument).
@@ -464,11 +472,11 @@ Consider a multivalued instrument with K values, a multivalued treatment with J 
   values use outcome sets learned on the training half (\code{mw_sets = "datadriven"}; \code{"endpoints"} drops
   interior values). \code{fml} may not include fixed effects (MW's Q statistic uses Z.hat directly as a propensity
   weight, with no AIPW/FWL orthogonalization protecting it), and \code{linearZ}/\code{linearD} are disallowed because
-  the MW moment conditions are always indicator-based, never slope-based. Unlike \code{"simple"}, \code{"KR"} and
-  \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search,
-  \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search
-  itself localizes jointly in \code{(Y, X)}. MW therefore always runs the search, also without covariates in \code{fml} (the search
-  then localizes in \code{Y} only).
+  the MW moment conditions are always indicator-based, never slope-based. \code{"KR"} localizes in the outcome through
+  margin cells (the sets A) and in \code{X} through the subgroup search, and \code{"simple"} has no outcome (it localizes
+  in \code{X} only). Unlike these, \code{"MW"} and \code{"AHS"} have no outcome cells: \code{Y} (if any) and \code{X} are both
+  features of the forest, so the search itself localizes jointly in \code{(Y, X)}. MW and AHS therefore always run the search, also
+  without covariates in \code{fml} (the search then localizes in \code{Y} only).
 }
 
 \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),

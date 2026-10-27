@@ -240,6 +240,11 @@
 #'   \code{$global}, \code{$grid}, \code{$Xmeans}, \code{$shares} are \code{NULL}. Nuisances use out-of-bag predictions
 #'   (or \code{inner.folds}); \code{crossfit} has no effect, and \code{montestplot()} is unavailable.
 #'   }
+#' @param kr_sums Internal, used by \code{\link{seqtest}} for \code{"FSDY"}/\code{"FSSY"}. A data frame with columns
+#'   \code{label}, \code{w_hi} and \code{w_lo}; only for \code{condition = "KR"} with a binary treatment and no \code{block}.
+#'   Replaces the KR sets A by one cell per row, with \code{yval = label} and pseudo-outcome
+#'   \eqn{Q = 1\{D = d_{max}, W = w_{hi}\} - 1\{D = d_{min}, W = w_{lo}\}}, the sum of two KR cells' pseudo-outcomes
+#'   (\code{W} is the binned outcome code; use a code not in the data for an empty cell).
 #' @param stack Logical, default \code{TRUE}. If \code{TRUE} the margin index (condition, dval, yval, equation) is
 #'   crossed with the data and everything is estimated on the stacked data. If \code{FALSE}, the tests are run
 #'   sequentially, one block of the margin index at a time (still stacked across \code{zmargin}), and all train and
@@ -328,11 +333,11 @@
 #'   values use outcome sets learned on the training half (\code{mw_sets = "datadriven"}; \code{"endpoints"} drops
 #'   interior values). \code{fml} may not include fixed effects (MW's Q statistic uses Z.hat directly as a propensity
 #'   weight, with no AIPW/FWL orthogonalization protecting it), and \code{linearZ}/\code{linearD} are disallowed because
-#'   the MW moment conditions are always indicator-based, never slope-based. Unlike \code{"simple"}, \code{"KR"} and
-#'   \code{"AHS"}, which localize in the outcome through margin cells and in \code{X} through the subgroup search,
-#'   \code{"MW"} has no outcome cells: \code{Y} (if any) and \code{X} are both features of the forest, so the search
-#'   itself localizes jointly in \code{(Y, X)}. MW therefore always runs the search, also without covariates in \code{fml} (the search
-#'   then localizes in \code{Y} only).
+#'   the MW moment conditions are always indicator-based, never slope-based. \code{"KR"} localizes in the outcome through
+#'   margin cells (the sets A) and in \code{X} through the subgroup search, and \code{"simple"} has no outcome (it localizes
+#'   in \code{X} only). Unlike these, \code{"MW"} and \code{"AHS"} have no outcome cells: \code{Y} (if any) and \code{X} are both
+#'   features of the forest, so the search itself localizes jointly in \code{(Y, X)}. MW and AHS therefore always run the search, also
+#'   without covariates in \code{fml} (the search then localizes in \code{Y} only).
 #' }
 #'
 #' \code{parametric} and \code{doubly.robust} are orthogonal arguments (see their own entries above),
@@ -413,7 +418,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
-                 doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
+                 doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,kr_sums=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
@@ -693,6 +698,17 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       "linearZ = FALSE.",
       call. = FALSE
     )
+  }
+
+  ## kr_sums: seqtest()'s FSDY/FSSY. Replaces the KR sets A by one summed cell per row of `kr_sums`.
+  if (!is.null(kr_sums)) {
+    if (!identical(condition, "KR") || !is.null(block)) {
+      stop("`kr_sums` is only supported for condition = \"KR\" without `block`.", call. = FALSE)
+    }
+    if (!is.data.frame(kr_sums) || !all(c("label", "w_hi", "w_lo") %in% names(kr_sums)) || nrow(kr_sums) == 0L) {
+      stop("`kr_sums` must be a data.frame with columns `label`, `w_hi` and `w_lo`.", call. = FALSE)
+    }
+    kr_sums <- data.table::as.data.table(kr_sums)
   }
 
   check_integer_gt1 <- function(x, name) {
@@ -2354,7 +2370,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     data.table::rbindlist(A_specs, use.names = TRUE, fill = TRUE)
     } ## end make_A_idx()
 
-    if (has_block) {
+    if (!is.null(kr_sums)) {
+      ## seqtest()'s FSDY/FSSY: one summed cell per row of kr_sums, Q = 1{D = max, W = w_hi} - 1{D = min, W = w_lo}.
+      ## Every row gets the constant dval = max(Dsup), so dval is not a margin; yval is the label.
+      if (length(Dsup) != 2L) stop("`kr_sums` requires a binary treatment.", call. = FALSE)
+      tmp <- unique(data.table::copy(tmp)[, dval := max(Dsup)])
+      A_idx <- data.table::data.table(dval = max(Dsup), yval = as.character(kr_sums$label),
+                                      Avals = as.list(seq_len(nrow(kr_sums))),
+                                      sum_hi = kr_sums$w_hi, sum_lo = kr_sums$w_lo)
+      tmp <- A_idx[tmp, on = "dval", allow.cartesian = TRUE]
+    } else if (has_block) {
       A_idx <- data.table::rbindlist(lapply(blk_vals, function(b) {
         db <- data[block == b]
         a <- make_A_idx(sort(unique(db[[Dbincol]])), sort(unique(db[[Ybincol]])))
@@ -2377,7 +2402,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   # becoming margins later.
   drop_nonvarying_index_cols <- function(mi,
                                          always_keep = "condition",
-                                         exclude = c("Avals")) {
+                                         exclude = c("Avals", "sum_hi", "sum_lo", if (!is.null(kr_sums)) "dval")) {
     drop_cols <- setdiff(names(mi), c(always_keep, exclude))
 
     for (cc in drop_cols) {
@@ -2400,7 +2425,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   nonredundant_margin_cols <- function(margin_index,
                                        data,
-                                       exclude = c("Avals", "rowid", "join_dummy__")) {
+                                       exclude = c("Avals", "sum_hi", "sum_lo", "rowid", "join_dummy__")) {
     cand <- intersect(names(margin_index), names(data))
     cand <- setdiff(cand, exclude)
 
@@ -2776,18 +2801,28 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     data[, dmin__ := min(get(Dcol), na.rm = TRUE), by = eval(if (has_block) "block")]
     kr_by <- c("dval", "yval", if (has_block) "block")
 
-    data[
-      condition == "KR" & dval == dmin__,
-      Q := -as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-      by = kr_by
-    ]
+    if (!is.null(kr_sums)) {
+      ## summed cells (FSDY/FSSY): sum of the Q of two KR rows
+      data[
+        condition == "KR",
+        Q := as.numeric(get(Dcol) == dval & get(Ycol) == sum_hi[1L]) -
+          as.numeric(get(Dcol) == dmin__ & get(Ycol) == sum_lo[1L]),
+        by = kr_by
+      ]
+    } else {
+      data[
+        condition == "KR" & dval == dmin__,
+        Q := -as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
+        by = kr_by
+      ]
 
-    data[
-      condition == "KR" & dval > dmin__,
-      Q := as.numeric(get(Dcol) >= dval) -
-        as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
-      by = kr_by
-    ]
+      data[
+        condition == "KR" & dval > dmin__,
+        Q := as.numeric(get(Dcol) >= dval) -
+          as.numeric(get(Ycol) %in% Avals[[1L]] & get(Dcol) == dval),
+        by = kr_by
+      ]
+    }
     data[, dmin__ := NULL]
   }
 

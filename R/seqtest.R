@@ -34,6 +34,14 @@
 #'     against D1 among compliers (e.g. a programme that is rarely repeated), where the complier slack is in the
 #'     discordant cells. Together with \code{"FSD"}, the conditions imply \eqn{|\Delta E[D2]| \le \Delta E[D1]}.
 #'     Rejected unless D1 and D2 are both binary.}
+#'   \item{\code{"FSDY"}}{\code{"FSD"} localized in pre-specified bins of Y. With D1 as the treatment and the joint (D2, binned Y)
+#'     as the outcome, as in \code{"KRDY"}, each bin b gives the summed discordant cell
+#'     \eqn{1\{D1=1,D2=0,Y\in b\} - 1\{D1=0,D2=1,Y\in b\}}, i.e. the first stage of \eqn{(D1-D2)1\{Y\in b\}} is nonnegative. The bins
+#'     are the \code{yval} margin, so \code{pool = "yval"} and \code{select = "yval"} pool or select across bins (pooling all bins gives
+#'     \code{"FSD"}). Y is binned with \code{Ysubsets}/\code{gridtypeY}; \code{$Wlookup} decodes the (D2, Y-bin) codes. Requires Y;
+#'     rejected unless D1 and D2 are both binary. Implemented by \code{montest()}'s \code{kr_sums} argument.}
+#'   \item{\code{"FSSY"}}{\code{"FSS"} localized in bins of Y, as \code{"FSDY"} but with the summed concordant cells
+#'     \eqn{1\{D1=1,D2=1,Y\in b\} - 1\{D1=0,D2=0,Y\in b\}}, i.e. the first stage of \eqn{(D1+D2-1)1\{Y\in b\}} is nonnegative.}
 #'   \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
 #'     i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
 #'     binary and \code{fml} may not contain fixed effects. D1 may be multivalued and ordered: the endpoint
@@ -64,9 +72,9 @@
 #'   \code{"KRDY"} is requested, and may contain several variables joined by \code{+}.
 #' @param data A \code{data.frame} or \code{data.table}.
 #' @param condition Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"FSS"},
-#'   \code{"MWD"}, \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+#'   \code{"FSDY"}, \code{"FSSY"}, \code{"MWD"}, \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 #'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
-#'   \code{"FSS"} and the MW conditions are never run by default.
+#'   \code{"FSS"}, \code{"FSDY"}, \code{"FSSY"} and the MW conditions are never run by default.
 #' @param ... Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
 #'   the margins sequentially).
 #'   For \code{"KRD"} and \code{"KRDY"}, seqtest first bins both treatments (D1 and D2) with \code{Dsubsets}
@@ -114,7 +122,7 @@ seqtest <- function(fml, data, condition = NULL, ...) {
   fsd_ok <- two_valued(data[[D1]]) && two_valued(data[[D2]])
 
   ################ conditions ################
-  allowed <- c("KRD", "KRDY", "KRDY2", "FSD", "FSS", "MWD", "MWDY", "MWDY2")
+  allowed <- c("KRD", "KRDY", "KRDY2", "FSD", "FSS", "FSDY", "FSSY", "MWD", "MWDY", "MWDY2")
   if (is.null(condition)) {
     condition <- c("KRD", if (!is.null(Y)) "KRDY", if (fsd_ok) "FSD")
   } else {
@@ -136,12 +144,12 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       }
     }
   }
-  for (cn in intersect(c("KRDY", "KRDY2", "MWDY", "MWDY2"), condition)) {
+  for (cn in intersect(c("KRDY", "KRDY2", "FSDY", "FSSY", "MWDY", "MWDY2"), condition)) {
     if (is.null(Y)) {
       stop("Condition ", cn, " requires an outcome Y on the left hand side of `fml`.", call. = FALSE)
     }
   }
-  for (cn in intersect(c("FSD", "FSS"), condition)) {
+  for (cn in intersect(c("FSD", "FSS", "FSDY", "FSSY"), condition)) {
     if (!fsd_ok) {
       stop("Condition ", cn, " requires both D1 (", D1, ") and D2 (", D2, ") to be binary.", call. = FALSE)
     }
@@ -260,6 +268,44 @@ seqtest <- function(fml, data, condition = NULL, ...) {
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = st, condition = "MW", block = st_blk,
                                               Dsubsets = max(4L, data.table::uniqueN(data[[D1]]),
                                                              data.table::uniqueN(data[[D2]]))), args))
+    } else if (cond %in% c("FSDY", "FSSY")) {
+      ## FSDY/FSSY: FSD/FSS within pre-specified Y-bins b. KR with treatment D1 and outcome W = (D2, binned Y), but
+      ## with one summed cell per bin (montest's `kr_sums`):
+      ##   FSDY: 1{D1=1, D2=0, Y in b} - 1{D1=0, D2=1, Y in b}  (= (d1 - d2) 1{Y in b}, the discordant cells)
+      ##   FSSY: 1{D1=1, D2=1, Y in b} - 1{D1=0, D2=0, Y in b}  (= (d1 + d2 - 1) 1{Y in b}, the concordant cells)
+      ## so that pool/select = "yval" work across bins; pooling all bins gives FSD/FSS.
+      st_W <- "seq_W__"
+      dat <- data.table::copy(data)
+      recode01 <- function(x) as.integer(x == max(x, na.rm = TRUE))
+      data.table::set(dat, j = D1, value = recode01(dat[[D1]]))
+      data.table::set(dat, j = D2, value = recode01(dat[[D2]]))
+      wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
+      ybins <- paste0(Y, ".seqbin__")
+      for (k in seq_along(Y)) {
+        dat <- binarize_var(dat, Y[k], ngroups = if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets,
+                            gridtype = if (is.null(dots$gridtypeY)) "equisized" else dots$gridtypeY,
+                            wvar = wvar, newvar = ybins[k])
+      }
+      ylab <- do.call(paste, c(lapply(seq_along(Y), function(k) paste0(Y[k], "=", dat[[ybins[k]]])), sep = ","))
+      lab <- paste0("(", D2, "=", dat[[D2]], ",", ylab, ")")
+      lab_levels <- unique(lab)
+      data.table::set(dat, j = st_W, value = match(lab, lab_levels) - 1L)
+      wlookup <- data.table::data.table(code = seq_along(lab_levels) - 1L, label = lab_levels)
+      ## code of the cell (D2 = d, bin b); -1 (matches nothing) if the cell is empty
+      cell_code <- function(d, b) {
+        m <- match(paste0("(", D2, "=", d, ",", b, ")"), lab_levels)
+        ifelse(is.na(m), -1L, m - 1L)
+      }
+      bins <- sort(unique(ylab))
+      d_hi <- if (cond == "FSDY") 0L else 1L
+      sums <- data.table::data.table(label = paste0("(", bins, ")"),
+                                     w_hi = cell_code(d_hi, bins), w_lo = cell_code(1L - d_hi, bins))
+      args <- dots
+      args$Ysubsets <- NULL
+      f <- make_fml(st_W, as.name(D1))
+      fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat, condition = "KR", kr_sums = sums,
+                                              Ysubsets = max(2L, nrow(wlookup))), args))
+      fits[[cond]]$Wlookup <- wlookup
     } else {
       ## FSD: recode both to {0,1} (order preserving). D1 - D2 takes values in
       ## {-1,0,1} (D2 need not be nested in D1) and is scored linearly, so the

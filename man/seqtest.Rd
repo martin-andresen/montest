@@ -13,9 +13,9 @@ seqtest(fml, data, condition = NULL, ...)
 \item{data}{A \code{data.frame} or \code{data.table}.}
 
 \item{condition}{Character vector, any of \code{"KRD"}, \code{"KRDY"}, \code{"KRDY2"}, \code{"FSD"}, \code{"FSS"},
-\code{"MWD"}, \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
+\code{"FSDY"}, \code{"FSSY"}, \code{"MWD"}, \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
-\code{"FSS"} and the MW conditions are never run by default.}
+\code{"FSS"}, \code{"FSDY"}, \code{"FSSY"} and the MW conditions are never run by default.}
 
 \item{...}{Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
 the margins sequentially).
@@ -67,6 +67,14 @@ all other arguments straight through. The conditions are
     against D1 among compliers (e.g. a programme that is rarely repeated), where the complier slack is in the
     discordant cells. Together with \code{"FSD"}, the conditions imply \eqn{|\Delta E[D2]| \le \Delta E[D1]}.
     Rejected unless D1 and D2 are both binary.}
+  \item{\code{"FSDY"}}{\code{"FSD"} localized in pre-specified bins of Y. With D1 as the treatment and the joint (D2, binned Y)
+    as the outcome, as in \code{"KRDY"}, each bin b gives the summed discordant cell
+    \eqn{1\{D1=1,D2=0,Y\in b\} - 1\{D1=0,D2=1,Y\in b\}}, i.e. the first stage of \eqn{(D1-D2)1\{Y\in b\}} is nonnegative. The bins
+    are the \code{yval} margin, so \code{pool = "yval"} and \code{select = "yval"} pool or select across bins (pooling all bins gives
+    \code{"FSD"}). Y is binned with \code{Ysubsets}/\code{gridtypeY}; \code{$Wlookup} decodes the (D2, Y-bin) codes. Requires Y;
+    rejected unless D1 and D2 are both binary. Implemented by \code{montest()}'s \code{kr_sums} argument.}
+  \item{\code{"FSSY"}}{\code{"FSS"} localized in bins of Y, as \code{"FSDY"} but with the summed concordant cells
+    \eqn{1\{D1=1,D2=1,Y\in b\} - 1\{D1=0,D2=0,Y\in b\}}, i.e. the first stage of \eqn{(D1+D2-1)1\{Y\in b\}} is nonnegative.}
   \item{\code{"MWD"}}{The Mourifie-Wan conditions with D1 as the treatment and D2 as the outcome,
     i.e. \code{montest(D2 ~ X | D1 ~ Z, condition = "MW")}. As for \code{montest}'s \code{"MW"}, Z must be
     binary and \code{fml} may not contain fixed effects. D1 may be multivalued and ordered: the endpoint
