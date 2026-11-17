@@ -15,7 +15,7 @@ montest(
   condition = NULL,
   inner.folds = NULL,
   crossfit = NULL,
-  stabilize.scores = TRUE,
+  stabilize.scores = "hajek",
   aipw.clip = "auto",
   drop_singletons = TRUE,
   drop_novar_Z = TRUE,
@@ -105,7 +105,17 @@ cross-fitting nuisance functions and, optionally, forest predictions. Set to
 
 \item{crossfit}{Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.}
 
-\item{stabilize.scores}{Logical, default TRUE; corrects finite-sample/cross-fitting
+\item{stabilize.scores}{\code{"hajek"} (default), \code{TRUE} (same as \code{"shift"}), or \code{FALSE}
+  (\code{"none"}). \code{"hajek"} replaces the additive shift described below by Hajek (self-normalized)
+  instrument weights: for a binary instrument the arm weights \eqn{Z/e} and \eqn{(1-Z)/(1-e)} are each
+  divided by their own (weighted) sample mean within every sample/margin cell, so each arm's weights
+  average exactly one; for a continuous instrument (or a binary one estimated with fixed effects) the
+  weight \eqn{(Z-e)/v} is divided by the cell mean of \eqn{(Z-e)^2/v}. Only the weight is normalized, the
+  outcome residual keeps the original nuisances. On the test side the normalizers are re-estimated within
+  the tested cell and the standard error uses the linearized influence function, so it accounts for them
+  (degrees of freedom reduced by the number of estimated normalizers). Also applied to the MW inverse
+  probability contrast. Not applied to \code{doubly.robust=FALSE} with \code{target="overlap"}.
+  The \code{TRUE}/\code{"shift"} option (the default before Hajek was added): corrects finite-sample/cross-fitting
   bias in the estimated instrument nuisance \code{Z.hat} by an additive mean-shift --
   \code{Z.hat <- Z.hat + mean(Z - Z.hat)} within each sample/margin group, forcing the
   group-average residual to exactly zero -- applied identically regardless of whether
@@ -246,13 +256,13 @@ required within each sample half and margin cell considered for residual variati
 \item{pool}{Character vector controlling which dimensions are pooled when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
-(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select}. If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
+\code{"all"}, and \code{"none"}. The default is \code{c("zmargin", "dval", "yval", "equation")}
+(margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.}
 
 \item{select}{Character vector controlling which dimensions are selected over when finding testing subsets
 testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 \code{"yval"}, \code{"condition"}, \code{"equation"},
-\code{"block"} (seqtest), \code{"all"} (every margin except \code{"sample"}), and \code{"none"}. \code{"sample"} cannot be selected over (selecting a sample direction uses both halves' outcomes). The default is no selection: \code{condition} and \code{block} appear in neither \code{pool} nor \code{select}, so each condition and block is tested on its own and the tests are corrected as one family (Holm), which keeps the sample halves pooled. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
+\code{"block"} (seqtest), \code{"all"} and \code{"none"}. The default is no selection: \code{condition} and \code{block} appear in neither \code{pool} nor \code{select}, so each condition and block is tested on its own and the tests are corrected as one family (Holm). A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.}
 
 \item{shrink}{Shrink predicted treatment effects using empirical bayes before sorting. Default 0: No shrinkage. 1: Full shrinkage}
 
@@ -340,8 +350,8 @@ sequentially, one block of the margin index at a time (still stacked across \cod
 test estimates are appended. Afterwards the selection rule given by \code{select} and \code{screen} is applied
 jointly over all blocks on the training side, and test-sample rows that were not selected are removed, so that
 only pre-selected estimates are reported. This uses much less memory with many margins. With
-\code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} and \code{"sample"} (the default, and
-\code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
+\code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} (the default, and
+\code{"all"}, resolve to this), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
 \code{testtype = "CART"} still requires \code{pool = "none"}. Works when there is no subgroup search. Results are not numerically identical to \code{stack = TRUE}
 because the random number stream differs.}
 
@@ -380,7 +390,7 @@ With \code{stack = FALSE} a single bar runs over the margin blocks, covering all
 \item{cp, maxrankcp, alpha, prune}{Tuning parameters for the CART-based search
 routine. See Details.}
 
-\item{screen}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to \code{"power"} (\code{"stepdown"} with \code{testtype = "CART"} or \code{stack = FALSE}, where \code{"power"} is not available), described below. \code{"stepdown"} is the Holm stepdown screen on the training t-statistics. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups (including the other sample direction when sample is not pooled); the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.}
+\item{screen}{Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to \code{"power"} (\code{"stepdown"} with \code{testtype = "CART"} or \code{stack = FALSE}, where \code{"power"} is not available), described below. \code{"stepdown"} is the Holm stepdown screen on the training t-statistics. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups; the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.}
 
 \item{parametric}{A boolean indicating whether nuisances should be estimated using the parametric functional form specified or using semiparametric methods (the default). In the latter case,
 all fixed effects are residualized as specified in the FE part of the formula, while the functional form in the main part of the formula is ignored and determined by the corresponding regression forests for the nuisance parameters.

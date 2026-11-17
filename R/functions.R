@@ -500,9 +500,10 @@ CART_test <- function(
   ## fitted/closed-form conditional variance, i.e. `scores_v`).
   tau_col <- if (is.null(tau)) NULL else as.character(tau)
   v_col <- if (is.null(v)) NULL else as.character(v)
-  can_recenter <- isTRUE(recenter_propensity) &&
+  can_recenter <- rp_active(recenter_propensity) &&
     !is.null(resid_treat_col) && !is.null(resid_outcome_col) &&
     !is.null(tau_col) && !is.null(v_col)
+  rp_mode <- recenter_propensity
   if (can_recenter) {
     stopifnot(
       tau_col %in% names(data),
@@ -758,7 +759,7 @@ CART_test <- function(
       } else if (isTRUE(can_recenter) && all(rp_not_centered, na.rm = FALSE)) {
         o <- crv1_mean(
           score, w, cl, rank_adj = rank_adj, w_sandwich = if (!is.null(sandwich_col)) w_sandwich else NULL,
-          recenter_propensity = TRUE, recenter_binary = recenter_binary,
+          recenter_propensity = rp_mode, recenter_binary = recenter_binary,
           resid_treat = rp_resid_treat, resid_outcome = rp_resid_outcome,
           tau = rp_tau, v = rp_v
         )
@@ -1223,7 +1224,7 @@ CART_test <- function(
       if (isTRUE(can_recenter)) {
         o <- crv1_mean(
           y, w, cl, rank_adj = rank_adj, w_sandwich = w_sandwich,
-          recenter_propensity = TRUE, recenter_binary = recenter_binary,
+          recenter_propensity = rp_mode, recenter_binary = recenter_binary,
           resid_treat = as.numeric(data[[resid_treat_col]])[idx_keep_all],
           resid_outcome = as.numeric(data[[resid_outcome_col]])[idx_keep_all],
           tau = as.numeric(data[[tau_col]])[idx_keep_all],
@@ -2906,6 +2907,9 @@ validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
 ##     since e(X) must stay a valid probability -- v = e(1-e) is then
 ##     recomputed from this corrected e downstream in make_scores_vec(), so
 ##     it automatically reflects the correction with no separate step.
+##     (See hajek_score() / `stabilize.scores = "hajek"` for the valid Hajek
+##     alternative, which normalizes the score's own weight h = (W-e)/v and
+##     keeps the matching aggregation.)
 ##     (A previous version of this function instead left e(X) itself
 ##     unshifted and multiplicatively rescaled v = e(1-e) by a per-arm
 ##     Hajek/self-normalized-IPW constant. That conflated two different
@@ -2927,6 +2931,68 @@ validate_and_clip <- function(x, floor = NULL, ceiling = NULL,
 ##     Independent of `stabilize.scores`/`has_FE`, these rows still get a
 ##     (non-clipping) warning whenever Z.hat strays outside (0,1) -- direct
 ##     evidence of nuisance misspecification even though it's left alone.
+## ---------------------------------------------------------------------
+## Hajek (self-normalized) instrument weights -- the alternative to the
+## additive mean-shift of Z.hat (`stabilize.scores = "hajek"`).
+##
+## The AIPW/FWL score is  score_i = tau_i + h_i * U_i,  U_i = Y_i-m_i-tau_i*V_i,
+## V_i = Z_i-e_i, with instrument weight h_i = V_i/v_i. For binary Z with
+## v = e(1-e), h_i = Z/e - (1-Z)/(1-e): an inverse-probability weight per arm.
+## Estimated e makes the realized arm weights drift away from their population
+## mean of 1. The Hajek fix normalizes the weights themselves, within a
+## group g (the sample x margin cell the nuisances were fit on):
+##   binary:     h^H = Z/(e*a1) - (1-Z)/((1-e)*a0),  a1 = mean_g(Z/e), a0 = mean_g((1-Z)/(1-e))
+##               (each arm's weights average exactly 1; two estimated moments)
+##   continuous: h^H = h / s,  s = mean_g(h*V)  (one estimated moment, the FWL
+##               denominator; equals 1 in population)
+## Only the weight is rescaled; U keeps the original nuisances. (An earlier
+## version rescaled only v, which is invalid: it moves the variance of the
+## score without moving its mean.) Arm and e are recovered from V and v alone
+## for the binary case (V > 0 <=> Z = 1, h = 1/e or -1/(1-e)), so test-side
+## callers need no extra columns.
+##
+## `infl = TRUE` additionally replaces the score by its linearized influence
+## function, psi_i = score_i - B1*(g1_i-1) + B0*(g0_i-1) (binary) or
+## score_i - B*(g_i-1) (continuous), with B = weighted mean of g*U. Its
+## weighted mean equals that of `score` exactly (the g's average to 1), but a
+## cluster-robust SE of psi accounts for the estimated normalizers.
+## Returns NULL if a normalizer is not strictly positive/finite (caller falls
+## back to the unnormalized score); otherwise list(score, h, npar), where `npar`
+## is the number of estimated moments (for the df correction).
+rp_active <- function(x) isTRUE(x) || identical(x, "hajek")
+
+hajek_score <- function(tau, V, U, v, wt = NULL, binary = TRUE, infl = FALSE) {
+  n <- length(V)
+  if (is.null(wt)) wt <- rep(1, n)
+  h0 <- V / v
+  ok <- is.finite(h0) & is.finite(U) & is.finite(tau) & is.finite(wt) & wt >= 0
+  sw <- sum(wt[ok])
+  if (!any(ok) || !is.finite(sw) || sw <= 0) return(NULL)
+  wm <- function(x) sum(wt[ok] * x[ok]) / sw
+  if (binary) {
+    arm1 <- V > 0
+    r1 <- ifelse(arm1, h0, 0)
+    r0 <- ifelse(!arm1, -h0, 0)
+    a1 <- wm(r1); a0 <- wm(r0)
+    if (!is.finite(a1) || !is.finite(a0) || a1 <= 0 || a0 <= 0) return(NULL)
+    g1 <- r1 / a1; g0 <- r0 / a0
+    h <- g1 - g0
+    score <- tau + h * U
+    if (infl) score <- score - wm(g1 * U) * (g1 - 1) + wm(g0 * U) * (g0 - 1)
+    npar <- 2
+  } else {
+    s <- wm(h0 * V)
+    if (!is.finite(s) || s <= 0) return(NULL)
+    h <- h0 / s
+    g <- h0 * V / s
+    score <- tau + h * U
+    if (infl) score <- score - wm(h * U) * (g - 1)
+    npar <- 1
+  }
+  score[!ok] <- NA_real_
+  list(score = score, h = h, npar = npar)
+}
+
 stabilize_zhat <- function(data,
                             Z,
                             margins = NULL,
@@ -3076,7 +3142,8 @@ make_scores_vec <- function(Y,
                             z_is_linear = FALSE,
                             weight = NULL,
                             clip = 1e-3,
-                            clip_v = clip) {
+                            clip_v = clip,
+                            hajek = FALSE) {
   n <- length(Y)
 
   if (length(z_is_linear) == 1L) {
@@ -3191,6 +3258,30 @@ make_scores_vec <- function(Y,
 
   score <- t + (w_use - e) / v * (y - m - t * (w_use - e))
 
+  ## Hajek normalization of the instrument weight (see hajek_score()), within
+  ## this call's rows (one sample x margin cell in fit_models()). Binary rows
+  ## on the closed-form v = e(1-e) get per-arm normalization, continuous rows
+  ## the scalar one; rows using the empirical (Z-e)^2 as v (target="overlap",
+  ## doubly.robust=FALSE) keep the exact classical FWL/OLS score.
+  if (isTRUE(hajek)) {
+    ro_all <- y - m - t * (w_use - e)
+    haj_sets <- list()
+    if (length(idx_binary)) {
+      ii <- idx_binary
+      if (!has_ols_v) haj_sets <- c(haj_sets, list(list(ii = ii, binary = TRUE)))
+    }
+    if (length(idx_linear)) haj_sets <- c(haj_sets, list(list(ii = idx_linear, binary = FALSE)))
+    for (hs_set in haj_sets) {
+      ii <- hs_set$ii
+      hs <- hajek_score(t[ii], w_use[ii] - e[ii], ro_all[ii], v[ii], wt[ii], binary = hs_set$binary)
+      if (is.null(hs)) {
+        warning("Hajek normalization skipped for a group (non-positive or non-finite normalizer); using the unnormalized score.", call. = FALSE)
+      } else {
+        score[ii] <- hs$score
+      }
+    }
+  }
+
   ## Raw residualized regressor/outcome (V_i, U_i), exposed so a caller can
   ## re-fit a with-intercept (rather than through-origin) version of the
   ## through-origin SR/overlap score against whatever subgroup it ends up
@@ -3219,6 +3310,8 @@ fit_models <- function(DT,
                        forest_opts = NULL,
                        aipw.clip = 1e-3,
                        aipw.clip.v = aipw.clip,
+                       hajek = FALSE,
+                       hajek_pool = FALSE,
                        shrink = FALSE,
                        verbose = FALSE,
                        doubly.robust = TRUE,
@@ -3612,44 +3705,50 @@ fit_models <- function(DT,
       v2_o <- res2_o$var
     }
 
-    if (do_scores && length(idx1)) {
-      res_sc1 <- make_scores_vec(
-        Y = y_all[idx1],
-        Z = w_all[idx1],
-        Y.hat = yhat_all[idx1],
-        Z.hat = what_all[idx1],
-        Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx1],
-        tau = if (fit_forest) p1 else NULL,
+    ## Scores for one set of rows. `tau_i` is the matching CATE vector (or NULL).
+    score_rows <- function(ix, tau_i, hajek_i) {
+      make_scores_vec(
+        Y = y_all[ix],
+        Z = w_all[ix],
+        Y.hat = yhat_all[ix],
+        Z.hat = what_all[ix],
+        Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[ix],
+        tau = tau_i,
         doubly.robust = doubly.robust,
-        z_is_linear = z_is_linear_all[idx1],
-        weight = if (is.null(wgt_all)) NULL else wgt_all[idx1],
+        z_is_linear = z_is_linear_all[ix],
+        weight = if (is.null(wgt_all)) NULL else wgt_all[ix],
         clip = aipw.clip,
-        clip_v = aipw.clip.v
+        clip_v = aipw.clip.v,
+        hajek = hajek_i
       )
-      sc1 <- res_sc1$score
-      scv1 <- res_sc1$v
-      rt1 <- res_sc1$resid_treat
-      ro1 <- res_sc1$resid_outcome
     }
 
-    if (do_scores && length(idx2)) {
-      res_sc2 <- make_scores_vec(
-        Y = y_all[idx2],
-        Z = w_all[idx2],
-        Y.hat = yhat_all[idx2],
-        Z.hat = what_all[idx2],
-        Z.var.hat = if (is.null(wvarhat_all)) NULL else wvarhat_all[idx2],
-        tau = if (fit_forest) p2 else NULL,
-        doubly.robust = doubly.robust,
-        z_is_linear = z_is_linear_all[idx2],
-        weight = if (is.null(wgt_all)) NULL else wgt_all[idx2],
-        clip = aipw.clip,
-        clip_v = aipw.clip.v
-      )
-      sc2 <- res_sc2$score
-      scv2 <- res_sc2$v
-      rt2 <- res_sc2$resid_treat
-      ro2 <- res_sc2$resid_outcome
+    if (do_scores && isTRUE(hajek) && isTRUE(hajek_pool) && length(idx1) && length(idx2)) {
+      ## Hajek normalizers pooled across the two sample halves of this margin
+      ## cell (parametric = TRUE: nuisances are a pre-specified in-sample fit
+      ## pooled over halves, matching stabilize_zhat()'s pooled shift).
+      n1_ <- length(idx1)
+      res_b <- score_rows(c(idx1, idx2), if (fit_forest) c(p1, p2) else NULL, TRUE)
+      take <- function(k) lapply(res_b, function(v_) v_[k])
+      res_sc1 <- take(seq_len(n1_))
+      res_sc2 <- take(n1_ + seq_along(idx2))
+      sc1 <- res_sc1$score; scv1 <- res_sc1$v; rt1 <- res_sc1$resid_treat; ro1 <- res_sc1$resid_outcome
+      sc2 <- res_sc2$score; scv2 <- res_sc2$v; rt2 <- res_sc2$resid_treat; ro2 <- res_sc2$resid_outcome
+    } else {
+      if (do_scores && length(idx1)) {
+        res_sc1 <- score_rows(idx1, if (fit_forest) p1 else NULL, hajek)
+        sc1 <- res_sc1$score
+        scv1 <- res_sc1$v
+        rt1 <- res_sc1$resid_treat
+        ro1 <- res_sc1$resid_outcome
+      }
+      if (do_scores && length(idx2)) {
+        res_sc2 <- score_rows(idx2, if (fit_forest) p2 else NULL, hajek)
+        sc2 <- res_sc2$score
+        scv2 <- res_sc2$v
+        rt2 <- res_sc2$resid_treat
+        ro2 <- res_sc2$resid_outcome
+      }
     }
 
     if (length(idx1)) {
@@ -4216,14 +4315,14 @@ crv1_mean <- function(score,
   stopifnot(
     "center must be a single non-missing logical" =
       is.logical(center) && length(center) == 1L && !is.na(center),
-    "recenter_propensity must be a single non-missing logical" =
-      is.logical(recenter_propensity) && length(recenter_propensity) == 1L &&
-      !is.na(recenter_propensity),
+    "recenter_propensity must be a single non-missing logical or \"hajek\"" =
+      length(recenter_propensity) == 1L && !is.na(recenter_propensity) &&
+      (is.logical(recenter_propensity) || identical(recenter_propensity, "hajek")),
     "recenter_binary must be a single non-missing logical" =
       is.logical(recenter_binary) && length(recenter_binary) == 1L &&
       !is.na(recenter_binary),
     "`center` and `recenter_propensity` cannot both be TRUE -- `center` already re-centers both the treatment and outcome residual (and drops the tau baseline entirely); `recenter_propensity` is the narrower AIPW/FWL-preserving fix for when a plug-in tau baseline is still wanted" =
-      !(isTRUE(center) && isTRUE(recenter_propensity))
+      !(isTRUE(center) && rp_active(recenter_propensity))
   )
 
   ## `recenter_propensity`: for the uncentered (through-origin) score path
@@ -4270,7 +4369,7 @@ crv1_mean <- function(score,
   ## estimation) or dropping the plug-in baseline entirely for AIPW too
   ## (i.e. reusing `center=TRUE`'s construction, at the cost of losing
   ## AIPW's outcome-model robustness at exactly this step).
-  if (isTRUE(recenter_propensity)) {
+  if (rp_active(recenter_propensity)) {
     stopifnot(
       "`resid_treat`, `resid_outcome`, `tau`, and `v` are all required when `recenter_propensity = TRUE`" =
         !is.null(resid_treat) && !is.null(resid_outcome) && !is.null(tau) && !is.null(v)
@@ -4300,15 +4399,41 @@ crv1_mean <- function(score,
     ## recentered. (Mixed calls such as condition = "all" pass both kinds of rows.)
     no_fwl_rp <- !is.finite(V_rp) & !is.finite(U_rp) & !is.finite(v_rp)
 
-    Vbar_rp <- if (any(ok_rp)) {
-      stats::weighted.mean(V_rp[ok_rp], w = w_rp[ok_rp])
-    } else {
-      0
+    hajek_done <- FALSE
+    if (identical(recenter_propensity, "hajek")) {
+      ## Hajek alternative (see hajek_score()): renormalize the instrument
+      ## weights within exactly the rows of this call, with the influence-
+      ## function adjustment so the cluster-robust SE reflects the estimated
+      ## normalizers (2 moments for binary Z, 1 for continuous).
+      use_h <- !no_fwl_rp & ok_rp
+      hs <- if (any(use_h)) {
+        hajek_score(tau_rp[use_h], V_rp[use_h], U_rp[use_h], v_rp[use_h], w_rp[use_h],
+                    binary = isTRUE(recenter_binary), infl = TRUE)
+      } else NULL
+      if (!is.null(hs)) {
+        score_h <- as.numeric(score)
+        score_h[use_h] <- hs$score
+        score <- score_h
+        rank_adj <- rank_adj + hs$npar
+        hajek_done <- TRUE
+      } else if (any(use_h)) {
+        warning("Hajek normalization skipped for a cell (non-positive or non-finite normalizer); falling back to the additive shift.", call. = FALSE)
+      } else {
+        hajek_done <- TRUE
+      }
     }
 
-    score_rp <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
-    score <- ifelse(no_fwl_rp, as.numeric(score), score_rp)
-    if (!all(no_fwl_rp)) rank_adj <- rank_adj + 1
+    if (!hajek_done) {
+      Vbar_rp <- if (any(ok_rp)) {
+        stats::weighted.mean(V_rp[ok_rp], w = w_rp[ok_rp])
+      } else {
+        0
+      }
+
+      score_rp <- tau_rp + (V_rp - Vbar_rp) / v_rp * (U_rp + tau_rp * Vbar_rp)
+      score <- ifelse(no_fwl_rp, as.numeric(score), score_rp)
+      if (!all(no_fwl_rp)) rank_adj <- rank_adj + 1
+    }
   }
 
   if (isTRUE(center)) {
@@ -5134,8 +5259,9 @@ forest_test <- function(
   ## prediction, used as tau) plus one new column, `v` (the per-row
   ## fitted/closed-form conditional variance, i.e. `scores_v`).
   v_col <- if (is.null(v)) NULL else as.character(v)
-  can_recenter <- isTRUE(recenter_propensity) &&
+  can_recenter <- rp_active(recenter_propensity) &&
     !is.null(resid_treat_col) && !is.null(resid_outcome_col) && !is.null(v_col)
+  rp_mode <- recenter_propensity
 
   stopifnot(length(sample_col) == 1L, sample_col %in% names(data))
   stopifnot(length(pred_col)   == 1L, pred_col   %in% names(data))
@@ -5935,7 +6061,11 @@ forest_test <- function(
     sample_weight = if (use_centering) sample_weight_v else NA_real_,
     center = if (use_centering) center_v else FALSE,
     tau = if (can_recenter) predv else NA_real_,
-    v = if (can_recenter) v_v else NA_real_
+    ## `v_v` is also needed by the centered test when center_inv_v is set (KR/MW with
+    ## doubly.robust = FALSE, target = "all"), independently of can_recenter -- it is NULL
+    ## otherwise. (Previously gated on can_recenter alone, so stabilize.scores = FALSE gave
+    ## v = NA there and crv1_mean() stopped with "`v` must be finite and strictly positive".)
+    v = if (!is.null(v_v)) v_v else NA_real_
   )
 
   if (length(test_by) > 0L) {
@@ -5966,7 +6096,7 @@ forest_test <- function(
       crv1_mean(
         score, w, cl, rank_adj = rank_adj,
         w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL,
-        recenter_propensity = TRUE, recenter_binary = recenter_binary,
+        recenter_propensity = rp_mode, recenter_binary = recenter_binary,
         resid_treat = resid_treat, resid_outcome = resid_outcome, tau = tau, v = v
       )
     } else {
@@ -6256,6 +6386,7 @@ forest_test <- function(
     use_centering = use_centering,
     can_recenter = can_recenter,
     recenter_binary = recenter_binary,
+    rp_mode = rp_mode,
     sample_weight_v = sample_weight_v,
     center_inv_v = center_inv_v
   )
@@ -6414,6 +6545,7 @@ global_means_crv1 <- function(
     use_centering = FALSE,
     can_recenter = FALSE,
     recenter_binary = FALSE,
+    rp_mode = TRUE,
     sample_weight_v = NULL,
     center_inv_v = FALSE
 ) {
@@ -6492,7 +6624,7 @@ global_means_crv1 <- function(
       crv1_mean_fun(
         score = score, w = w, cl = cl, rank_adj = rank_adj,
         w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL,
-        recenter_propensity = TRUE, recenter_binary = recenter_binary,
+        recenter_propensity = rp_mode, recenter_binary = recenter_binary,
         resid_treat = rp_resid_treat, resid_outcome = rp_resid_outcome,
         tau = rp_tau, v = rp_v
       )
@@ -6594,7 +6726,7 @@ global_test <- function(
   weight_col <- if (is.null(weight)) NULL else as.character(weight)
   center_col <- if (is.null(center)) NULL else as.character(center)
   use_centering <- !is.null(center_col) && !is.null(resid_treat) && !is.null(resid_outcome)
-  can_recenter <- isTRUE(recenter_propensity) && !is.null(resid_treat) &&
+  can_recenter <- rp_active(recenter_propensity) && !is.null(resid_treat) &&
     !is.null(resid_outcome) && !is.null(v)
   need_v <- can_recenter || (use_centering && isTRUE(center_inv_v))
 
@@ -6627,6 +6759,7 @@ global_test <- function(
     use_centering = use_centering,
     can_recenter = can_recenter,
     recenter_binary = recenter_binary,
+    rp_mode = recenter_propensity,
     sample_weight_v = if (use_centering) {
       if (!is.null(sample_weight)) as.numeric(data[[sample_weight]]) else rep(1.0, n)
     } else NULL,

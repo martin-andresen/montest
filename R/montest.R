@@ -73,7 +73,16 @@
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
-#' @param stabilize.scores Logical, default TRUE; corrects finite-sample/cross-fitting
+#'   (\code{"none"}). \code{"hajek"} replaces the additive shift described below by Hajek (self-normalized)
+#'   instrument weights: for a binary instrument the arm weights \eqn{Z/e} and \eqn{(1-Z)/(1-e)} are each
+#'   divided by their own (weighted) sample mean within every sample/margin cell, so each arm's weights
+#'   average exactly one; for a continuous instrument (or a binary one estimated with fixed effects) the
+#'   weight \eqn{(Z-e)/v} is divided by the cell mean of \eqn{(Z-e)^2/v}. Only the weight is normalized, the
+#'   outcome residual keeps the original nuisances. On the test side the normalizers are re-estimated within
+#'   the tested cell and the standard error uses the linearized influence function, so it accounts for them
+#'   (degrees of freedom reduced by the number of estimated normalizers). Also applied to the MW inverse
+#'   probability contrast. Not applied to \code{doubly.robust=FALSE} with \code{target="overlap"}.
+#'   The \code{TRUE}/\code{"shift"} option (the default before Hajek was added): corrects finite-sample/cross-fitting
 #'   bias in the estimated instrument nuisance \code{Z.hat} by an additive mean-shift --
 #'   \code{Z.hat <- Z.hat + mean(Z - Z.hat)} within each sample/margin group, forcing the
 #'   group-average residual to exactly zero -- applied identically regardless of whether
@@ -220,12 +229,12 @@
 #' @param pool Character vector controlling which dimensions are pooled when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"sample"}, \code{"all"}, and \code{"none"}. The default is \code{c("sample", "zmargin", "dval", "yval", "equation")}
-#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select}. If \code{select} contains a margin with at least two cells for the data and conditions, \code{"sample"} is dropped from \code{pool} (with a message) and each sample direction is tested separately, because pooling the sample halves after a data-driven choice of cells is not valid. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
+#'   \code{"all"}, and \code{"none"}. The default is \code{c("zmargin", "dval", "yval", "equation")}
+#'   (margins that do not exist for the requested conditions are ignored), minus anything the user specifies in \code{select}. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple hypothesis testing.
 #' @param select Character vector controlling which dimensions are selected over when finding testing subsets
 #'   testing subsets. Allowed values are \code{"zmargin"}, \code{"dval"},
 #'   \code{"yval"}, \code{"condition"}, \code{"equation"},
-#'   \code{"block"} (seqtest), \code{"all"} (every margin except \code{"sample"}), and \code{"none"}. \code{"sample"} cannot be selected over (selecting a sample direction uses both halves' outcomes). The default is no selection: \code{condition} and \code{block} appear in neither \code{pool} nor \code{select}, so each condition and block is tested on its own and the tests are corrected as one family (Holm), which keeps the sample halves pooled. A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
+#'   \code{"block"} (seqtest), \code{"all"} and \code{"none"}. The default is no selection: \code{condition} and \code{block} appear in neither \code{pool} nor \code{select}, so each condition and block is tested on its own and the tests are corrected as one family (Holm). A margin cannot appear in both \code{pool} and \code{select}. Relevant margins that appear in neither are all tested, and tests are corrected for multiple testing.
 #' @param local Removed; supplying it is an error. Whether the sample is split and the subgroup search is run is now
 #'   inferred. The search (causal forest plus \code{forest_test}/CART) runs whenever the forest covariates (the X part of
 #'   \code{fml}, or \code{fml.C}) are non-empty or \code{condition} includes \code{"MW"} or \code{"AHS"}, which use \code{Y}
@@ -251,8 +260,8 @@
 #'   test estimates are appended. Afterwards the selection rule given by \code{select} and \code{screen} is applied
 #'   jointly over all blocks on the training side, and test-sample rows that were not selected are removed, so that
 #'   only pre-selected estimates are reported. This uses much less memory with many margins. With
-#'   \code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} and \code{"sample"} (the default, and
-#'   \code{"all"}, resolve to these), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
+#'   \code{stack = FALSE}, \code{pool} may only contain \code{"zmargin"} (the default, and
+#'   \code{"all"}, resolve to this), \code{"zmargin"} cannot be in both \code{pool} and \code{select}, and
 #'   \code{testtype = "CART"} still requires \code{pool = "none"}. Works when there is no subgroup search. Results are not numerically identical to \code{stack = TRUE}
 #'   because the random number stream differs.
 #' @param memcheck Logical, default \code{TRUE}. Before crossing the margin index with the data, the number of rows
@@ -278,7 +287,7 @@
 #'   \code{stack = TRUE} there is one bar per step (titled like the entries of \code{$time}): the nuisance fits and the
 #'   causal forests, each running over margin cells and sample halves (the Z step only with a multivalued instrument).
 #'   With \code{stack = FALSE} a single bar runs over the margin blocks, covering all steps of each block.
-#' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to \code{"power"} (\code{"stepdown"} with \code{testtype = "CART"} or \code{stack = FALSE}, where \code{"power"} is not available), described below. \code{"stepdown"} is the Holm stepdown screen on the training t-statistics. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups (including the other sample direction when sample is not pooled); the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.
+#' @param screen Screening rule for deciding what determines a "promising" leaf or cell to carry forward to testing. May be "minimum","negative","nonpositive","stepdown","fg_relevant","none","power". Defaults to \code{"power"} (\code{"stepdown"} with \code{testtype = "CART"} or \code{stack = FALSE}, where \code{"power"} is not available), described below. \code{"stepdown"} is the Holm stepdown screen on the training t-statistics. \code{"power"} (forest search with \code{stack = TRUE} only) keeps, within each group of cells that differ only in the margins in \code{select}, the top-j cells by training t-statistic that maximize the predicted probability that at least one is rejected by a Holm test on the held-out half. The held-out statistics are predicted from the training t-statistics with variance inflated by \code{1 + phi} (\code{options(montest.power_phi = 1)}, \code{0} is a pure plug-in) and the training-side correlation between the cells; no prior is used. The rule only affects which cells are carried forward, not the validity of the held-out test. The final Holm runs over all selected cells of all groups; the rule assumes every group selects as many cells as the one being screened, i.e. the Holm level alpha/(G*j) with G the number of groups, an approximation.
 #' @param cp,maxrankcp,alpha,prune Tuning parameters for the CART-based search
 #'   routine. See Details.
 #' @param Zparameters,Yparameters,Qparameters,Cparameters,Sparameters,Rparameters Named lists of
@@ -414,7 +423,7 @@
 #' @export
 
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
-                 stabilize.scores=TRUE,aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
+                 stabilize.scores="hajek",aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
@@ -429,6 +438,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## `options` in the return value for the resolved (post-default) values
   ## instead.
   mc <- match.call()
+
+  ## Normalize `stabilize.scores` to one of "shift" (additive mean-shift of
+  ## Z.hat, the historical TRUE), "hajek" (self-normalized instrument weights,
+  ## see hajek_score()), or "none".
+  stab_mode <- if (isTRUE(stabilize.scores) || identical(stabilize.scores, "shift")) {
+    "shift"
+  } else if (isFALSE(stabilize.scores) || identical(stabilize.scores, "none")) {
+    "none"
+  } else if (identical(stabilize.scores, "hajek")) {
+    "hajek"
+  } else {
+    stop("`stabilize.scores` must be TRUE/\"shift\", \"hajek\", or FALSE.", call. = FALSE)
+  }
 
   time=rbind(start=proc.time())
   if (!is.null(seed)) set.seed(seed)
@@ -759,7 +781,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   pool_vocab <- c("zmargin", "dval", "yval", "condition", "equation", "sample", if (has_block) "block")
   pool_input <- pool
   if ((sum(pool=="none")==1)&(sum(pool=="all")==1)) stop("Do not specify both none and all in pool().")
-  else if (sum(pool=="all")==1) pool=pool_vocab
+  else if (sum(pool=="all")==1) pool=setdiff(pool_vocab,"sample")
   else if (sum(pool=="none")==1) pool=character()
   else if (is.null(pool)==FALSE) pool <- match.arg(
     pool,
@@ -771,17 +793,18 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   else if (sum(select=="all")==1) select=setdiff(pool_vocab,"sample")
   else if (sum(select=="none")==1) select=character()
   else if (is.null(select)==FALSE) select=match.arg(select,pool_vocab,several.ok=TRUE)
-  if ("sample" %in% select) {
-    stop("`sample` cannot be in `select`: choosing which sample direction to carry forward uses both halves' ",
-         "outcomes, and each half is the held-out half of the other direction. Leave it out of `select` ",
-         "(`pool` it, or leave it in neither to test the two directions separately).", call. = FALSE)
+  ## Pooling/selecting across the sample halves is blocked: naively combining the two directions
+  ## invalidates the sample splitting. Internal switch kept for possible reintroduction.
+  if (!isTRUE(getOption("montest.allow_sample_pool")) && any(c(pool, select) %in% "sample")) {
+    stop("`sample` cannot be in `pool` or `select`: pooling or selecting across the sample halves invalidates the sample splitting. ",
+         "Leave it out; the two sample directions are tested separately.", call. = FALSE)
   }
 
   ## Defaults: whatever the user specifies in one of pool/select is left out of the other's default.
-  ## No adaptivity over margins by default: pool across sample, dval, zmargin, yval and equation,
+  ## No adaptivity over margins by default: pool across dval, zmargin, yval and equation,
   ## select nothing; condition and block are in neither, so each is tested on its own (Holm across them)
-  ## and the sample halves stay pooled (a margin cannot be in both pool and select).
-  pool_default <- intersect(c("zmargin", "dval", "yval", "equation", "sample"), pool_vocab)
+  ## (a margin cannot be in both pool and select). The sample directions are always tested separately.
+  pool_default <- intersect(c("zmargin", "dval", "yval", "equation"), pool_vocab)
   select_default <- character()
   if (is.null(pool)) pool <- setdiff(pool_default, if (is.null(select)) character() else select)
   if (is.null(select)) select <- setdiff(select_default, if (is.null(pool_input)) character() else pool)
@@ -1687,7 +1710,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     aipw.clip = aipw.clip,
     has_FE = has_FE,
     need_ols_v = need_ols_v,
-    stabilize.scores = stabilize.scores
+    stabilize.scores = identical(stab_mode, "shift")
   )
 
   ## ---------------------------------------------------------------------
@@ -2701,6 +2724,29 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     ## weights, target = "overlap" weights them by e(1-e) (see w_eff below).
     ipw__ <- data[[Zcol]] / data[[zhat]] - (1 - data[[Zcol]]) / (1 - data[[zhat]])
 
+    ## Hajek: normalize each arm's inverse-probability weight to average 1
+    ## within sample x margin cell (MW rows only), i.e.
+    ## Z/(e*a1) - (1-Z)/((1-e)*a0). Cells with a non-positive normalizer keep
+    ## the raw weights.
+    if (identical(stab_mode, "hajek")) {
+      by_h <- unique(c("sample", margins))
+      dt_h <- data[, by_h, with = FALSE]
+      dt_h[, `:=`(
+        r1_ = data[[Zcol]] / data[[zhat]],
+        r0_ = (1 - data[[Zcol]]) / (1 - data[[zhat]]),
+        w_ = if (!is.null(weight)) as.numeric(data[[weight]]) else 1,
+        mw_ = is_MW,
+        i_ = .I
+      )]
+      dt_h[!is.finite(w_) | w_ < 0, w_ := 0]
+      nrm <- dt_h[mw_ == TRUE, .(
+        a1 = sum(w_ * r1_) / sum(w_), a0 = sum(w_ * r0_) / sum(w_), i_ = i_
+      ), by = by_h]
+      nrm <- nrm[is.finite(a1) & is.finite(a0) & a1 > 0 & a0 > 0]
+      ipw__[nrm$i_] <- (data[[Zcol]][nrm$i_] / data[[zhat]][nrm$i_]) / nrm$a1 -
+        ((1 - data[[Zcol]][nrm$i_]) / (1 - data[[zhat]][nrm$i_])) / nrm$a0
+    }
+
     data[
       is_MW_bin,
       Q := (equation * get(Dcol) - (1 - equation) * (1 - get(Dcol))) * ipw__[is_MW_bin]
@@ -3098,6 +3144,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
       aipw.clip.v = aipw.clip.v,
+      hajek = identical(stab_mode, "hajek"),
+      hajek_pool = isTRUE(parametric) && !isFALSE(getOption("montest.hajek_pool")),
       shrink = need_pvar,
       verbose = FALSE,
 
@@ -3132,6 +3180,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       forest_opts = utils::modifyList(list(num.trees = 2000L), Cparameters),
       aipw.clip = aipw.clip,
       aipw.clip.v = aipw.clip.v,
+      hajek = identical(stab_mode, "hajek"),
+      hajek_pool = isTRUE(parametric) && !isFALSE(getOption("montest.hajek_pool")),
       shrink = need_pvar,
       verbose = FALSE,
 
@@ -3308,7 +3358,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## `stabilize.scores`'s docs).
   v_arg <- if (resid_cols_exist) "scores_v" else NULL
   tau_arg <- if (resid_cols_exist) "pred" else NULL
-  recenter_propensity_arg <- isTRUE(stabilize.scores)
+  recenter_propensity_arg <- switch(stab_mode, shift = TRUE, hajek = "hajek", FALSE)
   recenter_binary_arg <- !z_use_lin_any
 
   ## For doubly.robust=FALSE, the centered (with-intercept OLS/FWL)

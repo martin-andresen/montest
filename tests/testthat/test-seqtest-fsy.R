@@ -13,7 +13,7 @@ test_that("FSDY and FSSY run, with bins as the yval margin", {
   dat <- make_fsy_data()
   for (cn in c("FSDY", "FSSY")) {
     r <- seqtest(Y ~ X | D1 + D2 ~ Z, dat, condition = cn, progress = FALSE, select = "none",
-                 pool = c("sample", "zmargin", "dval", "equation"))
+                 pool = c("zmargin", "dval", "equation"))
     expect_s3_class(r, "seqtest")
     expect_true(!is.null(r$Wlookup))
     expect_gte(data.table::uniqueN(r$results$yval), 2L)
@@ -25,7 +25,7 @@ test_that("FSDY/FSSY bin estimates equal the first stage of the summed cells; po
   dat <- make_fsy_data(8000, seed = 2)
   dat$b <- cut(dat$Y, stats::quantile(dat$Y, 0:4 / 4), include.lowest = TRUE, labels = FALSE)
   fs <- function(q) mean(q[dat$Z == 1]) - mean(q[dat$Z == 0])
-  pl <- c("sample", "zmargin", "dval", "equation")
+  pl <- c("zmargin", "dval", "equation")
   for (cn in c("FSDY", "FSSY")) {
     mom <- function(b) if (cn == "FSDY") (dat$D1 - dat$D2) * (dat$b == b) else (dat$D1 + dat$D2 - 1) * (dat$b == b)
     r <- seqtest(Y ~ 1 | D1 + D2 ~ Z, dat, condition = cn, progress = FALSE, select = "none", pool = pl)
