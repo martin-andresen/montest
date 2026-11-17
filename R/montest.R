@@ -73,6 +73,7 @@
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
+#' @param stabilize.scores \code{"hajek"} (default), \code{TRUE} (same as \code{"shift"}), or \code{FALSE}
 #'   (\code{"none"}). \code{"hajek"} replaces the additive shift described below by Hajek (self-normalized)
 #'   instrument weights: for a binary instrument the arm weights \eqn{Z/e} and \eqn{(1-Z)/(1-e)} are each
 #'   divided by their own (weighted) sample mean within every sample/margin cell, so each arm's weights
