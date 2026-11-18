@@ -73,47 +73,24 @@
 #'   cross-fitting nuisance functions and, optionally, forest predictions. Set to
 #'   \code{NULL} to disable the inner split. Defaults to NULL - nuisances and predictions from causal forests are fit out-of-bag. See option crossfit, which decides which parts this applies to.
 #' @param crossfit Character vector of what parts of the procedure to cross-fit. Accepts "Z","Q","Y","C". If e.g. "Z" appears in crossfit, nuissances for Z are cross fit, either across outer sample part (if inner.folds==NULL), or within outer sample part across inner folds. If "Z" does not appear, OOB predictions are used. "C" is for the causal forest fit.
-#' @param stabilize.scores \code{"hajek"} (default), \code{TRUE} (same as \code{"shift"}), or \code{FALSE}
-#'   (\code{"none"}). \code{"hajek"} replaces the additive shift described below by Hajek (self-normalized)
-#'   instrument weights: for a binary instrument the arm weights \eqn{Z/e} and \eqn{(1-Z)/(1-e)} are each
-#'   divided by their own (weighted) sample mean within every sample/margin cell, so each arm's weights
-#'   average exactly one; for a continuous instrument (or a binary one estimated with fixed effects) the
-#'   weight \eqn{(Z-e)/v} is divided by the cell mean of \eqn{(Z-e)^2/v}. Only the weight is normalized, the
-#'   outcome residual keeps the original nuisances. On the test side the normalizers are re-estimated within
-#'   the tested cell and the standard error uses the linearized influence function, so it accounts for them
-#'   (degrees of freedom reduced by the number of estimated normalizers). Also applied to the MW inverse
-#'   probability contrast. Not applied to \code{doubly.robust=FALSE} with \code{target="overlap"}.
-#'   The \code{TRUE}/\code{"shift"} option (the default before Hajek was added): corrects finite-sample/cross-fitting
-#'   bias in the estimated instrument nuisance \code{Z.hat} by an additive mean-shift --
-#'   \code{Z.hat <- Z.hat + mean(Z - Z.hat)} within each sample/margin group, forcing the
-#'   group-average residual to exactly zero -- applied identically regardless of whether
-#'   \code{Z}'s representation is continuous (a genuinely multivalued instrument,
-#'   \code{linearZ=TRUE}, or any binary instrument estimated \emph{with} fixed effects) or
-#'   binary/closed-form (estimated \emph{without} fixed effects). \code{Z.hat} \emph{is} the
-#'   propensity \eqn{e(X)} for the binary representation, so the same shift corrects the same
-#'   underlying bias there; the closed-form conditional variance \eqn{v(X)=e(X)(1-e(X))} used
-#'   in the score is then computed fresh from the corrected \eqn{e(X)}, so it reflects the
-#'   correction automatically with no separate rescaling step. For the binary representation,
-#'   \code{Z.hat} is also clipped to \code{[aipw.clip, 1-aipw.clip]} after the shift (since it must remain a valid probability -- see \code{aipw.clip}). Not applied
-#'   when \code{doubly.robust=FALSE} and \code{target="overlap"} (see \code{target}), since
-#'   that path already uses each row's own empirical variance instead of the closed form, and
-#'   needs \code{Z.hat} untouched to reproduce the classical FWL/OLS coefficient exactly.
-#'
-#'   This design-level shift is computed once, at whatever \code{sample}/\code{margins} level
-#'   \code{stabilize.scores} operates on -- not separately within an adaptively-found
-#'   leaf/subgroup nested inside that level, or within a "global" cell computed at a finer
-#'   grouping. When \code{TRUE}, the FINAL (test-side and global) score average for AIPW
-#'   (\code{doubly.robust=TRUE}) and the singly-robust score under \code{target="all"} redoes
-#'   the same additive shift using only that specific cell's own rows, the same finite-
-#'   sample-bias correction \code{doubly.robust=FALSE & target="overlap"} already gets via its
-#'   own (more thorough) centered/with-intercept construction (see \code{target}). This only
-#'   re-corrects the propensity/treatment-residual term -- it does NOT re-estimate the causal
-#'   forest's plug-in CATE prediction (\code{tau}) for that cell; if \code{tau}'s own average
-#'   over exactly the rows selected into a subgroup carries local bias (e.g. from adaptive
-#'   selection correlating which rows land there with their predicted effect), this does not
-#'   correct for that. Never applied to the training-side adaptive search itself, only to the
-#'   final evaluation, and never to cells that already use the \code{target="overlap" &
-#'   doubly.robust=FALSE} centered path.
+#' @param stabilize.scores \code{"hajek"} (default, also \code{TRUE}) or \code{FALSE} (\code{"none"}).
+#'   \code{"hajek"} normalizes the instrument weights (Hajek, self-normalized): for a binary instrument the arm weights
+#'   \eqn{Z/e} and \eqn{(1-Z)/(1-e)} are each divided by their own (weighted) sample mean within every
+#'   sample/margin cell, so each arm's weights average exactly one; for a continuous instrument (or a binary one
+#'   estimated with fixed effects) the weight \eqn{(Z-e)/v} is divided by the cell mean of \eqn{(Z-e)^2/v}.
+#'   This corrects finite-sample/cross-fitting drift in the estimated instrument nuisance \code{Z.hat}. Only the
+#'   weight is normalized, the outcome residual keeps the original nuisances. Under \code{parametric=TRUE} the
+#'   normalizers are pooled across the two sample halves. The design-level normalization is computed once, at
+#'   whatever \code{sample}/\code{margins} level the nuisances were fit on. On the test side (final evaluation of
+#'   AIPW with \code{doubly.robust=TRUE}, and the singly-robust score under \code{target="all"}) the normalizers are
+#'   re-estimated within the tested cell and the standard error uses the linearized influence function, so it
+#'   accounts for them (degrees of freedom reduced by the number of estimated normalizers). This does not
+#'   re-estimate the causal forest's plug-in CATE prediction (\code{tau}) for that cell. It is never applied to the
+#'   training-side adaptive search itself, and not to \code{doubly.robust=FALSE} with \code{target="overlap"},
+#'   which uses its own centered/with-intercept construction (see \code{target}) and needs \code{Z.hat}
+#'   untouched to reproduce the classical FWL/OLS coefficient exactly. Also applied to the MW inverse
+#'   probability contrast. The additive mean-shift of \code{Z.hat} that was available as \code{"shift"} has been
+#'   removed.
 #' @param aipw.clip Positive scalar in \code{(0,1)} or \code{"auto"} (the default), used to trim estimated propensity
 #'   scores when augmented inverse-probability weighted scores are constructed and when stabilizing
 #'   binary-instrument scores (see \code{stabilize.scores}).
@@ -440,17 +417,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## instead.
   mc <- match.call()
 
-  ## Normalize `stabilize.scores` to one of "shift" (additive mean-shift of
-  ## Z.hat, the historical TRUE), "hajek" (self-normalized instrument weights,
-  ## see hajek_score()), or "none".
-  stab_mode <- if (isTRUE(stabilize.scores) || identical(stabilize.scores, "shift")) {
-    "shift"
+  ## Normalize `stabilize.scores` to "hajek" (self-normalized instrument
+  ## weights, see hajek_score()) or "none". TRUE is an alias for "hajek".
+  stab_mode <- if (isTRUE(stabilize.scores) || identical(stabilize.scores, "hajek")) {
+    "hajek"
   } else if (isFALSE(stabilize.scores) || identical(stabilize.scores, "none")) {
     "none"
-  } else if (identical(stabilize.scores, "hajek")) {
-    "hajek"
+  } else if (identical(stabilize.scores, "shift")) {
+    stop("`stabilize.scores = \"shift\"` has been removed; use \"hajek\" (the default) or FALSE.", call. = FALSE)
   } else {
-    stop("`stabilize.scores` must be TRUE/\"shift\", \"hajek\", or FALSE.", call. = FALSE)
+    stop("`stabilize.scores` must be \"hajek\", TRUE, or FALSE.", call. = FALSE)
   }
 
   time=rbind(start=proc.time())
@@ -1694,25 +1670,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
 
   ## ---------------------------------------------------------------------
-  ## Design-side finite-sample correction of Z.hat -- see stabilize_zhat()'s
-  ## own docs (functions.R) for the full rationale (an additive mean-shift,
-  ## applied identically to the continuous and binary representations) and
-  ## the need_ols_v exclusion/warning. Factored out of montest() so other
-  ## callers of fit_models()/make_scores_vec() (e.g. seqtest) can drive the
-  ## same correction without duplicating it.
+  ## Design-side check of Z.hat for need_ols_v rows (warn only). The Hajek
+  ## normalization itself happens in make_scores_vec()/crv1_mean() -- see
+  ## hajek_score() in functions.R.
   ## ---------------------------------------------------------------------
-
-  stabilize_zhat(
-    data = data,
-    Z = Z,
-    margins = margins,
-    parametric = parametric,
-    weight = weight,
-    aipw.clip = aipw.clip,
-    has_FE = has_FE,
-    need_ols_v = need_ols_v,
-    stabilize.scores = identical(stab_mode, "shift")
-  )
+  check_zhat_ols_v(data = data, Z = Z, need_ols_v = need_ols_v)
 
   ## ---------------------------------------------------------------------
   ## Conditional-variance nuisance v(X) = Var(Z|X). Continuous-Z rows always
@@ -3359,7 +3321,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## `stabilize.scores`'s docs).
   v_arg <- if (resid_cols_exist) "scores_v" else NULL
   tau_arg <- if (resid_cols_exist) "pred" else NULL
-  recenter_propensity_arg <- switch(stab_mode, shift = TRUE, hajek = "hajek", FALSE)
+  recenter_propensity_arg <- if (identical(stab_mode, "hajek")) "hajek" else FALSE
   recenter_binary_arg <- !z_use_lin_any
 
   ## For doubly.robust=FALSE, the centered (with-intercept OLS/FWL)
