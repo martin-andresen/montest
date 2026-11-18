@@ -43,7 +43,8 @@ out2 <- montest(
 ## Main functions
 
 - `montest()` — detects violations of monotonicity / LATE assumptions
-- `montestplot()` — visualizes results (under active development, not yet finished)
+- `seqtest()` — wrapper for montest(), to test violations of instrument validity with multiple treatment parts with a sequential structure
+- `montestplot()` — visualizes results
 
 ## Status
 
