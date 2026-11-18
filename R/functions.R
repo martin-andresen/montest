@@ -100,11 +100,11 @@ shrink_te_crossfit <- function(data,
   DT <- data
   byvars <- c(margins, sample_col)
 
-  wmean <- function(x, w) sum(w * x) / sum(w)
+  wmean <- function(x, w) ksum(w * x) / ksum(w)
 
   wvar_pop <- function(x, w) {
     mu <- wmean(x, w)
-    sum(w * (x - mu)^2) / sum(w)
+    ksum(w * (x - mu)^2) / ksum(w)
   }
 
   eb_pars <- DT[, {
@@ -261,7 +261,7 @@ priority_te <- function(data, pred, pred_v, pred_o, pred_o_v,
   floor_med <- function(v) {
     ok <- is.finite(v) & v > 0
     if (!any(ok)) return(NULL)
-    med <- stats::median(v[ok])
+    med <- kmedian(v[ok])
     v[!is.finite(v)] <- med
     pmax(v, floor_frac * med)
   }
@@ -1310,7 +1310,7 @@ weighted_quantile <- function(x, w = NULL, probs = c(0.25, 0.5, 0.75),
   }
   if (any(w < 0)) stop("weights must be nonnegative.")
   if (!length(x)) return(rep(NA_real_, length(probs)))
-  s <- sum(w)
+  s <- ksum(w)
   if (s == 0) return(rep(NA_real_, length(probs)))
 
   # sort by x
@@ -1318,7 +1318,7 @@ weighted_quantile <- function(x, w = NULL, probs = c(0.25, 0.5, 0.75),
   x <- x[o]; w <- w[o]
 
   # cumulative weight share in [0,1]
-  cw <- cumsum(w) / s
+  cw <- kcumsum(w) / s
 
   # helper to get quantile for a single p
   get_q <- function(p) {
@@ -1369,11 +1369,12 @@ w_sd <- function(x, w = NULL, na.rm = TRUE, unbiased = FALSE) {
   }
   if (!length(x)) return(NA_real_)
 
-  mu <- weighted.mean(x, w)
-  v  <- sum(w * (x - mu)^2) / sum(w)
+  mu <- kwmean(x, w)
+  sw_ <- ksum(w)
+  v  <- ksum(w * (x - mu)^2) / sw_
 
-  if (unbiased && sum(w) > 1)
-    v <- v * sum(w) / (sum(w) - 1)
+  if (unbiased && sw_ > 1)
+    v <- v * sw_ / (sw_ - 1)
 
   sqrt(v)
 }
@@ -1628,7 +1629,7 @@ crossfit_hat <- function(DT,
     w_tr <- if (is.null(w_all)) NULL else w_all[idx_tr]
 
     if (n_tr < 2L) {
-      mu <- if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
+      mu <- if (is.null(w_tr)) kmean(y_tr) else kwmean(y_tr, w_tr)
       preds[] <- mu
       return(preds)
     }
@@ -1669,7 +1670,7 @@ crossfit_hat <- function(DT,
     w_s <- if (is.null(w_all)) NULL else w_all[idx_s]
 
     if (n < 2L) {
-      mu <- if (is.null(w_s)) mean(y_s) else stats::weighted.mean(y_s, w_s)
+      mu <- if (is.null(w_s)) kmean(y_s) else kwmean(y_s, w_s)
       p[] <- mu
       return(p)
     }
@@ -1710,7 +1711,7 @@ crossfit_hat <- function(DT,
     w_s <- if (is.null(w_all)) NULL else w_all[idx_s]
 
     if (n < 2L) {
-      mu <- if (is.null(w_s)) mean(y_s) else stats::weighted.mean(y_s, w_s)
+      mu <- if (is.null(w_s)) kmean(y_s) else kwmean(y_s, w_s)
       oob[] <- mu; te[] <- mu
       return(list(oob = oob, te = te))
     }
@@ -1774,7 +1775,7 @@ crossfit_hat <- function(DT,
         mu <- if (length(y_tr) == 0L) {
           NA_real_
         } else {
-          if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
+          if (is.null(w_tr)) kmean(y_tr) else kwmean(y_tr, w_tr)
         }
 
         p[te_pos] <- mu
@@ -1899,8 +1900,8 @@ leave_cluster_out_mean <- function(DT,
         wy <- ifelse(ok, w * y, 0)
         ww <- ifelse(ok, w, 0)
 
-        total_wy <- sum(wy)
-        total_w  <- sum(ww)
+        total_wy <- ksum(wy)
+        total_w  <- ksum(ww)
 
         denom <- total_w - ww
         out <- (total_wy - wy) / denom
@@ -1914,8 +1915,8 @@ leave_cluster_out_mean <- function(DT,
         wy <- ifelse(ok, w * y, 0)
         ww <- ifelse(ok, w, 0)
 
-        total_wy <- sum(wy)
-        total_w  <- sum(ww)
+        total_wy <- ksum(wy)
+        total_w  <- ksum(ww)
 
         cluster_wy <- rowsum(wy, cl, reorder = FALSE)
         cluster_w  <- rowsum(ww, cl, reorder = FALSE)
@@ -2923,9 +2924,9 @@ hajek_score <- function(tau, V, U, v, wt = NULL, binary = TRUE, infl = FALSE) {
   if (is.null(wt)) wt <- rep(1, n)
   h0 <- V / v
   ok <- is.finite(h0) & is.finite(U) & is.finite(tau) & is.finite(wt) & wt >= 0
-  sw <- sum(wt[ok])
+  sw <- ksum(wt[ok])
   if (!any(ok) || !is.finite(sw) || sw <= 0) return(NULL)
-  wm <- function(x) sum(wt[ok] * x[ok]) / sw
+  wm <- function(x) ksum(wt[ok] * x[ok]) / sw
   if (binary) {
     arm1 <- V > 0
     r1 <- ifelse(arm1, h0, 0)
@@ -3094,7 +3095,7 @@ make_scores_vec <- function(Y,
       ## intermediate -- same floor convention the continuous branch below
       ## already uses.
       v_raw_ii <- as.numeric(Z.var.hat)[ii]
-      v_scale_ii <- stats::weighted.mean(v_raw_ii, w = wt[ii], na.rm = TRUE)
+      v_scale_ii <- kwmean(v_raw_ii, wt[ii], na.rm = TRUE)
       v[ii] <- validate_and_clip(
         v_raw_ii,
         hard_lower = 0,
@@ -3122,8 +3123,8 @@ make_scores_vec <- function(Y,
     ii <- idx_linear
 
     zres <- z[ii] - e[ii]
-    zres_c <- zres - stats::weighted.mean(zres, w = wt[ii], na.rm = TRUE)
-    v_scale <- stats::weighted.mean(zres_c^2, w = wt[ii], na.rm = TRUE)
+    zres_c <- zres - kwmean(zres, wt[ii], na.rm = TRUE)
+    v_scale <- kwmean(zres_c^2, wt[ii], na.rm = TRUE)
 
     ## No `hard_lower` here (unlike the propensity checks above/below): this
     ## Z.var.hat is a FITTED conditional-variance nuisance -- estimate_conditional_mean()
@@ -3459,7 +3460,7 @@ fit_models <- function(DT,
         mu <- if (length(y_tr) == 0L) {
           NA_real_
         } else {
-          if (is.null(w_tr)) mean(y_tr) else stats::weighted.mean(y_tr, w_tr)
+          if (is.null(w_tr)) kmean(y_tr) else kwmean(y_tr, w_tr)
         }
 
         p[te_pos] <- mu
@@ -4180,9 +4181,9 @@ arm_ok_prefix <- function(arm, cl, armw = NULL, miness = 10) {
   if (is.null(armw) || !any(is.finite(armw))) armw <- rep(1, length(arm))
   ok_arm <- function(a) {
     w <- ifelse(arm == a & is.finite(armw), armw, 0)
-    s_before <- stats::ave(w, cl, FUN = cumsum) - w
-    ss <- cumsum(2 * s_before * w + w^2)
-    ifelse(ss > 0, cumsum(w)^2 / ss, 0) >= miness
+    s_before <- stats::ave(w, cl, FUN = kcumsum) - w
+    ss <- kcumsum(2 * s_before * w + w^2)
+    ifelse(ss > 0, kcumsum(w)^2 / ss, 0) >= miness
   }
   ok_arm(1L) & ok_arm(0L)
 }
@@ -4341,8 +4342,8 @@ crv1_mean <- function(score,
     sw <- sw[ok0]
     cl_kept <- if (is.null(cl)) seq_along(u_raw) else as.integer(factor(cl[ok0], exclude = NULL))
 
-    v_bar <- stats::weighted.mean(v_raw, w = sw)
-    u_bar <- stats::weighted.mean(u_raw, w = sw)
+    v_bar <- kwmean(v_raw, sw)
+    u_bar <- kwmean(u_raw, sw)
     v_dm <- v_raw - v_bar
     u_dm <- u_raw - u_bar
 
@@ -4395,10 +4396,11 @@ crv1_mean <- function(score,
       den = ratio_w * v_dm^2,
       cl = cl_kept
     )
-    gb <- dt0[, .(num = sum(num), den = sum(den)), by = cl]
+    gb <- data.table::data.table(cl = unique(cl_kept),
+                                 num = gsum(dt0$num, cl_kept), den = gsum(dt0$den, cl_kept))
 
     G <- nrow(gb)
-    Wden <- sum(gb$den)
+    Wden <- ksum(gb$den)
 
     if (!is.finite(Wden) || Wden <= 0) {
       return(list(
@@ -4407,12 +4409,12 @@ crv1_mean <- function(score,
       ))
     }
 
-    theta_c <- sum(gb$num) / Wden
+    theta_c <- ksum(gb$num) / Wden
     resid <- u_dm - theta_c * v_dm
     meat <- ratio_w * v_dm * resid
 
     dt1 <- data.table::data.table(meat = meat, cl = cl_kept)
-    gm <- dt1[, .(m = sum(meat)), by = cl]
+    gm <- data.table::data.table(cl = unique(cl_kept), m = gsum(dt1$meat, cl_kept))
 
     rank_adj_c <- rank_adj + 1
     df_c <- G - 1 - rank_adj_c
@@ -4420,7 +4422,7 @@ crv1_mean <- function(score,
     se_c <- if (G < 2L || df_c <= 0 || !is.finite(df_c)) {
       NA_real_
     } else {
-      s <- sqrt((G / df_c) * sum(gm$m^2)) / abs(Wden)
+      s <- sqrt((G / df_c) * ksum(gm$m^2)) / abs(Wden)
       if (!is.finite(s)) NA_real_ else s
     }
 
@@ -4510,15 +4512,16 @@ crv1_mean <- function(score,
 
   dt0 <- data.table::data.table(score = score, w = w, w_sandwich = w_sandwich, cl = cl)
 
-  gb <- dt0[, .(
-    U = sum(w * score),
-    W = sum(w),
-    Wsand = sum(w_sandwich)
-  ), by = cl]
+  gb <- data.table::data.table(
+    cl = unique(cl),
+    U = gsum(w * score, cl),
+    W = gsum(w, cl),
+    Wsand = gsum(w_sandwich, cl)
+  )
 
   G <- nrow(gb)
-  U <- sum(gb$U)
-  W <- sum(gb$W)
+  U <- ksum(gb$U)
+  W <- ksum(gb$W)
 
   if (!is.finite(W) || W <= 0) {
     return(list(
@@ -4535,7 +4538,7 @@ crv1_mean <- function(score,
   if (G < 2L || df <= 0 || !is.finite(df)) {
     se <- NA_real_
   } else {
-    se <- sqrt((G / df) * sum(ug^2)) / abs(W)
+    se <- sqrt((G / df) * ksum(ug^2)) / abs(W)
     if (!is.finite(se)) se <- NA_real_
   }
 
@@ -4768,7 +4771,7 @@ select_train_cells <- function(train_all,
 
     cand <- train_all[
       ,
-      .(sel_t = mean(t, na.rm = TRUE), train_row_id = train_row_id[1L]),
+      .(sel_t = kmean(t, na.rm = TRUE), train_row_id = train_row_id[1L]),
       by = cand_by
     ]
 
@@ -4805,7 +4808,7 @@ select_train_cells <- function(train_all,
 
     cand <- train_all[
       ,
-      .(sel_t = mean(t, na.rm = TRUE), train_row_id = train_row_id[1L]),
+      .(sel_t = kmean(t, na.rm = TRUE), train_row_id = train_row_id[1L]),
       by = agg_by
     ]
 
@@ -5267,11 +5270,11 @@ forest_test <- function(
     w2 <- w
     w2[!is.finite(w2)] <- 0
     w2[w2 < 0] <- 0
-    totw <- sum(w2)
+    totw <- ksum(w2)
     if (!is.finite(totw) || totw <= 0) {
       return(unique(as.integer(round(seq(1, n0, length.out = k)))))
     }
-    cw <- cumsum(w2)
+    cw <- kcumsum(w2)
     probs <- (seq_len(k)) / (k + 1)
     targets <- probs * cw[n0]
     idx <- vapply(targets, function(tt) which(cw >= tt)[1L], integer(1))
@@ -5281,14 +5284,14 @@ forest_test <- function(
   w_mean <- function(x, w) {
     ok <- is.finite(x) & is.finite(w)
     if (!any(ok)) return(NA_real_)
-    sum(w[ok] * x[ok]) / sum(w[ok])
+    ksum(w[ok] * x[ok]) / ksum(w[ok])
   }
 
   w_sd <- function(x, w) {
     ok <- is.finite(x) & is.finite(w)
     if (sum(ok) < 2L) return(NA_real_)
-    mu <- sum(w[ok] * x[ok]) / sum(w[ok])
-    sqrt(sum(w[ok] * (x[ok] - mu)^2) / sum(w[ok]))
+    mu <- ksum(w[ok] * x[ok]) / ksum(w[ok])
+    sqrt(ksum(w[ok] * (x[ok] - mu)^2) / ksum(w[ok]))
   }
 
   cutoff_index <- function(pred_local, cutoff) {
@@ -5441,16 +5444,16 @@ forest_test <- function(
       ## 5 (one per basic product needed to reconstruct the with-intercept
       ## moment below).
       dt[, `:=`(
-        Wg1 = cumsum(q1), Wg2 = cumsum(q2), Wg3 = cumsum(q3),
-        Wg4 = cumsum(q4), Wg5 = cumsum(q5)
+        Wg1 = kcumsum(q1), Wg2 = kcumsum(q2), Wg3 = kcumsum(q3),
+        Wg4 = kcumsum(q4), Wg5 = kcumsum(q5)
       ), by = .(sample, cl)]
 
       ## Global (within-sample) running sums -- rw-weighted (S1..S5) plus
       ## the always-sw-weighted demeaning sums (Sd1..Sd3).
       dt[, `:=`(
-        S1 = cumsum(q1), S2 = cumsum(q2), S3 = cumsum(q3),
-        S4 = cumsum(q4), S5 = cumsum(q5),
-        Sd1 = cumsum(sw), Sd2 = cumsum(sw * V), Sd3 = cumsum(sw * U)
+        S1 = kcumsum(q1), S2 = kcumsum(q2), S3 = kcumsum(q3),
+        S4 = kcumsum(q4), S5 = kcumsum(q5),
+        Sd1 = kcumsum(sw), Sd2 = kcumsum(sw * V), Sd3 = kcumsum(sw * U)
       ), by = sample]
 
       dt[, `:=`(Vbar = Sd2 / Sd1, Ubar = Sd3 / Sd1)]
@@ -5474,21 +5477,21 @@ forest_test <- function(
       tel <- function(Wp, qp, Wq, qq) Wp * Wq - (Wp - qp) * (Wq - qq)
 
       dt[, `:=`(
-        T11 = cumsum(tel(Wg1, q1, Wg1, q1)),
-        T12 = cumsum(tel(Wg1, q1, Wg2, q2)),
-        T13 = cumsum(tel(Wg1, q1, Wg3, q3)),
-        T14 = cumsum(tel(Wg1, q1, Wg4, q4)),
-        T15 = cumsum(tel(Wg1, q1, Wg5, q5)),
-        T22 = cumsum(tel(Wg2, q2, Wg2, q2)),
-        T23 = cumsum(tel(Wg2, q2, Wg3, q3)),
-        T24 = cumsum(tel(Wg2, q2, Wg4, q4)),
-        T25 = cumsum(tel(Wg2, q2, Wg5, q5)),
-        T33 = cumsum(tel(Wg3, q3, Wg3, q3)),
-        T34 = cumsum(tel(Wg3, q3, Wg4, q4)),
-        T35 = cumsum(tel(Wg3, q3, Wg5, q5)),
-        T44 = cumsum(tel(Wg4, q4, Wg4, q4)),
-        T45 = cumsum(tel(Wg4, q4, Wg5, q5)),
-        T55 = cumsum(tel(Wg5, q5, Wg5, q5))
+        T11 = kcumsum(tel(Wg1, q1, Wg1, q1)),
+        T12 = kcumsum(tel(Wg1, q1, Wg2, q2)),
+        T13 = kcumsum(tel(Wg1, q1, Wg3, q3)),
+        T14 = kcumsum(tel(Wg1, q1, Wg4, q4)),
+        T15 = kcumsum(tel(Wg1, q1, Wg5, q5)),
+        T22 = kcumsum(tel(Wg2, q2, Wg2, q2)),
+        T23 = kcumsum(tel(Wg2, q2, Wg3, q3)),
+        T24 = kcumsum(tel(Wg2, q2, Wg4, q4)),
+        T25 = kcumsum(tel(Wg2, q2, Wg5, q5)),
+        T33 = kcumsum(tel(Wg3, q3, Wg3, q3)),
+        T34 = kcumsum(tel(Wg3, q3, Wg4, q4)),
+        T35 = kcumsum(tel(Wg3, q3, Wg5, q5)),
+        T44 = kcumsum(tel(Wg4, q4, Wg4, q4)),
+        T45 = kcumsum(tel(Wg4, q4, Wg5, q5)),
+        T55 = kcumsum(tel(Wg5, q5, Wg5, q5))
       ), by = sample]
 
       dt[, `:=`(
@@ -5561,8 +5564,8 @@ forest_test <- function(
       ## the row-level (Z-Z.hat)^2 weight erases real per-cluster heterogeneity
       ## and inflates the reported statistic.
       dt[, `:=`(a = w * score, b = w, bsand = wsand)]
-      dt[, `:=`(WgY = cumsum(a), Wg = cumsum(b), WgSand = cumsum(bsand)), by = .(sample, cl)]
-      dt[, `:=`(SW = cumsum(b), SWY = cumsum(a)), by = sample]
+      dt[, `:=`(WgY = kcumsum(a), Wg = kcumsum(b), WgSand = kcumsum(bsand)), by = .(sample, cl)]
+      dt[, `:=`(SW = kcumsum(b), SWY = kcumsum(a)), by = sample]
       dt[, m := SWY / SW, by = sample]
 
       dt[, `:=`(
@@ -5572,9 +5575,9 @@ forest_test <- function(
       )]
 
       dt[, `:=`(
-        TA2 = cumsum(dTA2),
-        TB2 = cumsum(dTB2),
-        TAB = cumsum(dTAB)
+        TA2 = kcumsum(dTA2),
+        TB2 = kcumsum(dTB2),
+        TAB = kcumsum(dTAB)
       ), by = sample]
 
       dt[, G := cumsum(!duplicated(cl)), by = sample]
@@ -5676,9 +5679,9 @@ forest_test <- function(
         last <- rows[.N]
         infl <- if (isTRUE(cell_centered)) {
           M <- rows$rw * (rows$V - last$Vbar) * ((rows$U - last$Ubar) - last$m * (rows$V - last$Vbar))
-          tapply(M, rows$cl, sum) / last$varden
+          ksum_by(M, rows$cl) / last$varden
         } else {
-          tapply(rows$a - last$m * rows$bsand, rows$cl, sum) / last$SW
+          ksum_by(rows$a - last$m * rows$bsand, rows$cl) / last$SW
         }
         list(sample = s_i, G = res$G[i], df = res$df[i], se = res$se[i], u = infl)
       })

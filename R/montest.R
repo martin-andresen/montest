@@ -2703,7 +2703,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       )]
       dt_h[!is.finite(w_) | w_ < 0, w_ := 0]
       nrm <- dt_h[mw_ == TRUE, .(
-        a1 = sum(w_ * r1_) / sum(w_), a0 = sum(w_ * r0_) / sum(w_), i_ = i_
+        a1 = ksum(w_ * r1_) / ksum(w_), a0 = ksum(w_ * r0_) / ksum(w_), i_ = i_
       ), by = by_h]
       nrm <- nrm[is.finite(a1) & is.finite(a0) & a1 > 0 & a0 > 0]
       ipw__[nrm$i_] <- (data[[Zcol]][nrm$i_] / data[[zhat]][nrm$i_]) / nrm$a1 -
