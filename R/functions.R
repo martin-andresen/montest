@@ -3305,7 +3305,12 @@ fit_models <- function(DT,
   sample_all <- DT[["sample"]]
   folds_all  <- if (!is.null(folds)) DT[[folds]] else NULL
   wgt_all    <- if (!is.null(weight_name)) as.numeric(DT[[weight_name]]) else NULL
-  cl_all     <- if (!is.null(cluster_name)) DT[[cluster_name]] else NULL
+  ## Coerce to integer cluster ids (grf::causal_forest/regression_forest's `clusters=`
+  ## requires numeric mode; every other cluster-touching path in the package already
+  ## does this -- see forest_test() and CART_test's identical `as.integer(factor(...))`
+  ## idiom -- this one was missing it, which broke on any non-numeric cluster identifier
+  ## (e.g. a string country code) only when the forest-fitting path ran.
+  cl_all     <- if (!is.null(cluster_name)) as.integer(factor(DT[[cluster_name]], exclude = NULL)) else NULL
 
   z_is_linear_all <- if (!is.null(z_linear_score_name) &&
                          z_linear_score_name %in% names(DT)) {
