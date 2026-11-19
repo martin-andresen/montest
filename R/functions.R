@@ -4463,7 +4463,20 @@ crv1_mean <- function(score,
     gm <- data.table::data.table(cl = unique(cl_kept), m = gsum(dt1$meat, cl_kept))
 
     rank_adj_c <- rank_adj + 1
-    df_c <- G - 1 - rank_adj_c
+    ## Match fixest/Stata's default cluster-robust small-sample correction
+    ## (ssc(adj=TRUE, cluster.adj=TRUE)): the covariate-rank penalty is
+    ## charged against the ROW count N, not the cluster count G -- G/(G-1)
+    ## times (N-1)/(N-1-K), standard practice for K estimated regressors
+    ## that vary within cluster. Framed as an "effective df" below only so
+    ## the downstream G/df usage (here and in cell_corr_from_u()) stays
+    ## unchanged: df_c = (G-1)*(N-1-rank_adj_c)/(N-1) reduces to the
+    ## familiar G-1 whenever rank_adj_c is negligible relative to N (the
+    ## usual case), instead of cratering once rank_adj_c approaches G (see
+    ## git commit 4027872 for why this correction exists at all: Z.hat/
+    ## Q.hat's linear nuisances are fit in-sample under parametric=TRUE, so
+    ## their own estimation uncertainty must be charged somewhere).
+    N_c <- length(u_raw)
+    df_c <- (G - 1) * (N_c - 1 - rank_adj_c) / (N_c - 1)
 
     se_c <- if (G < 2L || df_c <= 0 || !is.finite(df_c)) {
       NA_real_
@@ -4579,7 +4592,10 @@ crv1_mean <- function(score,
   theta <- U / W
   ug <- gb$U - theta * gb$Wsand
 
-  df <- G - 1 - rank_adj
+  ## Same fixest/Stata-style ssc correction as the centered branch above --
+  ## see the comment there. N is the row count, not the cluster count.
+  N <- length(score)
+  df <- (G - 1) * (N - 1 - rank_adj) / (N - 1)
 
   if (G < 2L || df <= 0 || !is.finite(df)) {
     se <- NA_real_
@@ -5580,8 +5596,13 @@ forest_test <- function(
       ]
 
       ## One extra parameter (the local intercept) is estimated at every
-      ## cutoff here, matching crv1_mean(center=TRUE)'s rank_adj + 1.
-      dt[, df := G - 1 - .fe_rank_running - 1L]
+      ## cutoff here, matching crv1_mean(center=TRUE)'s rank_adj + 1. The
+      ## covariate-rank penalty (folded into .fe_rank_running via
+      ## x_rank_const()) is charged against the running row count N, not
+      ## the running cluster count G -- see crv1_mean()'s matching comment
+      ## for why (matches fixest/Stata's default ssc(adj=TRUE,
+      ## cluster.adj=TRUE) cluster-robust correction).
+      dt[, df := (G - 1) * (N - 1 - .fe_rank_running - 1L) / (N - 1)]
 
       dt[, se := NA_real_]
       dt[
@@ -5644,7 +5665,9 @@ forest_test <- function(
         sumS2 := 0
       ]
 
-      dt[, df := G - 1 - .fe_rank_running]
+      ## Same fixest/Stata-style ssc correction as the centered branch
+      ## above -- the rank penalty is charged against N, not G.
+      dt[, df := (G - 1) * (N - 1 - .fe_rank_running) / (N - 1)]
 
       dt[, se := NA_real_]
 
