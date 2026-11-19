@@ -63,3 +63,4 @@ sims/farbmachersims.R
 *.md
 !README.md
 !LICENSE.md
+/dev

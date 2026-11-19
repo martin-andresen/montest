@@ -2528,11 +2528,37 @@ estimate_conditional_mean <- function(DT,
 
   if (isTRUE(parametric)) {
 
-    if (has_X_expr || has_FE) {
+    ## montest documents that X may contain the same variable(s) as FE
+    ## (heterogeneity search on an FE dimension, e.g. an "ordered" FE offered
+    ## to fml.C/fml.Q) -- make_X_residualized_from_FE() handles this for the
+    ## parametric = FALSE / forest path (fe_search_raw), but a linear fit has
+    ## no analogous role for such a term: a covariate identical to (or built
+    ## only from) an FE variable is exactly collinear with that FE's own
+    ## dummies, has a structurally unidentified coefficient, and feols() can
+    ## return a fit with coef(fit) = NULL and 0-length fitted()/residuals()
+    ## for it instead of erroring (observed with a bare FE-dimension name,
+    ## e.g. `year`, entered as X while `year` is also in `fml`'s FE term) --
+    ## breaking the DT[ii_j, ...] assignment below. Drop any top-level
+    ## additive term of x_expr whose variables are entirely FE variables
+    ## before fitting; this changes nothing about the fit (the term's whole
+    ## linear contribution is already exactly absorbed by the FE).
+    x_expr_lin <- x_expr
+    if (has_X_expr && has_FE) {
+      fe_vars <- all.vars(fe_expr)
+      term_labels <- attr(stats::terms(stats::as.formula(call("~", x_expr))), "term.labels")
+      keep_labels <- term_labels[vapply(term_labels, function(tl) {
+        tv <- all.vars(str2lang(tl))
+        length(tv) == 0L || !all(tv %in% fe_vars)
+      }, logical(1L))]
+      x_expr_lin <- if (length(keep_labels) == 0L) quote(1) else str2lang(paste(keep_labels, collapse = " + "))
+    }
+    has_X_expr_lin <- has_X_expr && !identical(x_expr_lin, quote(1))
+
+    if (has_X_expr_lin || has_FE) {
       po <- feols_partial_out(
         DT = DT,
         y = y_name,
-        rhs_expr = if (has_X_expr) x_expr else quote(1),
+        rhs_expr = if (has_X_expr_lin) x_expr_lin else quote(1),
         fe_expr = fe_expr,
         by = by_fe,
         weight = weight,
@@ -2730,7 +2756,22 @@ make_X_residualized_from_FE <- function(DT,
   ## 1-1 with x_names regardless of which of the two is in effect) -- kept
   ## around so callers can label output (e.g. Xmeans/Xmeans_all/XSD) with
   ## the original covariate names instead of the internal `__xf_*` ones.
-  clean_names <- make.names(colnames(mm), unique = TRUE)
+  ## model.matrix() column names for a factor term include the factor's own
+  ## levels verbatim (e.g. a town or region name), which can contain non-ASCII
+  ## characters; make.names() calls into the C-level multibyte-string decoder,
+  ## which errors ("invalid multibyte string") whenever the session locale's
+  ## character encoding (LC_CTYPE) doesn't match how those bytes were encoded
+  ## -- observed with accented Italian place names under a "C" locale session.
+  ## Transliterating to plain ASCII first sidesteps the encoding mismatch
+  ## entirely (these are internal column labels, not user-facing output, so
+  ## losing diacritics here is harmless) instead of requiring every caller's
+  ## process locale to agree with the data's encoding.
+  mm_colnames <- tryCatch({
+    nm <- enc2utf8(colnames(mm))
+    iconv(nm, from = "UTF-8", to = "ASCII//TRANSLIT", sub = "byte")
+  }, error = function(e) colnames(mm))
+  mm_colnames[is.na(mm_colnames)] <- colnames(mm)[is.na(mm_colnames)]
+  clean_names <- make.names(mm_colnames, unique = TRUE)
 
   raw_names <- paste0(prefix, "_raw_", clean_names)
   mm_dt <- data.table::as.data.table(mm)

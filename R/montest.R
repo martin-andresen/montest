@@ -2384,11 +2384,19 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   margin_index <- data.table::rbindlist(idx_blocks, use.names = TRUE, fill = TRUE)
 
   # Drop columns with no substantive variation in the margin index itself.
-  # This prevents variables like linear = "none" only, or dval all NA, from
-  # becoming margins later.
+  # This prevents variables like linear = "none" only from becoming margins
+  # later. `dval` is excluded unconditionally (not just when kr_sums is set):
+  # whenever it exists in margin_index at all, the KR/MW Q-construction code
+  # below references data[["dval"]] by name unconditionally (e.g. dval ==
+  # dmin__), even for a margin_index with only one surviving dval value --
+  # which happens whenever the one-sided-noncompliance screen leaves only a
+  # single non-trivial treatment margin (observed with Bergquist2020: all
+  # interior thresholds one-sided, only the minimum D value survives).
+  # Dropping it there would silently remove a column the rest of the function
+  # still assumes exists, instead of a harmless margin-dimension prune.
   drop_nonvarying_index_cols <- function(mi,
                                          always_keep = "condition",
-                                         exclude = c("Avals", "sum_hi", "sum_lo", if (!is.null(kr_sums)) "dval")) {
+                                         exclude = c("Avals", "sum_hi", "sum_lo", "dval")) {
     drop_cols <- setdiff(names(mi), c(always_keep, exclude))
 
     for (cc in drop_cols) {
