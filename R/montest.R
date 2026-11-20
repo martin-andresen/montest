@@ -1384,9 +1384,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       call. = FALSE
     )
   }
-  if (J==2&K==2&!has_X_expr_forest&!any(condition %in% c("AHS","MW","KR"))) {
-    stop("Nothing to test with a binary treatment, a binary instrument, the simple first stage condition and no variables in X.")
-  }
+  ## With a binary treatment, a binary instrument, the simple condition and nothing to search over
+  ## (no covariates in `fml.C`), the test is just the global first-stage estimate (no split, no
+  ## selection), which is still a well-defined result, so it is run rather than rejected.
 
   time=rbind(time,"Binarize treatment, instrument and outcome"=proc.time())
 
