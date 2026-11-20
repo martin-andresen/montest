@@ -306,7 +306,7 @@ cart_choose_group_selection <- function(dt_grp, screen, alpha) {
 
   if (screen == "stepdown") {
     data.table::setorder(dtf, t)
-    p <- p_from_t(dtf$t)
+    p <- p_from_t(dtf$t, if ("df" %in% names(dtf)) dtf$df else NULL)
 
     m_keep <- 1L
 
@@ -584,7 +584,7 @@ CART_test <- function(
       if (nrow(dtf) == 0L) return(integer())
 
       data.table::setorder(dtf, t)
-      p <- p_from_t(dtf$t)
+      p <- p_from_t(dtf$t, if ("df" %in% names(dtf)) dtf$df else NULL)
 
       m_keep <- 1L
 
@@ -775,7 +775,7 @@ CART_test <- function(
         coef = o$coef,
         stderr = o$se,
         t = o$t,
-        p.raw = p_from_t(o$t)
+        p.raw = p_from_t(o$t, o$df)
       )
     }, by = "sample"]
 
@@ -915,7 +915,7 @@ CART_test <- function(
       }, by = leaf]
 
       train_leaf[, `:=`(train = TRUE, sample = train_s)]
-      train_leaf[, p.raw := p_from_t(t)]
+      train_leaf[, p.raw := p_from_t(t, df)]
 
       prom <- select_leaves_local(train_leaf[is.finite(t), .(leaf, t)])
       train_leaf <- add_key_cols(train_leaf, key_dt, margins)
@@ -1248,7 +1248,7 @@ CART_test <- function(
       coef = o$coef,
       stderr = o$se,
       t = o$t,
-      p.raw = p_from_t(o$t),
+      p.raw = p_from_t(o$t, o$df),
       relevant = NA_integer_
     )
 
@@ -4207,8 +4207,15 @@ rank_adj_total <- function(data, idx, fe_expr, x_vars = NULL, weight_col = NULL,
 ## numerator and standard error are both exactly 0 (every score in the tested subset is zero, so the
 ## data carry no evidence either way) has t = 0/0 = NaN and gets p = 1 (never a rejection), instead of
 ## NaN, which the callers would drop silently. An NA t (test not run) stays NA.
-p_from_t <- function(t) {
+p_from_t <- function(t, df = NULL) {
+  ## Default: Student t with the test's own degrees of freedom `df` (the cluster/rank-based df the
+  ## standard error uses). Rows with a missing, non-positive or infinite df, or the option
+  ## `montest.pvalue = "normal"` (set by montest(pvalue = "normal")), use the standard normal.
   p <- stats::pnorm(t)
+  if (!identical(getOption("montest.pvalue", "t"), "normal") && !is.null(df)) {
+    ok <- is.finite(df) & df > 0 & is.finite(t)
+    if (any(ok)) p[ok] <- stats::pt(t[ok], df = df[ok])
+  }
   p[is.nan(t)] <- 1
   p
 }
@@ -4738,7 +4745,7 @@ select_groups_screen <- function(dt_grp, t_col = "sel_t", alpha = 0.05, screen =
   if (screen == "stepdown") {
     keep_n <- 1L
     if (nrow(d) >= 2L) {
-      p <- p_from_t(d[[t_col]])
+      p <- p_from_t(d[[t_col]], if ("df" %in% names(d)) d[["df"]] else NULL)
       for (r in 2:nrow(d)) {
         p_top <- p[seq_len(r)]
         p_holm <- stats::p.adjust(p_top, method = "holm")
@@ -5804,7 +5811,7 @@ forest_test <- function(
       stderr = res$se,
       t = res$t_stat,
       tau_cutoff = res$pred,
-      p.raw = p_from_t(res$t_stat)
+      p.raw = p_from_t(res$t_stat, res$df)
     )
 
     if (!is.null(key_dt) && ncol(key_dt) > 0L) {
@@ -6049,7 +6056,7 @@ forest_test <- function(
       stderr = o$se,
       t = o$t,
       tau_cutoff = NA_real_,
-      p.raw = p_from_t(o$t)
+      p.raw = p_from_t(o$t, o$df)
     )
 
     if (!is.null(selected_test_keys) && nrow(selected_test_keys) == 1L) {
@@ -6091,7 +6098,7 @@ forest_test <- function(
         stderr = o$se,
         t = o$t,
         tau_cutoff = NA_real_,
-        p.raw = p_from_t(o$t)
+        p.raw = p_from_t(o$t, o$df)
       )
     }, by = test_by]
 
@@ -6169,7 +6176,7 @@ forest_test <- function(
         stderr = o$se,
         t = o$t,
         tau_cutoff = NA_real_,
-        p.raw = p_from_t(o$t)
+        p.raw = p_from_t(o$t, o$df)
       )
     }, by = eval(if (length(pool_key) > 0L) pool_key else NULL)]
 
@@ -6241,7 +6248,7 @@ forest_test <- function(
             stderr = o$se,
             t = o$t,
             tau_cutoff = NA_real_,
-            p.raw = p_from_t(o$t)
+            p.raw = p_from_t(o$t, o$df)
           )
         }, by = pool_key]
 
@@ -6565,7 +6572,7 @@ global_means_crv1 <- function(
       stderr = o$se,
       t = o$t,
       tau_cutoff = NA_real_,
-      p.raw = p_from_t(o$t)
+      p.raw = p_from_t(o$t, o$df)
     )
 
   } else {
@@ -6587,7 +6594,7 @@ global_means_crv1 <- function(
         stderr = o$se,
         t = o$t,
         tau_cutoff = NA_real_,
-        p.raw = p_from_t(o$t)
+        p.raw = p_from_t(o$t, o$df)
       )
     }, by = by_cols]
 

@@ -164,6 +164,7 @@
 #' @param priority.floor Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 #'   at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
 #'   non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.
+#' @param pvalue Character, \code{"t"} (default) or \code{"normal"}. How raw p-values are computed from the t-statistics: Student t with the test's own degrees of freedom (the cluster/rank-based \code{df} reported in the results; rows without a finite df fall back to the normal), or the standard normal.
 #' @param priority.var Character, \code{"model"} (default) or \code{"scores"}. With \code{priority = TRUE}, how the score
 #'   variance \code{v(X)} is obtained. \code{"scores"} always uses the regression forest on the squared centered scores
 #'   described under \code{priority}. \code{"model"} instead computes \code{v(X)} in closed form, without a forest, for
@@ -404,7 +405,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  stabilize.scores="hajek",aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,kr_sums=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
@@ -613,6 +614,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   stopifnot(is.numeric(priority.floor), length(priority.floor) == 1L,
             is.finite(priority.floor), priority.floor > 0, priority.floor <= 1)
   priority.var <- match.arg(priority.var)
+  pvalue <- match.arg(pvalue)
+  old_pv_opt <- options(montest.pvalue = pvalue)
+  on.exit(options(old_pv_opt), add = TRUE)
   if (priority && testtype != "forest") {
     warning("`priority` only applies with testtype = \"forest\"; ignoring.", call. = FALSE)
     priority <- FALSE
@@ -3652,7 +3656,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
 
     if (!is.null(res$global)) {
-      res$global[,p.raw:=p_from_t(t)]
+      res$global[,p.raw:=p_from_t(t, if ("df" %in% names(res$global)) df else NULL)]
       if (nrow(res$global)>1) {
         for (m in c("holm","hochberg","BH","BY")) {
           res$global[,paste0("p.",m):=p.adjust(p.raw,method=m)]
