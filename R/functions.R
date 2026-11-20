@@ -433,6 +433,9 @@ CART_test <- function(
     arm = NULL,
     arm_weight = NULL,
     miness = 10,
+    infoz = NULL,
+    infod = NULL,
+    minvar = 0,
     screen = c("stepdown","none", "minimum", "negative", "nonpositive", "fgk_relevant"),
     store_trees = FALSE,
     verbose = FALSE,
@@ -851,7 +854,9 @@ CART_test <- function(
         w      = w_group,
         w_sandwich = w_sandwich_group,
         arm    = if (!is.null(arm)) as.integer(df_group[[as.character(arm)]]) else NA_integer_,
-        armw   = if (!is.null(arm_weight)) as.numeric(df_group[[as.character(arm_weight)]]) else NA_real_
+        armw   = if (!is.null(arm_weight)) as.numeric(df_group[[as.character(arm_weight)]]) else NA_real_,
+        infoz  = if (!is.null(infoz)) as.numeric(df_group[[as.character(infoz)]]) else NA_real_,
+        infod  = if (!is.null(infod)) as.numeric(df_group[[as.character(infod)]]) else NA_real_
       )
       if (!is.null(cluster_col)) {
         dt0[, cl := as.integer(factor(cl_group, exclude = NULL))]
@@ -865,7 +870,7 @@ CART_test <- function(
         G_here <- data.table::uniqueN(cl)
         N_here <- .N
 
-        if (G_here < minsize || !utils::tail(arm_ok_prefix(arm, cl, armw, miness), 1L)) {
+        if (G_here < minsize || !utils::tail(arm_ok_prefix(arm, cl, armw, miness, infoz, infod, minvar), 1L)) {
           list(
             G = G_here,
             N = N_here,
@@ -4229,16 +4234,32 @@ p_from_t <- function(t, df = NULL) {
 ## is close to 1 when a few rows carry almost all of the weight. `arm` is a 1/0 vector in sort order; an
 ## all-NA arm (continuous Z, or no arm supplied) imposes no constraint, and without weights the rows count
 ## equally. A leaf without instrument variation identifies nothing.
-arm_ok_prefix <- function(arm, cl, armw = NULL, miness = 10) {
-  if (!length(arm) || all(is.na(arm))) return(rep(TRUE, length(arm)))
-  if (is.null(armw) || !any(is.finite(armw))) armw <- rep(1, length(arm))
-  ok_arm <- function(a) {
-    w <- ifelse(arm == a & is.finite(armw), armw, 0)
-    s_before <- stats::ave(w, cl, FUN = kcumsum) - w
-    ss <- kcumsum(2 * s_before * w + w^2)
-    ifelse(ss > 0, kcumsum(w)^2 / ss, 0) >= miness
+arm_ok_prefix <- function(arm, cl, armw = NULL, miness = 10, infoz = NULL, infod = NULL, minvar = 0) {
+  n <- length(arm)
+  ok <- rep(TRUE, n)
+  if (n && !all(is.na(arm))) {
+    if (is.null(armw) || !any(is.finite(armw))) armw <- rep(1, n)
+    ok_arm <- function(a) {
+      w <- ifelse(arm == a & is.finite(armw), armw, 0)
+      s_before <- stats::ave(w, cl, FUN = kcumsum) - w
+      ss <- kcumsum(2 * s_before * w + w^2)
+      ifelse(ss > 0, kcumsum(w)^2 / ss, 0) >= miness
+    }
+    ok <- ok_arm(1L) & ok_arm(0L)
   }
-  ok_arm(1L) & ok_arm(0L)
+  ## Information guard (`minvar`): the running mean of the squared instrument residual (infoz) and of the
+  ## squared treatment residual (infod), each pre-scaled by its pooled mean so that 1 = typical, must be at
+  ## least `minvar`. A leaf in which the covariates all but determine the instrument or the treatment
+  ## (e.g. a cell-level covariate identifying Z) carries no information; dividing by its tiny conditional
+  ## variance would otherwise turn numerical noise into an arbitrarily large t-statistic.
+  if (n && is.finite(minvar) && minvar > 0) {
+    for (inf in list(infoz, infod)) {
+      if (is.null(inf) || !any(is.finite(inf))) next
+      inf <- ifelse(is.finite(inf), inf, 1)
+      ok <- ok & (kcumsum(inf) / seq_len(n) >= minvar)
+    }
+  }
+  ok
 }
 
 crv1_mean <- function(score,
@@ -5113,6 +5134,9 @@ forest_test <- function(
     arm = NULL,
     arm_weight = NULL,
     miness = 10,
+    infoz = NULL,
+    infod = NULL,
+    minvar = 0,
     margins = NULL,
     pool = NULL,
     select = NULL,
@@ -5326,6 +5350,8 @@ forest_test <- function(
   if (!is.null(arm)) stopifnot(as.character(arm) %in% names(data))
   armv <- if (!is.null(arm)) as.integer(data[[as.character(arm)]]) else rep(NA_integer_, n)
   armwv <- if (!is.null(arm_weight)) as.numeric(data[[as.character(arm_weight)]]) else rep(NA_real_, n)
+  infozv <- if (!is.null(infoz)) as.numeric(data[[as.character(infoz)]]) else rep(NA_real_, n)
+  infodv <- if (!is.null(infod)) as.numeric(data[[as.character(infod)]]) else rep(NA_real_, n)
 
   fe_vars_needed <- if (!is.null(fe_expr)) unique(all.vars(fe_expr)) else character(0)
   fe_vars_needed <- fe_vars_needed[fe_vars_needed %in% names(data)]
@@ -5414,6 +5440,8 @@ forest_test <- function(
       cl     = cl,
       arm    = armv[idx],
       armw   = armwv[idx],
+      infoz  = infozv[idx],
+      infod  = infodv[idx],
       rid    = seq_along(idx)
     )
     if (isTRUE(cell_centered)) {
@@ -5461,7 +5489,7 @@ forest_test <- function(
     }
 
     dt[, N := seq_len(.N), by = sample]
-    dt[, arm_ok := arm_ok_prefix(arm, cl, armw, miness), by = sample]
+    dt[, arm_ok := arm_ok_prefix(arm, cl, armw, miness, infoz, infod, minvar), by = sample]
 
     if (isTRUE(cell_centered)) {
       ## Centered/with-intercept theta(k) and its cluster-robust SE, at
@@ -5701,10 +5729,10 @@ forest_test <- function(
 
     tau_tr <- dt[G >= minsize & arm_ok, .(tau_tr = min(pred, na.rm = TRUE)), by = sample]
 
-    dt_est <- dt[, .(sample, pred_o, cl, w, arm, armw)]
+    dt_est <- dt[, .(sample, pred_o, cl, w, arm, armw, infoz, infod)]
     data.table::setorder(dt_est, sample, pred_o)
     dt_est[, G_est := cumsum(!duplicated(cl)), by = sample]
-    dt_est[, arm_ok_est := arm_ok_prefix(arm, cl, armw, miness), by = sample]
+    dt_est[, arm_ok_est := arm_ok_prefix(arm, cl, armw, miness, infoz, infod, minvar), by = sample]
     tau_est <- dt_est[G_est >= minsize & arm_ok_est, .(tau_est = min(pred_o, na.rm = TRUE)), by = sample]
 
     if (nrow(tau_tr) < 2L || nrow(tau_est) < 2L) {

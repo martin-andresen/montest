@@ -164,6 +164,7 @@
 #' @param priority.floor Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 #'   at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
 #'   non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.
+#' @param minvar Numeric in [0, 1), default 0.05. Information guard of the subgroup search (local tests only): a candidate subgroup is eligible only if, within it, the mean squared instrument residual \code{(Z - Z.hat)^2} and the mean squared treatment residual are each at least \code{minvar} times their pooled means. It rules out leaves in which the covariates all but determine the instrument or the treatment (for example a cell-level covariate identifying a cell-level instrument), where dividing by a near-zero conditional variance turns numerical noise into an arbitrarily large t-statistic. \code{0} switches the guard off.
 #' @param pvalue Character, \code{"t"} (default) or \code{"normal"}. How raw p-values are computed from the t-statistics: Student t with the test's own degrees of freedom (the cluster/rank-based \code{df} reported in the results; rows without a finite df fall back to the normal), or the standard normal.
 #' @param priority.var Character, \code{"model"} (default) or \code{"scores"}. With \code{priority = TRUE}, how the score
 #'   variance \code{v(X)} is obtained. \code{"scores"} always uses the regression forest on the squared centered scores
@@ -405,7 +406,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  stabilize.scores="hajek",aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),minvar=0.05,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,kr_sums=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
@@ -615,6 +616,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
             is.finite(priority.floor), priority.floor > 0, priority.floor <= 1)
   priority.var <- match.arg(priority.var)
   pvalue <- match.arg(pvalue)
+  stopifnot(is.numeric(minvar), length(minvar) == 1L, is.finite(minvar), minvar >= 0, minvar < 1)
   old_pv_opt <- options(montest.pvalue = pvalue)
   on.exit(options(old_pv_opt), add = TRUE)
   if (priority && testtype != "forest") {
@@ -1125,7 +1127,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## estimated propensity closer to 0 or 1 than about that is mostly noise at half-sample size n / 2, and its
   ## inverse would dominate the IPW scores. The floor on the fitted variance nuisance keeps its old value
   ## (1e-3), so designs with a continuous instrument or fixed effects are unaffected by the sample size.
-  aipw.clip.v <- if (aipw.clip_auto) 1e-3 else aipw.clip
+  aipw.clip.v <- if (aipw.clip_auto) 0.05 else aipw.clip
   if (aipw.clip_auto) aipw.clip <- min(0.2, max(1e-3, 0.5 / sqrt(nrow(data) / 2)))
 
   if (!is.null(weight)) {
@@ -3444,10 +3446,30 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## stack = FALSE with a selection rule: no selection inside the block; it is applied
   ## jointly over all blocks afterwards (finalize_deferred_selection()).
   if (defer_selection) selectmargins <- character()
+  ## Information guard (`minvar`): per-row squared instrument residual (Z - Z.hat)^2 and squared treatment
+  ## residual, each divided by its pooled mean; forest_test()/CART_test() only consider leaves in which the
+  ## running means of both are at least `minvar`.
+  infoz_arg <- NULL
+  infod_arg <- NULL
+  if (local && minvar > 0) {
+    zh__ <- if (zhat %in% names(data)) as.numeric(data[[zhat]]) else rep(NA_real_, nrow(data))
+    iz__ <- (as.numeric(data[[Z]]) - zh__)^2
+    if (any(is.finite(iz__)) && mean(iz__, na.rm = TRUE) > 0) {
+      data[, .infoz := iz__ / mean(iz__, na.rm = TRUE)]
+      infoz_arg <- ".infoz"
+    }
+    if (".resid_treat" %in% names(data)) {
+      id__ <- as.numeric(data[[".resid_treat"]])^2
+      if (any(is.finite(id__)) && mean(id__, na.rm = TRUE) > 0) {
+        data[, .infod := id__ / mean(id__, na.rm = TRUE)]
+        infod_arg <- ".infod"
+      }
+    }
+  }
 
   if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
-  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
-  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
+  if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,infoz=infoz_arg,infod=infod_arg,minvar=minvar,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
+  if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,infoz=infoz_arg,infod=infod_arg,minvar=minvar,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
   time=rbind(time,"Find promising subset and test"=proc.time())
   if (!local) rownames(time)[nrow(time)] <- "Construct test results"
