@@ -164,6 +164,9 @@
 #' @param priority.floor Numeric in (0, 1], default 0.01. With \code{priority = TRUE}, the estimated score variance is floored
 #'   at this fraction of its median (positive values, within each margin cell and sample half) before dividing, so that
 #'   non-positive or tiny fitted variances cannot produce infinite or sign-flipped sort keys. Non-finite values are set to the median.
+#' @param overlap.check One of \code{"error"} (default), \code{"warn"}, \code{"off"}. Two overlap diagnostics are run (see \code{$overlap} in the result). (1) If the instrument is binary and a single cutoff in one numeric covariate or fixed-effect slope variable classifies it with accuracy of at least \code{overlap.sep} (default 0.99), the design has the sharp-cutoff structure of a (fuzzy) regression discontinuity: there is no overlap in the running variable. With \code{parametric = FALSE} this is an error under \code{"error"} (use \code{"warn"} to run anyway); with \code{parametric = TRUE} it is a warning, since the parametric test is a local-linear jump test. (2) The share of fixed-effect-adjusted variation in the instrument left after the nuisance (\eqn{\rho}) is computed per instrument margin; below \code{overlap.rho[2]} (default 0.05) is a warning and below \code{overlap.rho[1]} (default 0.01) an error for \code{parametric = FALSE} (a warning otherwise).
+#' @param overlap.rho Length-2 numeric, the error and warning thresholds for the residual instrument-variation share (see \code{overlap.check}).
+#' @param overlap.sep Threshold in (0.5, 1] for the cutoff-classification accuracy that flags a deterministic threshold structure (see \code{overlap.check}).
 #' @param minvar Numeric in [0, 1), default 0.05. Information guard of the subgroup search (local tests only): a candidate subgroup is eligible only if, within it, the mean squared instrument residual \code{(Z - Z.hat)^2} and the mean squared treatment residual are each at least \code{minvar} times their pooled means. It rules out leaves in which the covariates all but determine the instrument or the treatment (for example a cell-level covariate identifying a cell-level instrument), where dividing by a near-zero conditional variance turns numerical noise into an arbitrarily large t-statistic. \code{0} switches the guard off.
 #' @param pvalue Character, \code{"t"} (default) or \code{"normal"}. How raw p-values are computed from the t-statistics: Student t with the test's own degrees of freedom (the cluster/rank-based \code{df} reported in the results; rows without a finite df fall back to the normal), or the standard normal.
 #' @param priority.var Character, \code{"model"} (default) or \code{"scores"}. With \code{priority = TRUE}, how the score
@@ -406,7 +409,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  stabilize.scores="hajek",aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
                  Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
-                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),minvar=0.05,linearD=FALSE,linearZ=FALSE,target=NULL,
+                 gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),minvar=0.05,overlap.check=c("error","warn","off"),overlap.rho=c(0.01,0.05),overlap.sep=0.99,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,kr_sums=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
@@ -617,6 +620,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   priority.var <- match.arg(priority.var)
   pvalue <- match.arg(pvalue)
   stopifnot(is.numeric(minvar), length(minvar) == 1L, is.finite(minvar), minvar >= 0, minvar < 1)
+  overlap.check <- match.arg(overlap.check)
+  stopifnot(is.numeric(overlap.rho), length(overlap.rho) == 2L, all(is.finite(overlap.rho)),
+            overlap.rho[1L] >= 0, overlap.rho[1L] <= overlap.rho[2L], overlap.rho[2L] < 1,
+            is.numeric(overlap.sep), length(overlap.sep) == 1L, overlap.sep > 0.5, overlap.sep <= 1)
+  ovl <- new.env(parent = emptyenv()); ovl$sep <- NULL; ovl$rho <- list()
   old_pv_opt <- options(montest.pvalue = pvalue)
   on.exit(options(old_pv_opt), add = TRUE)
   if (priority && testtype != "forest") {
@@ -1205,6 +1213,32 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   obs=c(N=n,G=G)
   data[, id_ := .I]
 
+  ## ---- Overlap check 1: is a binary Z a deterministic threshold function of a covariate / FE-slope
+  ## variable (sharp-cutoff, regression-discontinuity structure)? See `overlap.check`. Run here on the
+  ## raw Z, and again per margin on the binarized stacked Z (continuous / multivalued Z) once it exists.
+  sep_cand <- setdiff(unique(c(vars_Z, vars_forest, vars_Q, vars_FE)), c(Y, D, Z, weight, cluster))
+  handle_separation <- function(sep) {
+    if (is.null(sep) || !is.null(ovl$sep)) return(invisible(NULL))
+    sep$var <- sub("^\\.mt_", "", sep$var)
+    ovl$sep <- sep
+    Z_lab <- sub("^\\.mt_", "", Z)
+    msg <- sprintf(paste0(
+      "No overlap: the binary instrument `%s` is (almost) a deterministic threshold function of `%s` ",
+      "(best single cutoff classifies it with %.1f%% accuracy). This is the structure of a sharp-cutoff ",
+      "(fuzzy regression-discontinuity) design with `%s` as the running variable. Overlap-based nonparametric ",
+      "nuisances (propensity/outcome forests, overlap weights) are not valid here: a flexible function of ",
+      "`%s` -- or of anything partialled out on it -- predicts `%s` almost perfectly. Use `parametric = TRUE` ",
+      "(a local-linear jump test at a fixed bandwidth) or remove `%s` from the covariates. To run anyway, set ",
+      "overlap.check = \"warn\" (or \"off\")."),
+      Z_lab, sep$var, 100 * sep$acc, sep$var, sep$var, Z_lab, sep$var)
+    if (!isTRUE(parametric) && identical(overlap.check, "error")) stop(msg, call. = FALSE)
+    warning(if (isTRUE(parametric)) sub(" Use `parametric = TRUE`.*$", " The parametric test is a local-linear jump test at a fixed bandwidth.", msg) else msg, call. = FALSE)
+    invisible(NULL)
+  }
+  if (!identical(overlap.check, "off")) {
+    handle_separation(overlap_separation(data, Z, sep_cand, weight = weight, tol = overlap.sep))
+  }
+
 
   ##OUTER SPLIT
   stopifnot(is.logical(stratify), length(stratify) == 1L, !is.na(stratify))
@@ -1681,6 +1715,37 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## hajek_score() in functions.R.
   ## ---------------------------------------------------------------------
   check_zhat_ols_v(data = data, Z = Z, need_ols_v = need_ols_v)
+
+  if (!identical(overlap.check, "off") && is.null(ovl$sep)) {
+    grp_sep <- if ("zmargin" %in% names(data)) unique(stats::na.omit(data$zmargin)) else NULL
+    for (g in grp_sep) {
+      handle_separation(overlap_separation(data[which(data$zmargin == g)], Z, sep_cand, weight = weight, tol = overlap.sep))
+      if (!is.null(ovl$sep)) break
+    }
+  }
+
+  ## ---- Overlap check 2: how much FE-adjusted variation in Z is left after the nuisance? See `overlap.check`.
+  if (!identical(overlap.check, "off")) {
+    ovr <- overlap_residual_share(data, Z, zhat, weight = weight, fe_expr = if (has_FE) FE_expr else NULL)
+    if (!is.null(ovr)) {
+      ovl$rho[[length(ovl$rho) + 1L]] <- ovr
+      worst <- ovr[which.min(rho_X)]
+      if (worst$rho_X < overlap.rho[1L] || worst$rho_X < overlap.rho[2L]) {
+        severe <- worst$rho_X < overlap.rho[1L]
+        msg <- sprintf(paste0(
+          "Near-degenerate overlap: after conditioning on the covariates and fixed effects only %.2f%% of the ",
+          "fixed-effect-adjusted variation in the instrument `%s` remains (margin %s; below %.0f%%). The covariates%s ",
+          "(almost) determine the instrument, so the nuisance residual -- the denominator of every test statistic -- ",
+          "is close to zero and estimates and p-values are unreliable.%s"),
+          100 * worst$rho_X, sub("^\\.mt_", "", Z), worst$margin, 100 * (if (severe) overlap.rho[1L] else overlap.rho[2L]),
+          if (isTRUE(parametric)) "" else " (or a flexible function of them / of the partialled-out fixed effects)",
+          if (severe && !isTRUE(parametric) && identical(overlap.check, "error"))
+            " To run anyway, set overlap.check = \"warn\" (or \"off\")." else "")
+        if (severe && !isTRUE(parametric) && identical(overlap.check, "error")) stop(msg, call. = FALSE)
+        warning(msg, call. = FALSE)
+      }
+    }
+  }
 
   ## ---------------------------------------------------------------------
   ## Conditional-variance nuisance v(X) = Var(Z|X). Continuous-Z rows always
@@ -3727,6 +3792,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     time = time,
     obs = obs,
     dropped = c(fe_singletons = n_dropped_singletons, novar_Z = n_dropped_novar_Z),
+    overlap = list(
+      separation = ovl$sep,
+      residual_share = if (length(ovl$rho)) data.table::rbindlist(ovl$rho, use.names = TRUE, fill = TRUE) else NULL,
+      check = overlap.check),
     margins = margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE],
     Ylookup = Ylookup
   ))

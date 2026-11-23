@@ -7150,3 +7150,86 @@ check_cross_memory <- function(data, mi, mc_keys__, stack) {
   }
   invisible(NULL)
 }
+
+
+## ---------------------------------------------------------------------------
+## Overlap diagnostics (see montest(overlap.check=)).
+##
+## `overlap_separation()`: for a BINARY instrument, finds the numeric variable
+## (among `vars`) whose best single-threshold rule classifies Z with the highest
+## weighted accuracy. Accuracy near 1 means Z is (almost) a deterministic
+## threshold function of that variable -- the sharp-cutoff structure of a
+## (fuzzy) regression discontinuity, with the variable as the running variable --
+## so there is no overlap in it and any flexible nuisance that can reconstruct
+## the variable can predict Z almost perfectly. Rows with zero weight are ignored
+## (kernel-weighted RD windows). Returns NULL when Z is not binary or nothing
+## qualifies, else list(var, acc, thr_dir).
+overlap_separation <- function(data, Z, vars, weight = NULL, tol = 0.99, max_vars = 40L) {
+  z <- data[[Z]]
+  zu <- sort(unique(z[is.finite(z)]))
+  if (length(zu) != 2L) return(NULL)
+  w <- if (is.null(weight)) rep(1, nrow(data)) else as.numeric(data[[weight]])
+  ok <- is.finite(z) & is.finite(w) & w > 0
+  zb <- as.numeric(z == zu[2L])
+  maj <- {tw <- sum(w[ok]); max(sum(w[ok] * zb[ok]), sum(w[ok] * (1 - zb[ok]))) / tw}
+  if (!is.finite(maj) || maj >= tol) return(NULL)
+  vars <- setdiff(unique(vars), c(Z, "const"))
+  vars <- vars[vars %in% names(data)]
+  best <- list(var = NA_character_, acc = 0)
+  for (v in utils::head(vars, max_vars)) {
+    x <- data[[v]]
+    if (!is.numeric(x)) next
+    okv <- ok & is.finite(x)
+    if (sum(okv) < 20L) next
+    xs <- x[okv]; o <- order(xs); xs <- xs[o]; zz <- zb[okv][o]; ww <- w[okv][o]
+    n <- length(xs)
+    if (xs[1L] == xs[n]) next
+    c1 <- cumsum(ww * zz); c0 <- cumsum(ww * (1 - zz)); T1 <- c1[n]; T0 <- c0[n]
+    cut_ok <- c(xs[-1L] != xs[-n], FALSE)
+    acc <- pmax((c0 + (T1 - c1)), (c1 + (T0 - c0))) / (T0 + T1)
+    a <- max(acc[cut_ok])
+    if (is.finite(a) && a > best$acc) best <- list(var = v, acc = a)
+  }
+  if (is.na(best$var) || best$acc < tol) return(NULL)
+  best
+}
+
+## `overlap_residual_share()`: the share of the fixed-effect-adjusted variation in Z
+## that the (cross-fitted) nuisance Z.hat leaves unexplained, per Z margin:
+## rho_X = sum(w (Z - Z.hat)^2) / sum(w Zt_FE^2), with Zt_FE the residual of Z on the
+## fixed effects alone (on the plain weighted mean when there are none). A value near 0
+## means the covariates (or a flexible function of them / of the partialled-out
+## fixed effects) nearly determine Z. rho_FE = sum(w Zt_FE^2) / sum(w (Z-mean)^2) is
+## returned for information. Returns the minimum of rho_X over margins.
+overlap_residual_share <- function(data, Z, zhat, weight = NULL, fe_expr = NULL,
+                                   by = "zmargin") {
+  zhat_col <- zhat
+  if (!all(c(Z, zhat_col) %in% names(data))) return(NULL)
+  grp <- if (by %in% names(data)) as.character(data[[by]]) else rep("all", nrow(data))
+  grp[is.na(grp)] <- "all"
+  w_all <- if (is.null(weight)) rep(1, nrow(data)) else as.numeric(data[[weight]])
+  zv <- as.numeric(data[[Z]]); zh <- as.numeric(data[[zhat_col]])
+  out <- lapply(unique(grp), function(g) {
+    i <- which(grp == g & is.finite(zv) & is.finite(zh) & is.finite(w_all) & w_all > 0)
+    if (length(i) < 20L) return(NULL)
+    w <- w_all[i]; z <- zv[i]
+    zc <- z - stats::weighted.mean(z, w)
+    tot <- sum(w * zc^2)
+    zt <- zc
+    if (!is.null(fe_expr)) {
+      sub <- data.table::data.table(.z = z, .w = w)
+      fe_vars <- all.vars(fe_expr)
+      for (fv in fe_vars) if (fv %in% names(data)) sub[[fv]] <- data[[fv]][i]
+      fml <- eval(bquote(.z ~ 1 | .(fe_expr)))
+      m <- tryCatch(fixest::feols(fml, data = sub, weights = sub$.w, nthreads = 1L, notes = FALSE, warn = FALSE),
+                    error = function(e) NULL)
+      if (!is.null(m)) zt <- as.numeric(stats::resid(m))
+    }
+    den <- sum(w * zt^2)
+    num <- sum(w * (z - zh[i])^2)
+    if (!is.finite(den) || den <= 0 || !is.finite(tot) || tot <= 0) return(NULL)
+    data.table::data.table(margin = g, rho_X = num / den, rho_FE = den / tot, n = length(i))
+  })
+  out <- data.table::rbindlist(out)
+  if (nrow(out) == 0L) NULL else out
+}
