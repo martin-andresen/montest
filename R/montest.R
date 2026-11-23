@@ -6,7 +6,7 @@
 #' regions of the covariate space or margins of the instrument or treatment where test
 #' statistics are most negative, and then evaluates those regions in the held-out sample.
 #' The function supports several testable conditions, including a simple test of whether
-#' the first stage is negative \code{"simple"}, the Kwan and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrument and treatment),
+#' the first stage is negative \code{"simple"}, the Kwon and Roth (2026)/Sun (2023) conditions \code{"KR"} (collapsing to Balke and Pearl (1997) in the case of binary instrument and treatment),
 #' the Mourifie and Wan (2017) conditions  \code{"MW"}, and the first stage conditional on Y-test from
 #' Andresen, Huber and Sloczynski (2026) \code{"AHS"}. Multivalued instruments, treatments and outcomes
 #' are expanded across margins and discretized into bins before estimation or treated continuously, depending on options. See Details.
@@ -35,7 +35,7 @@
 #' Nuisance fragility that can arise under \code{parametric=TRUE} (e.g. a linear-probability-model propensity falling outside \eqn{[0,1]}) is caught at score-construction time by the validity checks
 #' described under \code{aipw.clip}.
 #' @param condition Character vector selecting which tests to run. Allowed values are any combination of
-#'   \code{"simple"}, \code{"KR"} (Kwan-Roth conditions), \code{"MW"} (Mourifie and Wan), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
+#'   \code{"simple"}, \code{"KR"} (Kwon-Roth conditions), \code{"MW"} (Mourifie and Wan), \code{"AHS"} (Andresen-Huber-Sloczynski), or \code{"all"}.
 #'   If \code{Y} is omitted from the formula, only \code{"simple"} is allowed.
 #' @param target a scalar equal to either "all" (default) or "overlap" to determine whether the function should target the average treatment effect (all) in the relevant subsample, or the overlap-adjusted / weighted ATE ("overlap").
 #'   Applies to \code{"simple"}, \code{"KR"}, \code{"AHS"} and \code{"MW"} (for \code{"MW"}, whose scores are inverse probability weighted contrasts, \code{"overlap"} weights each row by \eqn{e(1-e)} with \eqn{e} the estimated instrument propensity; see \code{doubly.robust}), across both instrument representations (binary or
@@ -280,7 +280,7 @@
 #'   \code{Qparameters}, \code{Sparameters}) use 500 trees and the causal/outcome forests (\code{Cparameters}) use 2000.
 #'   If \code{Sparameters} is empty, the score-variance forest of \code{priority} uses \code{Cparameters} (so it must then
 #'   only contain arguments \code{regression_forest} accepts).
-#' @param joint specifies that all Kwan-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
+#' @param joint specifies that all Kwon-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.
 #'
 #' @details
 #' The rough steps of the montest algorithm is as follows
@@ -311,7 +311,7 @@
 #' \enumerate{
 #'  \item \code{condition="simple"} tests the sharp condition of a nonnegative first stage everywhere, which tests monotonicity,
 #'   but not exclusion in addition to instrument exogeneity. There are a total of (J-1)(K-1) such conditions.
-#'  \item \code{condition="KR"} tests the sharp Kwan-Roth (2026) / Sun (2023) conditions for instrument validity,
+#'  \item \code{condition="KR"} tests the sharp Kwon-Roth (2026) / Sun (2023) conditions for instrument validity,
 #'  which require exclusion and monotonicity in addition to instrument exogeneity. There are in total (K-1)(L + (2^L-2) + (J-2)(2^L-1))
 #'   such conditions (the lowest value of the treatment contributes the L singleton sets, the highest value the 2^L-2 proper subsets of the outcome support, and each interior value all 2^L-1 subsets, the full set giving the first-stage condition at that threshold; Kwon and Roth show that the interior values are needed for sharpness). If option joint=FALSE, montest tests only the (K-1)JK cellwise conditions with only one outcome value in the set A.
 #'   With a binary treatment and instrument, these conditions collapse to the conditions from Balke and Pearl (1997). Outcome variable Y must be specified.

@@ -38,13 +38,13 @@ An object of class \code{"seqtest"}. With one condition, the full \code{montest}
 translates each requested condition into the appropriate \code{montest()} call and passes
 all other arguments straight through. The conditions are
 \describe{
-  \item{\code{"KRD"}}{The Kwan-Roth conditions with D1 as the treatment and D2 as the only outcome,
+  \item{\code{"KRD"}}{The Kwon-Roth conditions with D1 as the treatment and D2 as the only outcome,
     i.e. \code{montest(D2 ~ X | FE | D1 ~ Z, condition = "KR")}.}
-  \item{\code{"KRDY"}}{The Kwan-Roth conditions with D1 as the treatment and (D2, Y) jointly as the
+  \item{\code{"KRDY"}}{The Kwon-Roth conditions with D1 as the treatment and (D2, Y) jointly as the
     outcome, i.e. \code{montest(D2 + Y ~ X | FE | D1 ~ Z, condition = "KR")}. The sets A range over the
     joint support of the binned outcomes; the \code{yval} labels in \code{$results} list the
     (D2, Y) tuples in each set and \code{$Ylookup} of the fit decodes them. Requires Y.}
-  \item{\code{"KRDY2"}}{The intersection of two sets of Kwan-Roth conditions (use case 2): KR with D1 as the
+  \item{\code{"KRDY2"}}{The intersection of two sets of Kwon-Roth conditions (use case 2): KR with D1 as the
     treatment and (D2, Y) jointly as the outcome (as \code{"KRDY"}), and KR with D2 as the treatment and Y as the
     outcome. The two problems are stacked as blocks of one \code{montest()} call using its \code{block} argument
     (cluster = the unit, or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"}
@@ -97,7 +97,7 @@ all other arguments straight through. The conditions are
 }
 }
 \details{
-\strong{How the tests localize.} The Kwan-Roth conditions localize in the conditioning variables (D2, or
+\strong{How the tests localize.} The Kwon-Roth conditions localize in the conditioning variables (D2, or
 (D2, Y)) through the margin cells, which are tested with the sample split and selection of cells or globally (see \code{montest}); with covariates in X
 the search additionally looks for violating subgroups in X within the cells (and can pool or select across them). The Mourifie-Wan conditions have no cells: the conditioning variables (D2, Y) and
 X enter as features of the forest, so the search itself localizes jointly in (D2, X) or (D2, Y, X).
