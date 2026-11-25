@@ -4,7 +4,7 @@
 \alias{seqtest}
 \title{Tests of sequential-treatment IV conditions with two treatments}
 \usage{
-seqtest(fml, data, condition = NULL, ...)
+seqtest(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ...)
 }
 \arguments{
 \item{fml}{A formula \code{Y ~ X | FE | D1 + D2 ~ Z}. Y may be omitted (\code{~ X | D1 + D2 ~ Z}) unless
@@ -17,11 +17,18 @@ seqtest(fml, data, condition = NULL, ...)
 Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
 \code{"FSS"}, \code{"FSDY"}, \code{"FSSY"} and the MW conditions are never run by default.}
 
+\item{D2cut, D2Tcut}{Binning of D2 as an outcome or conditioning variable W (\code{D2cut}) and as a treatment
+(\code{D2Tcut}, used in the second block of \code{"KRDY2"} and \code{"MWDY2"}). Each is \code{NULL} (default: \code{D2Tcut}
+as D1, \code{D2cut} as \code{D2Tcut}), \code{"none"} (use D2 as it is), \code{"equisized:K"} or \code{"equidistant:K"}
+(K >= 2 bins as in \code{Dsubsets}/\code{gridtypeD}; no change if D2 has at most K values), or a strictly increasing
+numeric vector of cut points giving left-open, right-closed bins, so \code{c(0, 1)} codes D2 as 0 | 1 | 2 or more.
+Ignored by the FS conditions. See "Binning of D1 and D2".}
+
 \item{...}{Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
-the margins sequentially).
-For \code{"KRD"} and \code{"KRDY"}, seqtest first bins both treatments (D1 and D2) with \code{Dsubsets}
-and Y with \code{Ysubsets}, whatever role a variable plays in the condition (\code{montest} alone would bin
-D2, as an outcome, with \code{Ysubsets}); the other conditions pass these arguments on unchanged.}
+the margins sequentially). \code{Dsubsets} and \code{gridtypeD} bin D1 (and, by default, D2), \code{Ysubsets} and
+\code{gridtypeY} bin Y, for the KR conditions in \code{seqtest()} itself, whatever role a variable plays in
+the condition (\code{montest} alone would bin D2, as an outcome, with \code{Ysubsets}); the other
+conditions pass these arguments on to \code{montest()}.}
 }
 \value{
 An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
@@ -49,7 +56,7 @@ all other arguments straight through. The conditions are
     outcome. The two problems are stacked as blocks of one \code{montest()} call using its \code{block} argument
     (cluster = the unit, or the user's \code{cluster}), so \code{pool = "block"} and \code{select = "block"}
     pool or select across them and everything is corrected as one family. Y is binned once (\code{Ysubsets},
-    \code{gridtypeY}); \code{block} and \code{Dsubsets} may not be passed. D1, D2 and Y may
+    \code{gridtypeY}); D1 and D2 are binned by role (see below); \code{block} may not be passed. D1, D2 and Y may
     not have missing values; two-valued D1/D2 are recoded to 0/1. \code{$Wlookup} of the fit decodes the outcome
     codes appearing in \code{yval}; \code{block} is \code{"KRDY"} for the D1 problem and \code{"KRD2Y"} for the D2 problem. Requires Y and
     uses the forest search (\code{testtype = "forest"}).}
@@ -97,6 +104,16 @@ all other arguments straight through. The conditions are
 }
 }
 \details{
+\strong{Binning of D1 and D2.} Pass D1 and D2 unbinned; seqtest bins each variable according to its role.
+D1 is always a treatment and is binned with \code{Dsubsets}/\code{gridtypeD}. D2 is a treatment in the second block of
+\code{"KRDY2"} and \code{"MWDY2"} (binned as set by \code{D2Tcut}, by default as D1) and an outcome or conditioning variable
+W otherwise (binned as set by \code{D2cut}, by default as \code{D2Tcut}). Binning W only changes the family of outcome events
+that are tested (power). Binning a treatment is a legitimate choice, but it changes the exclusion restriction that is
+tested: Z may then affect W only through the binned treatment. The blocks are separate testing problems, so D2 may be
+coded differently as a treatment than as W, and differently from D1. The KR conditions bin by default (\code{Dsubsets},
+default 4, which is a no-op for a variable with at most that many values); the MW conditions use D1 and D2 as they are
+unless \code{Dsubsets} or a spec is given.
+
 \strong{How the tests localize.} The Kwon-Roth conditions localize in the conditioning variables (D2, or
 (D2, Y)) through the margin cells, which are tested with the sample split and selection of cells or globally (see \code{montest}); with covariates in X
 the search additionally looks for violating subgroups in X within the cells (and can pool or select across them). The Mourifie-Wan conditions have no cells: the conditioning variables (D2, Y) and
