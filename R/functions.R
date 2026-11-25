@@ -6951,6 +6951,100 @@ binarize_var <- function(data,
 
   dt
 }
+#####binning specs (Zcut, Dcut, Ycut, D1cut, D2cut, D2Tcut) #######
+
+## Bin spec: NULL (caller's default), "none", "equisized:K" / "equidistant:K" (K >= 2 bins via
+## binarize_var), or a strictly increasing numeric vector of finite cut points (left-open,
+## right-closed bins: c(0, 1) gives <= 0 | (0, 1] | > 1). Returns NULL or
+## list(type = "none") / list(type = "count", n, grid) / list(type = "cuts", cuts).
+parse_bin_spec <- function(spec, arg) {
+  if (is.null(spec)) return(NULL)
+  bad <- function() {
+    stop("`", arg, "` must be NULL, \"none\", \"equisized:K\" or \"equidistant:K\" (K >= 2), or a strictly ",
+         "increasing numeric vector of finite cut points.", call. = FALSE)
+  }
+  if (is.character(spec)) {
+    if (length(spec) != 1L || is.na(spec)) bad()
+    if (identical(spec, "none")) return(list(type = "none"))
+    m <- regmatches(spec, regexec("^(equisized|equidistant):([0-9]+)$", spec))[[1L]]
+    if (length(m) != 3L || as.integer(m[3L]) < 2L) bad()
+    return(list(type = "count", n = as.integer(m[3L]), grid = m[2L]))
+  }
+  if (is.numeric(spec) && length(spec) >= 1L && all(is.finite(spec)) && !is.unsorted(spec, strictly = TRUE)) {
+    return(list(type = "cuts", cuts = as.numeric(spec)))
+  }
+  bad()
+}
+
+## Session-wide switch so that the deprecation of the *subsets / gridtype* arguments warns once.
+.bin_env <- new.env(parent = emptyenv())
+
+## Resolve one variable's spec from the new argument (`cut`) and the deprecated pair
+## (`subsets`, `gridtype`; `*_given` says whether the caller passed them). Default: equisized:4.
+resolve_bin_spec <- function(cut, subsets, gridtype, subsets_given, gridtype_given, arg, legacy) {
+  if (!is.null(cut)) {
+    if (subsets_given || gridtype_given) {
+      stop("Pass either `", arg, "` or the deprecated ", legacy, ", not both.", call. = FALSE)
+    }
+    return(parse_bin_spec(cut, arg))
+  }
+  if (!subsets_given && !gridtype_given) return(list(type = "count", n = 4L, grid = "equisized"))
+  if (!isTRUE(.bin_env$warned)) {
+    .bin_env$warned <- TRUE
+    warning("`Zsubsets`, `Dsubsets`, `Ysubsets` and `gridtypeZ`, `gridtypeD`, `gridtypeY` are deprecated; use ",
+            "`Zcut`, `Dcut`, `Ycut` (e.g. `Dcut = \"equisized:4\"`, `Dcut = \"none\"` or `Dcut = c(0, 1)`).",
+            call. = FALSE)
+  }
+  n <- subsets
+  if (!is.numeric(n) || length(n) != 1L || !is.finite(n) || n != as.integer(n) || n <= 1L) {
+    stop(legacy, " must be a single integer larger than 1. Use e.g. 4L.", call. = FALSE)
+  }
+  list(type = "count", n = as.integer(n), grid = match.arg(gridtype, c("equisized", "equidistant")))
+}
+
+## Apply a spec to a vector. Counts use binarize_var (no change if x has at most n distinct values),
+## cuts use findInterval with left-open bins (always coded 0, 1, ...), "none" returns x.
+bin_vec <- function(x, spec, w = NULL) {
+  switch(spec$type,
+         none = x,
+         cuts = findInterval(x, spec$cuts, left.open = TRUE),
+         count = {
+           tmp <- data.table::data.table(v = x)
+           if (!is.null(w)) data.table::set(tmp, j = "w", value = w)
+           binarize_var(tmp, "v", ngroups = spec$n, gridtype = spec$grid,
+                        wvar = if (is.null(w)) NA_character_ else "w", newvar = "b")[["b"]]
+         })
+}
+
+## montest()'s binning step: adds column `newvar` to a copy of `data`. "none" is refused for a
+## variable with more than `max_none` distinct values (every value would become a margin cell).
+bin_col <- function(data, var, spec, wvar, newvar, arg, max_none = 100L) {
+  if (spec$type == "none") {
+    nu <- data.table::uniqueN(data[[var]], na.rm = TRUE)
+    if (nu > max_none) {
+      stop("`", arg, " = \"none\"` needs at most ", max_none, " distinct values, but `", var, "` has ", nu,
+           ". Use e.g. `", arg, " = \"equisized:4\"` or cut points.", call. = FALSE)
+    }
+  }
+  v <- bin_vec(data[[var]], spec, if (is.na(wvar)) NULL else data[[wvar]])
+  dt <- data.table::copy(data)
+  data.table::set(dt, j = newvar, value = v)
+  dt
+}
+
+## What montest() reports in `$binning` for one variable: the spec as text and, for cuts, the intervals.
+bin_info <- function(spec) {
+  switch(spec$type,
+         none = list(spec = "none", intervals = NULL),
+         count = list(spec = paste0(spec$grid, ":", spec$n), intervals = NULL),
+         cuts = {
+           ct <- spec$cuts
+           list(spec = paste0("cuts: ", paste(ct, collapse = ", ")),
+                intervals = c(paste0("(-Inf,", ct, "]")[1L], if (length(ct) > 1L) paste0("(", ct[-length(ct)], ",", ct[-1L], "]"),
+                              paste0("(", ct[length(ct)], ",Inf)")))
+         })
+}
+
 #####drop margin cells with no usable Q variation #######
 ## Shared by montest()'s pre-nuisance-fit check (on raw Q) and its
 ## post-nuisance-fit check (on residual Q - Q.hat): given a logical column
@@ -7145,7 +7239,7 @@ check_cross_memory <- function(data, mi, mc_keys__, stack) {
          " rows, needing roughly ", round(est / 2^30, 1), " GB, but only ", round(avail / 2^30, 1),
          " GB of memory are free. ",
          if (isTRUE(stack)) "Try stack = FALSE, or " else "Try ",
-         "fewer margins (e.g. smaller Dsubsets/Ysubsets, joint = FALSE), or set memcheck = FALSE to skip this check.",
+         "fewer margins (e.g. fewer bins in Dcut/Ycut, joint = FALSE), or set memcheck = FALSE to skip this check.",
          call. = FALSE)
   }
   invisible(NULL)

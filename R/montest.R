@@ -178,11 +178,21 @@
 #'   (plus a between-arm term for \code{doubly.robust = FALSE}). This avoids the heavy-tailed target of the forest and, with
 #'   fixed effects, the full-sample fixed-effect means of the squared scores. All other rows (\code{linearZ},
 #'   \code{linearD}, \code{"MW"}, continuous \code{Q}) keep the forest. Ignored if \code{priority = FALSE}.
-#' @param gridtypeY,gridtypeD,gridtypeZ Character strings controlling how continuous
-#'   variables are discretized before stacking. Must be one of \code{"equisized"} or
-#'   \code{"equidistant"}. All default to \code{"equisized"} (equal-count quantile bins).
-#' @param Ysubsets,Dsubsets,Zsubsets Integers giving the number of bins used when
-#'   discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Integer >1 required.
+#' @param Zcut,Dcut,Ycut How the instrument, the treatment and (for \code{"KR"}) the outcome are discretized
+#'   before stacking. Each is \code{NULL} (default: \code{"equisized:4"}), \code{"none"} (use the variable as it
+#'   is; refused above 100 distinct values), \code{"equisized:K"} (K >= 2 equal-count quantile bins) or
+#'   \code{"equidistant:K"} (K equal-width bins), or a strictly increasing numeric vector of cut points giving
+#'   left-open, right-closed bins, so \code{Dcut = 0} codes D as 0 | above 0 and \code{c(0, 1)} as 0 | 1 | above 1.
+#'   A count is a no-op for a variable with at most K distinct values (the values stay as they are); cut points always
+#'   recode to 0, 1, .... Only \code{"equisized:K"} uses the weights. The bins and their intervals are returned in
+#'   \code{$binning}. Binning a treatment or instrument changes what the assumptions refer to (they are then stated for
+#'   the binned variable). Conditions that need a binary treatment (\code{"AHS"}) or restrict a multivalued one still
+#'   check the variable before binning, so cutting a three-valued D to two values does not make \code{"AHS"} run:
+#'   binarize D outside \code{montest()} for that. With \code{block}, D and Y may not need binning
+#'   (\code{"none"} or a count at least as large as the number of distinct values).
+#' @param gridtypeY,gridtypeD,gridtypeZ,Ysubsets,Dsubsets,Zsubsets Deprecated; use \code{Ycut}, \code{Dcut},
+#'   \code{Zcut}. \code{Dsubsets = K} with \code{gridtypeD = g} is \code{Dcut = "g:K"}. Passing one of them gives a
+#'   warning (once per session), and passing it together with the new argument is an error.
 #' @param Y.res Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
 #'   outcome on the right hand side \code{MW,AHS}.
 #' @param testtype Character string selecting the subset-search routine. Must be
@@ -367,6 +377,8 @@
 #' \describe{
 #'   \item{\code{results}}{A Matrix of train and test results by sample and margin cell.}
 #'   \item{\code{margins}}{A Matrix of margins of condition, zmargin, dval, yval, equation that characterizes the cells used for testing.}
+#'   \item{\code{binning}}{For each binned variable (\code{Z}, \code{D}, and \code{Y} for \code{"KR"}), a list with the
+#'     spec used and, for cut points, the intervals that the codes 0, 1, ... stand for.}
 #'   \item{\code{global}}{Global mean test statistics over the same stratification.}
 #'   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
 #'   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
@@ -408,7 +420,7 @@
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  stabilize.scores="hajek",aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
-                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
+                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Zcut=NULL,Dcut=NULL,Ycut=NULL,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),minvar=0.05,overlap.check=c("error","warn","off"),overlap.rho=c(0.01,0.05),overlap.sep=0.99,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,kr_sums=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
@@ -586,9 +598,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   screen_given <- !missing(screen)
   screen=match.arg(screen,c("stepdown","negative","nonpositive","minimum","none","fgk_relevant","power"))
-  gridtypeY=match.arg(gridtypeY,c("equidistant","equisized"))
-  gridtypeD=match.arg(gridtypeD,c("equidistant","equisized"))
-  gridtypeZ=match.arg(gridtypeZ,c("equidistant","equisized"))
+  ## Binning specs: Ycut/Dcut/Zcut, or the deprecated *subsets/gridtype* pairs (see resolve_bin_spec()).
+  spec_Y <- resolve_bin_spec(Ycut, Ysubsets, gridtypeY, !missing(Ysubsets), !missing(gridtypeY), "Ycut", "`Ysubsets`/`gridtypeY`")
+  spec_D <- resolve_bin_spec(Dcut, Dsubsets, gridtypeD, !missing(Dsubsets), !missing(gridtypeD), "Dcut", "`Dsubsets`/`gridtypeD`")
+  spec_Z <- resolve_bin_spec(Zcut, Zsubsets, gridtypeZ, !missing(Zsubsets), !missing(gridtypeZ), "Zcut", "`Zsubsets`/`gridtypeZ`")
   if (is.null(crossfit)) {
     crossfit <- character()
   } else {
@@ -723,22 +736,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
     kr_sums <- data.table::as.data.table(kr_sums)
   }
-
-  check_integer_gt1 <- function(x, name) {
-    if (!is.numeric(x) ||
-        length(x) != 1L ||
-        !is.finite(x) ||
-        x != as.integer(x) ||
-        x <= 1L) {
-      stop(name, " must be a single integer larger than 1. Use e.g. 4L.", call. = FALSE)
-    }
-
-    as.integer(x)
-  }
-
-  Ysubsets <- check_integer_gt1(Ysubsets, "Ysubsets")
-  Dsubsets <- check_integer_gt1(Dsubsets, "Dsubsets")
-  Zsubsets <- check_integer_gt1(Zsubsets, "Zsubsets")
 
   ##VALIDATE block
   has_block <- !is.null(block)
@@ -1294,10 +1291,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (has_block) {
     ## Binning pools all blocks, which is wrong when they have different D/Y
     ## distributions, so D and Y must be used as they are.
-    if (data.table::uniqueN(data[[D]], na.rm = TRUE) > Dsubsets ||
-        ("KR" %in% condition && !is.null(Y) && any(vapply(Y, function(yy) data.table::uniqueN(data[[yy]], na.rm = TRUE) > Ysubsets, logical(1L))))) {
-      stop("With `block`, D and Y must not need binning: raise Dsubsets/Ysubsets to at least the number of ",
-           "distinct values of D/Y in the stacked data.", call. = FALSE)
+    ## Cut points always recode, a count only changes data with more than that many distinct values.
+    changes_data <- function(spec, v) switch(spec$type, none = FALSE, cuts = TRUE,
+                                             count = data.table::uniqueN(data[[v]], na.rm = TRUE) > spec$n)
+    if (changes_data(spec_D, D) ||
+        ("KR" %in% condition && !is.null(Y) && any(vapply(Y, function(yy) changes_data(spec_Y, yy), logical(1L))))) {
+      stop("With `block`, D and Y must not need binning: use Dcut/Ycut = \"none\" (or a bin count of at least the ",
+           "number of distinct values of D/Y in the stacked data).", call. = FALSE)
     }
     for (b in blk_vals) {
       dsb <- sort(unique(stats::na.omit(data[block == b][[D]])))
@@ -1309,14 +1309,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   if (need_binarized_D) {
     ##bin treatment
-    data <- binarize_var(
-      data    = data,
-      var     = D,
-      ngroups = Dsubsets,
-      gridtype = gridtypeD,
-      wvar    = wvar,
-      newvar=paste0(D,".bin")
-    )
+    data <- bin_col(data, D, spec_D, wvar, paste0(D,".bin"), "Dcut")
     Dbincol=paste0(D,".bin")
     ## A two-valued D coded other than 0/1 (e.g. 1/2, or c(-1, 1)) is recoded
     ## to {0, 1} preserving order: the Q construction and the one-sided
@@ -1332,14 +1325,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   if (need_binarized_Z){
     ##bin instrument
-    data <- binarize_var(
-      data    = data,
-      var     = Z,
-      ngroups = Zsubsets,
-      gridtype = gridtypeZ,
-      wvar    = wvar,
-      newvar=paste0(Z,".bin")
-    )
+    data <- bin_col(data, Z, spec_Z, wvar, paste0(Z,".bin"), "Zcut")
     Zbincol=paste0(Z,".bin")
     ## Same as for D: recode a two-valued Z to {0, 1}, preserving order. The
     ## binary-Z branch below copies Z.bin into Z, and the MW scores and the
@@ -1359,14 +1345,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if ("KR" %in% condition) { ##bin outcome(s)
     Ybincols <- paste0(Y, ".bin")
     for (k in seq_along(Y)) {
-      data <- binarize_var(
-        data    = data,
-        var     = Y[k],
-        ngroups = Ysubsets,
-        gridtype = gridtypeY,
-        wvar    = wvar,
-        newvar = Ybincols[k]
-      )
+      data <- bin_col(data, Y[k], spec_Y, wvar, Ybincols[k], "Ycut")
     }
 
     if (length(Y) == 1L) {
@@ -3797,7 +3776,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       residual_share = if (length(ovl$rho)) data.table::rbindlist(ovl$rho, use.names = TRUE, fill = TRUE) else NULL,
       check = overlap.check),
     margins = margin_index[, setdiff(names(margin_index), "Avals"), with = FALSE],
-    Ylookup = Ylookup
+    Ylookup = Ylookup,
+    binning = c(if (need_binarized_Z) list(Z = bin_info(spec_Z)),
+                if (need_binarized_D) list(D = bin_info(spec_D)),
+                if ("KR" %in% condition) list(Y = bin_info(spec_Y)))
   ))
   return(out)
 }

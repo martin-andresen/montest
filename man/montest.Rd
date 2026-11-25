@@ -32,6 +32,9 @@ montest(
   Ysubsets = 4L,
   Dsubsets = 4L,
   Zsubsets = 4L,
+  Zcut = NULL,
+  Dcut = NULL,
+  Ycut = NULL,
   Y.res = TRUE,
   testtype = "forest",
   fe_rank_conservative = TRUE,
@@ -44,6 +47,11 @@ montest(
   priority = TRUE,
   priority.floor = 0.01,
   priority.var = c("model", "scores"),
+  pvalue = c("t", "normal"),
+  minvar = 0.05,
+  overlap.check = c("error", "warn", "off"),
+  overlap.rho = c(0.01, 0.05),
+  overlap.sep = 0.99,
   linearD = FALSE,
   linearZ = FALSE,
   target = NULL,
@@ -189,14 +197,24 @@ instrument variation identify nothing and a subgroup whose weight sits on a few 
 unreliable (it over-rejects), so neither is considered. Replaces the former row and cluster counts
 \code{minarm} and \code{minarm_clusters}.}
 
-\item{gridtypeY, gridtypeD, gridtypeZ}{Character strings controlling how continuous
-variables are discretized before stacking. Must be one of \code{"equisized"} or
-\code{"equidistant"}. All default to \code{"equisized"} (equal-count quantile bins).}
+\item{gridtypeY, gridtypeD, gridtypeZ, Ysubsets, Dsubsets, Zsubsets}{Deprecated; use \code{Ycut}, \code{Dcut},
+\code{Zcut}. \code{Dsubsets = K} with \code{gridtypeD = g} is \code{Dcut = "g:K"}. Passing one of them gives a
+warning (once per session), and passing it together with the new argument is an error.}
 
 \item{joint}{specifies that all Kwon-Roth conditions should be included in the test, not only those for which the subset A contains only one outcome value. Defaults to TRUE.}
 
-\item{Ysubsets, Dsubsets, Zsubsets}{Integers giving the number of bins used when
-discretizing \code{Y}, \code{D}, and \code{Z}, respectively. Integer >1 required.}
+\item{Zcut, Dcut, Ycut}{How the instrument, the treatment and (for \code{"KR"}) the outcome are discretized
+before stacking. Each is \code{NULL} (default: \code{"equisized:4"}), \code{"none"} (use the variable as it
+is; refused above 100 distinct values), \code{"equisized:K"} (K >= 2 equal-count quantile bins) or
+\code{"equidistant:K"} (K equal-width bins), or a strictly increasing numeric vector of cut points giving
+left-open, right-closed bins, so \code{Dcut = 0} codes D as 0 | above 0 and \code{c(0, 1)} as 0 | 1 | above 1.
+A count is a no-op for a variable with at most K distinct values (the values stay as they are); cut points always
+recode to 0, 1, .... Only \code{"equisized:K"} uses the weights. The bins and their intervals are returned in
+\code{$binning}. Binning a treatment or instrument changes what the assumptions refer to (they are then stated for
+the binned variable). Conditions that need a binary treatment (\code{"AHS"}) or restrict a multivalued one still
+check the variable before binning, so cutting a three-valued D to two values does not make \code{"AHS"} run:
+binarize D outside \code{montest()} for that. With \code{block}, D and Y may not need binning
+(\code{"none"} or a count at least as large as the number of distinct values).}
 
 \item{Y.res}{Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
 outcome on the right hand side \code{MW,AHS}.}
@@ -269,6 +287,16 @@ and the predicted effect, \eqn{v = \sigma_1^2/e + \sigma_0^2/(1-e)} with arm var
 (plus a between-arm term for \code{doubly.robust = FALSE}). This avoids the heavy-tailed target of the forest and, with
 fixed effects, the full-sample fixed-effect means of the squared scores. All other rows (\code{linearZ},
 \code{linearD}, \code{"MW"}, continuous \code{Q}) keep the forest. Ignored if \code{priority = FALSE}.}
+
+\item{pvalue}{Character, \code{"t"} (default) or \code{"normal"}. How raw p-values are computed from the t-statistics: Student t with the test's own degrees of freedom (the cluster/rank-based \code{df} reported in the results; rows without a finite df fall back to the normal), or the standard normal.}
+
+\item{minvar}{Numeric in [0, 1), default 0.05. Information guard of the subgroup search (local tests only): a candidate subgroup is eligible only if, within it, the mean squared instrument residual \code{(Z - Z.hat)^2} and the mean squared treatment residual are each at least \code{minvar} times their pooled means. It rules out leaves in which the covariates all but determine the instrument or the treatment (for example a cell-level covariate identifying a cell-level instrument), where dividing by a near-zero conditional variance turns numerical noise into an arbitrarily large t-statistic. \code{0} switches the guard off.}
+
+\item{overlap.check}{One of \code{"error"} (default), \code{"warn"}, \code{"off"}. Two overlap diagnostics are run (see \code{$overlap} in the result). (1) If the instrument is binary and a single cutoff in one numeric covariate or fixed-effect slope variable classifies it with accuracy of at least \code{overlap.sep} (default 0.99), the design has the sharp-cutoff structure of a (fuzzy) regression discontinuity: there is no overlap in the running variable. With \code{parametric = FALSE} this is an error under \code{"error"} (use \code{"warn"} to run anyway); with \code{parametric = TRUE} it is a warning, since the parametric test is a local-linear jump test. (2) The share of fixed-effect-adjusted variation in the instrument left after the nuisance (\eqn{\rho}) is computed per instrument margin; below \code{overlap.rho[2]} (default 0.05) is a warning and below \code{overlap.rho[1]} (default 0.01) an error for \code{parametric = FALSE} (a warning otherwise).}
+
+\item{overlap.rho}{Length-2 numeric, the error and warning thresholds for the residual instrument-variation share (see \code{overlap.check}).}
+
+\item{overlap.sep}{Threshold in (0.5, 1] for the cutoff-classification accuracy that flags a deterministic threshold structure (see \code{overlap.check}).}
 
 \item{linearD}{Logical, default FALSE. If TRUE, the treatment D is scored on its raw/linear scale
 instead of being margin-stacked and binarized -- i.e. estimated with a linear, continuous,
@@ -390,6 +418,8 @@ A named list:
 \describe{
   \item{\code{results}}{A Matrix of train and test results by sample and margin cell.}
   \item{\code{margins}}{A Matrix of margins of condition, zmargin, dval, yval, equation that characterizes the cells used for testing.}
+  \item{\code{binning}}{For each binned variable (\code{Z}, \code{D}, and \code{Y} for \code{"KR"}), a list with the
+    spec used and, for cut points, the intervals that the codes 0, 1, ... stand for.}
   \item{\code{global}}{Global mean test statistics over the same stratification.}
   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}

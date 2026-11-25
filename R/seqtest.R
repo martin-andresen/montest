@@ -63,15 +63,15 @@
 #'     sets of conditions is not sharp when D1 is multivalued. \code{block} is \code{"MWDY"} for the D1 problem and \code{"MWD2Y"} for the D2 problem. Requires Y and the forest search.}
 #' }
 #'
-#' \strong{Binning of D1 and D2.} Pass D1 and D2 unbinned; seqtest bins each variable according to its role.
-#' D1 is always a treatment and is binned with \code{Dsubsets}/\code{gridtypeD}. D2 is a treatment in the second block of
-#' \code{"KRDY2"} and \code{"MWDY2"} (binned as set by \code{D2Tcut}, by default as D1) and an outcome or conditioning variable
-#' W otherwise (binned as set by \code{D2cut}, by default as \code{D2Tcut}). Binning W only changes the family of outcome events
-#' that are tested (power). Binning a treatment is a legitimate choice, but it changes the exclusion restriction that is
-#' tested: Z may then affect W only through the binned treatment. The blocks are separate testing problems, so D2 may be
-#' coded differently as a treatment than as W, and differently from D1. The KR conditions bin by default (\code{Dsubsets},
-#' default 4, which is a no-op for a variable with at most that many values); the MW conditions use D1 and D2 as they are
-#' unless \code{Dsubsets} or a spec is given.
+#' \strong{Binning of D1, D2 and Y.} Pass D1, D2 and Y unbinned; seqtest bins each variable according to its role, with
+#' the syntax of \code{montest}'s \code{Dcut}. D1 is always a treatment (\code{D1cut}). D2 is a treatment in the second block of
+#' \code{"KRDY2"} and \code{"MWDY2"} (\code{D2Tcut}, by default as D1) and an outcome or conditioning variable W otherwise
+#' (\code{D2cut}, by default as \code{D2Tcut} for the KR conditions and \code{"none"} for the MW conditions, whose outcomes need
+#' no binning). Y is binned for the KR conditions (\code{Ycut}). Every default is \code{"equisized:4"}, which leaves a variable
+#' with at most four values as it is. Binning W only changes the family of outcome events that are tested (power). Binning a
+#' treatment is a legitimate choice, but it changes the exclusion restriction that is tested: Z may then affect W only through
+#' the binned treatment. The blocks are separate testing problems, so D2 may be coded differently as a treatment than as W,
+#' and differently from D1. \code{montest()} is told not to bin again.
 #'
 #' \strong{How the tests localize.} The Kwon-Roth conditions localize in the conditioning variables (D2, or
 #' (D2, Y)) through the margin cells, which are tested with the sample split and selection of cells or globally (see \code{montest}); with covariates in X
@@ -85,17 +85,16 @@
 #'   \code{"FSDY"}, \code{"FSSY"}, \code{"MWD"}, \code{"MWDY"}, \code{"MWDY2"} (or \code{"all"}, which fails if any of them is infeasible for the data).
 #'   Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
 #'   \code{"FSS"}, \code{"FSDY"}, \code{"FSSY"} and the MW conditions are never run by default.
-#' @param D2cut,D2Tcut Binning of D2 as an outcome or conditioning variable W (\code{D2cut}) and as a treatment
-#'   (\code{D2Tcut}, used in the second block of \code{"KRDY2"} and \code{"MWDY2"}). Each is \code{NULL} (default: \code{D2Tcut}
-#'   as D1, \code{D2cut} as \code{D2Tcut}), \code{"none"} (use D2 as it is), \code{"equisized:K"} or \code{"equidistant:K"}
-#'   (K >= 2 bins as in \code{Dsubsets}/\code{gridtypeD}; no change if D2 has at most K values), or a strictly increasing
-#'   numeric vector of cut points giving left-open, right-closed bins, so \code{c(0, 1)} codes D2 as 0 | 1 | 2 or more.
-#'   Ignored by the FS conditions. See "Binning of D1 and D2".
+#' @param D1cut,D2cut,D2Tcut,Ycut Binning of D1 (always a treatment), of D2 as an outcome or conditioning variable W
+#'   (\code{D2cut}) and as a treatment (\code{D2Tcut}, used in the second block of \code{"KRDY2"} and \code{"MWDY2"}), and of Y
+#'   (KR conditions). Each is \code{NULL} (default as described under "Binning of D1, D2 and Y"), \code{"none"} (use the
+#'   variable as it is), \code{"equisized:K"} or \code{"equidistant:K"} (K >= 2 bins; no change if the variable has at most K
+#'   values), or a strictly increasing numeric vector of cut points giving left-open, right-closed bins, so \code{D1cut = 0}
+#'   codes D1 as 0 | above 0 and \code{D2cut = c(0, 1)} codes D2 as 0 | 1 | 2 or more. Ignored by the FS conditions (and
+#'   \code{Ycut} by the MW conditions).
 #' @param ... Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
-#'   the margins sequentially). \code{Dsubsets} and \code{gridtypeD} bin D1 (and, by default, D2), \code{Ysubsets} and
-#'   \code{gridtypeY} bin Y, for the KR conditions in \code{seqtest()} itself, whatever role a variable plays in
-#'   the condition (\code{montest} alone would bin D2, as an outcome, with \code{Ysubsets}); the other
-#'   conditions pass these arguments on to \code{montest()}.
+#'   the margins sequentially, or \code{Zcut}). The deprecated \code{Dsubsets}/\code{gridtypeD} and
+#'   \code{Ysubsets}/\code{gridtypeY} are mapped to \code{D1cut} and \code{Ycut} with a warning; \code{Dcut} is not accepted.
 #'
 #' @return An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
 #'   that condition plus \code{condition} and \code{call}. With several conditions, one full
@@ -107,14 +106,24 @@
 #'
 #' @seealso montest
 #' @export
-seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ...) {
+seqtest <- function(fml, data, condition = NULL, D1cut = NULL, D2cut = NULL, D2Tcut = NULL, Ycut = NULL, ...) {
   mc <- match.call()
   dots <- list(...)
-  spec_W <- parse_bin_spec(D2cut, "D2cut")
-  spec_T <- parse_bin_spec(D2Tcut, "D2Tcut")
   if (any(c("condition", "fml", "linearD") %in% names(dots))) {
     stop("`fml`, `condition` and `linearD` are handled by seqtest() itself.", call. = FALSE)
   }
+  if ("Dcut" %in% names(dots)) {
+    stop("seqtest() has no `Dcut`: use `D1cut` for D1 and `D2cut`/`D2Tcut` for D2.", call. = FALSE)
+  }
+  ## Binning specs. The deprecated Dsubsets/gridtypeD and Ysubsets/gridtypeY are read from `...` (and
+  ## removed from it): D1 and Y are binned here, never by montest(). Zcut/Zsubsets pass through to montest().
+  spec_D1 <- resolve_bin_spec(D1cut, dots[["Dsubsets"]], if (is.null(dots[["gridtypeD"]])) "equisized" else dots[["gridtypeD"]],
+                              !is.null(dots[["Dsubsets"]]), !is.null(dots[["gridtypeD"]]), "D1cut", "`Dsubsets`/`gridtypeD`")
+  spec_Y <- resolve_bin_spec(Ycut, dots[["Ysubsets"]], if (is.null(dots[["gridtypeY"]])) "equisized" else dots[["gridtypeY"]],
+                             !is.null(dots[["Ysubsets"]]), !is.null(dots[["gridtypeY"]]), "Ycut", "`Ysubsets`/`gridtypeY`")
+  dots[c("Dsubsets", "gridtypeD", "Ysubsets", "gridtypeY")] <- NULL
+  spec_W <- parse_bin_spec(D2cut, "D2cut")
+  spec_T <- parse_bin_spec(D2Tcut, "D2Tcut")
 
   data <- data.table::as.data.table(data.table::copy(data))
 
@@ -147,8 +156,8 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
     condition <- match.arg(condition, c(allowed, "all"), several.ok = TRUE)
     if ("all" %in% condition) condition <- allowed
   }
-  if ((!is.null(spec_W) || !is.null(spec_T)) && !any(grepl("^(KR|MW)", condition))) {
-    message("`D2cut` and `D2Tcut` only apply to the KR and MW conditions; ignored.")
+  if ((!is.null(D1cut) || !is.null(D2cut) || !is.null(D2Tcut) || !is.null(Ycut)) && !any(grepl("^(KR|MW)", condition))) {
+    message("`D1cut`, `D2cut`, `D2Tcut` and `Ycut` only apply to the KR and MW conditions; ignored.")
   }
   for (cn in intersect(c("KRDY2", "MWDY2"), condition)) {
     bad_dots <- intersect("block", names(dots))
@@ -188,20 +197,18 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
     stats::as.formula(call("~", left, z_expr), env = env)
   }
 
-  ## Binning of D1 and D2 by role. D1 is always a treatment: Dsubsets/gridtypeD. D2 is a treatment
-  ## (blocks of KRDY2/MWDY2; D2Tcut, default as D1) and an outcome/conditioning variable W (KRD*,
-  ## MWD*, block 1 of the *2 conditions; D2cut, default as D2Tcut). The KR conditions bin by
-  ## default (Dsubsets, default 4); the MW conditions only if Dsubsets or a spec is given.
+  ## Binning of D1, D2 and Y by role. D1 is always a treatment (D1cut). D2 is a treatment (blocks of
+  ## KRDY2/MWDY2; D2Tcut, default as D1) and an outcome/conditioning variable W (KRD*, MWD*, block 1 of the
+  ## *2 conditions; D2cut, default as D2Tcut for the KR conditions and "none" for the MW conditions, whose
+  ## outcomes need no binning). Y is binned for the KR conditions (Ycut). The default is equisized:4.
+  ## Everything is binned here and montest() is told not to bin again (Dcut = Ycut = "none").
+  wcol <- function() if (is.null(dots$weight)) NULL else data[[dots$weight]]
   make_bins <- function(kr) {
-    nd <- if (is.null(dots$Dsubsets)) 4L else dots$Dsubsets
-    gtd <- if (is.null(dots$gridtypeD)) "equisized" else dots$gridtypeD
-    wcol <- if (is.null(dots$weight)) NULL else data[[dots$weight]]
-    s1 <- if (kr || !is.null(dots$Dsubsets)) list(type = "count", n = nd, grid = gtd) else list(type = "none")
-    sT <- if (is.null(spec_T)) s1 else spec_T
-    sW <- if (is.null(spec_W)) sT else spec_W
-    list(d1 = bin_vec(data[[D1]], s1, wcol),
-         d2t = bin_vec(data[[D2]], sT, wcol),
-         d2w = bin_vec(data[[D2]], sW, wcol))
+    sT <- if (is.null(spec_T)) spec_D1 else spec_T
+    sW <- if (!is.null(spec_W)) spec_W else if (kr) sT else list(type = "none")
+    list(d1 = bin_vec(data[[D1]], spec_D1, wcol()),
+         d2t = bin_vec(data[[D2]], sT, wcol()),
+         d2w = bin_vec(data[[D2]], sW, wcol()))
   }
 
   fits <- list()
@@ -215,22 +222,12 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
       dots_c <- dots
       data.table::set(dat_c, j = D1, value = bv$d1)
       data.table::set(dat_c, j = D2, value = bv$d2w)
-      if (kr) {
-        ## D1 and D2 are binned above; bin the outcome Y with Ysubsets here. Afterwards every variable has
-        ## at most max(Dsubsets, Ysubsets, #levels of D1 and D2) values, so montest()'s own binning (both
-        ## subsets arguments are set to that maximum) leaves the data unchanged.
-        nd <- if (is.null(dots$Dsubsets)) 4L else dots$Dsubsets
-        ny <- if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets
-        wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
-        gty <- if (is.null(dots$gridtypeY)) "equisized" else dots$gridtypeY
-        if (grepl("Y$", cond)) {
-          for (v in Y) {
-            dat_c <- binarize_var(dat_c, v, ngroups = ny, gridtype = gty, wvar = wvar, newvar = v)
-          }
-        }
-        dots_c$Dsubsets <- dots_c$Ysubsets <- max(nd, ny, data.table::uniqueN(dat_c[[D1]]),
-                                                  data.table::uniqueN(dat_c[[D2]]))
+      ## D1 and D2 are binned above and, for the KR conditions, Y here, so montest() must not bin again.
+      if (kr && grepl("Y$", cond)) {
+        for (v in Y) data.table::set(dat_c, j = v, value = bin_vec(dat_c[[v]], spec_Y, wcol()))
       }
+      dots_c$Dcut <- "none"
+      if (kr) dots_c$Ycut <- "none"
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat_c,
                                               condition = substr(cond, 1L, 2L)), dots_c))
     } else if (cond == "KRDY2") {
@@ -246,13 +243,8 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
       ## are binned separately; see make_bins().
       bv <- make_bins(TRUE)
       d1v <- recode01(bv$d1); d2tv <- recode01(bv$d2t); d2wv <- recode01(bv$d2w)
-      wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
       ybins <- paste0(Y, ".seqbin__")
-      for (k in seq_along(Y)) {
-        dat <- binarize_var(dat, Y[k], ngroups = if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets,
-                            gridtype = if (is.null(dots$gridtypeY)) "equisized" else dots$gridtypeY,
-                            wvar = wvar, newvar = ybins[k])
-      }
+      for (k in seq_along(Y)) data.table::set(dat, j = ybins[k], value = bin_vec(dat[[Y[k]]], spec_Y, wcol()))
       ylab <- do.call(paste, c(lapply(seq_along(Y), function(k) paste0(Y[k], "=", dat[[ybins[k]]])), sep = ","))
       ## Columns are assigned with set()/[[ ]] rather than inside `[`, where a user column
       ## called e.g. D1 or ylab would hide the local variable of that name.
@@ -270,14 +262,11 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
       st <- data.table::rbindlist(list(b1, b2))
       wlookup <- data.table::data.table(code = seq_along(lab_levels) - 1L, label = lab_levels)
       args <- dots
-      args$Ysubsets <- NULL
-      args$Dsubsets <- NULL
       args$cluster <- if (is.null(dots$cluster)) st_id else dots$cluster
       f <- make_fml(st_W, as.name(st_T))
+      ## Everything is binned above; the W code takes one value per (D2, Y-bin) cell, so "none" must allow them all.
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = st, condition = "KR", block = st_blk,
-                                              Ysubsets = max(2L, nrow(wlookup)),
-                                              Dsubsets = max(4L, data.table::uniqueN(d1v),
-                                                             data.table::uniqueN(d2tv))), args))
+                                              Dcut = "none", Ycut = "none"), args))
       fits[[cond]]$Wlookup <- wlookup
     } else if (cond == "MWDY2") {
       ## Two MW problems stacked as blocks of one montest() call:
@@ -289,7 +278,7 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
       dat <- data.table::copy(data)
       data.table::set(dat, j = st_id, value = seq_len(nrow(dat)))
       ## Two-valued treatments are recoded to 0/1; multivalued ones are used as they are unless
-      ## binned (Dsubsets / D2Tcut / D2cut, see make_bins()).
+      ## binned (D1cut / D2Tcut / D2cut, see make_bins()).
       recode01 <- function(x) if (two_valued(x)) as.integer(x == max(x, na.rm = TRUE)) else x
       bv <- make_bins(FALSE)
       d1v <- recode01(bv$d1); d2tv <- recode01(bv$d2t); d2wv <- recode01(bv$d2w)
@@ -303,13 +292,11 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
       data.table::set(b2, j = st_O, value = 0)
       st <- data.table::rbindlist(list(b1, b2))
       args <- dots
-      args$Dsubsets <- NULL
       args$cluster <- if (is.null(dots$cluster)) st_id else dots$cluster
       f <- make_fml(c(st_O, Y), as.name(st_T))
-      ## Dsubsets: with `block`, D must not need binning (see montest()).
+      ## With `block`, D must not need binning (see montest()); the treatments are binned above.
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = st, condition = "MW", block = st_blk,
-                                              Dsubsets = max(4L, data.table::uniqueN(d1v),
-                                                             data.table::uniqueN(d2tv))), args))
+                                              Dcut = "none"), args))
     } else if (cond %in% c("FSDY", "FSSY")) {
       ## FSDY/FSSY: FSD/FSS within pre-specified Y-bins b. KR with treatment D1 and outcome W = (D2, binned Y), but
       ## with one summed cell per bin (montest's `kr_sums`):
@@ -321,13 +308,8 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
       recode01 <- function(x) as.integer(x == max(x, na.rm = TRUE))
       data.table::set(dat, j = D1, value = recode01(dat[[D1]]))
       data.table::set(dat, j = D2, value = recode01(dat[[D2]]))
-      wvar <- if (is.null(dots$weight)) NA_character_ else dots$weight
       ybins <- paste0(Y, ".seqbin__")
-      for (k in seq_along(Y)) {
-        dat <- binarize_var(dat, Y[k], ngroups = if (is.null(dots$Ysubsets)) 4L else dots$Ysubsets,
-                            gridtype = if (is.null(dots$gridtypeY)) "equisized" else dots$gridtypeY,
-                            wvar = wvar, newvar = ybins[k])
-      }
+      for (k in seq_along(Y)) data.table::set(dat, j = ybins[k], value = bin_vec(dat[[Y[k]]], spec_Y, wcol()))
       ylab <- do.call(paste, c(lapply(seq_along(Y), function(k) paste0(Y[k], "=", dat[[ybins[k]]])), sep = ","))
       lab <- paste0("(", D2, "=", dat[[D2]], ",", ylab, ")")
       lab_levels <- unique(lab)
@@ -343,10 +325,9 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
       sums <- data.table::data.table(label = paste0("(", bins, ")"),
                                      w_hi = cell_code(d_hi, bins), w_lo = cell_code(1L - d_hi, bins))
       args <- dots
-      args$Ysubsets <- NULL
       f <- make_fml(st_W, as.name(D1))
       fits[[cond]] <- do.call(montest, c(list(fml = f, data = dat, condition = "KR", kr_sums = sums,
-                                              Ysubsets = max(2L, nrow(wlookup))), args))
+                                              Ycut = "none"), args))
       fits[[cond]]$Wlookup <- wlookup
     } else {
       ## FSD: recode both to {0,1} (order preserving). D1 - D2 takes values in
@@ -390,41 +371,6 @@ seqtest <- function(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ..
   names(minp)[2:5] <- paste0("p.", c("holm", "hochberg", "BH", "BY"))
 
   structure(c(fits, list(minp = minp, condition = condition, call = mc)), class = "seqtest")
-}
-
-## Bin spec for D2cut / D2Tcut: NULL (default), "none", "equisized:K" / "equidistant:K" (K >= 2 bins via
-## binarize_var), or a strictly increasing numeric vector of cut points (left-open, right-closed bins).
-parse_bin_spec <- function(spec, arg) {
-  if (is.null(spec)) return(NULL)
-  bad <- function() {
-    stop("`", arg, "` must be NULL, \"none\", \"equisized:K\" or \"equidistant:K\" (K >= 2), or a strictly ",
-         "increasing numeric vector of finite cut points.", call. = FALSE)
-  }
-  if (is.character(spec)) {
-    if (length(spec) != 1L || is.na(spec)) bad()
-    if (identical(spec, "none")) return(list(type = "none"))
-    m <- regmatches(spec, regexec("^(equisized|equidistant):([0-9]+)$", spec))[[1L]]
-    if (length(m) != 3L || as.integer(m[3L]) < 2L) bad()
-    return(list(type = "count", n = as.integer(m[3L]), grid = m[2L]))
-  }
-  if (is.numeric(spec) && length(spec) >= 1L && all(is.finite(spec)) && !is.unsorted(spec, strictly = TRUE)) {
-    return(list(type = "cuts", cuts = as.numeric(spec)))
-  }
-  bad()
-}
-
-## Apply a bin spec (as from parse_bin_spec, or list(type = "count", n, grid)) to a vector. Counts use
-## binarize_var (no-op if x has at most n distinct values), cuts use findInterval with left-open bins.
-bin_vec <- function(x, spec, w = NULL) {
-  switch(spec$type,
-         none = x,
-         cuts = findInterval(x, spec$cuts, left.open = TRUE),
-         count = {
-           tmp <- data.table::data.table(v = x)
-           if (!is.null(w)) data.table::set(tmp, j = "w", value = w)
-           binarize_var(tmp, "v", ngroups = spec$n, gridtype = spec$grid,
-                        wvar = if (is.null(w)) NA_character_ else "w", newvar = "b")[["b"]]
-         })
 }
 
 #' @export

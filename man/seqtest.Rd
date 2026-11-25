@@ -4,7 +4,16 @@
 \alias{seqtest}
 \title{Tests of sequential-treatment IV conditions with two treatments}
 \usage{
-seqtest(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ...)
+seqtest(
+  fml,
+  data,
+  condition = NULL,
+  D1cut = NULL,
+  D2cut = NULL,
+  D2Tcut = NULL,
+  Ycut = NULL,
+  ...
+)
 }
 \arguments{
 \item{fml}{A formula \code{Y ~ X | FE | D1 + D2 ~ Z}. Y may be omitted (\code{~ X | D1 + D2 ~ Z}) unless
@@ -17,18 +26,17 @@ seqtest(fml, data, condition = NULL, D2cut = NULL, D2Tcut = NULL, ...)
 Defaults to \code{"KRD"}, plus \code{"KRDY"} if Y is given and \code{"FSD"} if D1 and D2 are both binary;
 \code{"FSS"}, \code{"FSDY"}, \code{"FSSY"} and the MW conditions are never run by default.}
 
-\item{D2cut, D2Tcut}{Binning of D2 as an outcome or conditioning variable W (\code{D2cut}) and as a treatment
-(\code{D2Tcut}, used in the second block of \code{"KRDY2"} and \code{"MWDY2"}). Each is \code{NULL} (default: \code{D2Tcut}
-as D1, \code{D2cut} as \code{D2Tcut}), \code{"none"} (use D2 as it is), \code{"equisized:K"} or \code{"equidistant:K"}
-(K >= 2 bins as in \code{Dsubsets}/\code{gridtypeD}; no change if D2 has at most K values), or a strictly increasing
-numeric vector of cut points giving left-open, right-closed bins, so \code{c(0, 1)} codes D2 as 0 | 1 | 2 or more.
-Ignored by the FS conditions. See "Binning of D1 and D2".}
+\item{D1cut, D2cut, D2Tcut, Ycut}{Binning of D1 (always a treatment), of D2 as an outcome or conditioning variable W
+(\code{D2cut}) and as a treatment (\code{D2Tcut}, used in the second block of \code{"KRDY2"} and \code{"MWDY2"}), and of Y
+(KR conditions). Each is \code{NULL} (default as described under "Binning of D1, D2 and Y"), \code{"none"} (use the
+variable as it is), \code{"equisized:K"} or \code{"equidistant:K"} (K >= 2 bins; no change if the variable has at most K
+values), or a strictly increasing numeric vector of cut points giving left-open, right-closed bins, so \code{D1cut = 0}
+codes D1 as 0 | above 0 and \code{D2cut = c(0, 1)} codes D2 as 0 | 1 | 2 or more. Ignored by the FS conditions (and
+\code{Ycut} by the MW conditions).}
 
 \item{...}{Further arguments passed unchanged to \code{\link{montest}} (e.g. \code{stack = FALSE} to run
-the margins sequentially). \code{Dsubsets} and \code{gridtypeD} bin D1 (and, by default, D2), \code{Ysubsets} and
-\code{gridtypeY} bin Y, for the KR conditions in \code{seqtest()} itself, whatever role a variable plays in
-the condition (\code{montest} alone would bin D2, as an outcome, with \code{Ysubsets}); the other
-conditions pass these arguments on to \code{montest()}.}
+the margins sequentially, or \code{Zcut}). The deprecated \code{Dsubsets}/\code{gridtypeD} and
+\code{Ysubsets}/\code{gridtypeY} are mapped to \code{D1cut} and \code{Ycut} with a warning; \code{Dcut} is not accepted.}
 }
 \value{
 An object of class \code{"seqtest"}. With one condition, the full \code{montest} output for
@@ -104,15 +112,15 @@ all other arguments straight through. The conditions are
 }
 }
 \details{
-\strong{Binning of D1 and D2.} Pass D1 and D2 unbinned; seqtest bins each variable according to its role.
-D1 is always a treatment and is binned with \code{Dsubsets}/\code{gridtypeD}. D2 is a treatment in the second block of
-\code{"KRDY2"} and \code{"MWDY2"} (binned as set by \code{D2Tcut}, by default as D1) and an outcome or conditioning variable
-W otherwise (binned as set by \code{D2cut}, by default as \code{D2Tcut}). Binning W only changes the family of outcome events
-that are tested (power). Binning a treatment is a legitimate choice, but it changes the exclusion restriction that is
-tested: Z may then affect W only through the binned treatment. The blocks are separate testing problems, so D2 may be
-coded differently as a treatment than as W, and differently from D1. The KR conditions bin by default (\code{Dsubsets},
-default 4, which is a no-op for a variable with at most that many values); the MW conditions use D1 and D2 as they are
-unless \code{Dsubsets} or a spec is given.
+\strong{Binning of D1, D2 and Y.} Pass D1, D2 and Y unbinned; seqtest bins each variable according to its role, with
+the syntax of \code{montest}'s \code{Dcut}. D1 is always a treatment (\code{D1cut}). D2 is a treatment in the second block of
+\code{"KRDY2"} and \code{"MWDY2"} (\code{D2Tcut}, by default as D1) and an outcome or conditioning variable W otherwise
+(\code{D2cut}, by default as \code{D2Tcut} for the KR conditions and \code{"none"} for the MW conditions, whose outcomes need
+no binning). Y is binned for the KR conditions (\code{Ycut}). Every default is \code{"equisized:4"}, which leaves a variable
+with at most four values as it is. Binning W only changes the family of outcome events that are tested (power). Binning a
+treatment is a legitimate choice, but it changes the exclusion restriction that is tested: Z may then affect W only through
+the binned treatment. The blocks are separate testing problems, so D2 may be coded differently as a treatment than as W,
+and differently from D1. \code{montest()} is told not to bin again.
 
 \strong{How the tests localize.} The Kwon-Roth conditions localize in the conditioning variables (D2, or
 (D2, Y)) through the margin cells, which are tested with the sample split and selection of cells or globally (see \code{montest}); with covariates in X
