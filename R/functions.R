@@ -4274,7 +4274,10 @@ crv1_mean <- function(score,
                       recenter_binary = FALSE,
                       resid_outcome = NULL,
                       tau = NULL,
-                      v = NULL) {
+                      v = NULL,
+                      return_infl = FALSE) {
+  ## `return_infl`: also return `infl`, the influence of every cluster on `coef` (columns `cl`, the labels
+  ## given in `cl`, and `m`), whose sum of squares is the sandwich of `se` before the small-sample factor.
   stopifnot(
     "center must be a single non-missing logical" =
       is.logical(center) && length(center) == 1L && !is.na(center),
@@ -4513,7 +4516,7 @@ crv1_mean <- function(score,
       if (!is.finite(s)) NA_real_ else s
     }
 
-    return(list(
+    out_c <- list(
       coef = theta_c,
       se = se_c,
       t = theta_c / se_c,
@@ -4521,7 +4524,12 @@ crv1_mean <- function(score,
       G = G,
       rank_adj = rank_adj_c,
       df = df_c
-    ))
+    )
+    if (return_infl) {
+      cl_lab <- if (is.null(cl)) which(ok0) else cl[ok0]
+      out_c$infl <- data.table::data.table(cl = cl_lab, m = meat / Wden)[, list(m = sum(m)), by = "cl"]
+    }
+    return(out_c)
   }
 
   score <- as.numeric(score)
@@ -4589,6 +4597,7 @@ crv1_mean <- function(score,
   w <- w[ok]
   w_sandwich <- w_sandwich[ok]
   cl <- cl[ok]
+  cl_lab <- cl
 
   cl <- as.integer(factor(cl, exclude = NULL))
 
@@ -4632,7 +4641,7 @@ crv1_mean <- function(score,
     if (!is.finite(se)) se <- NA_real_
   }
 
-  list(
+  out <- list(
     coef = theta,
     se = se,
     t = theta / se,
@@ -4641,6 +4650,11 @@ crv1_mean <- function(score,
     rank_adj = rank_adj,
     df = df
   )
+  if (return_infl) {
+    out$infl <- data.table::data.table(cl = cl_lab, m = (score * w - theta * w_sandwich) / W)[
+      , list(m = sum(m)), by = "cl"]
+  }
+  out
 }
 
 
@@ -6491,8 +6505,11 @@ global_means_crv1 <- function(
     recenter_binary = FALSE,
     rp_mode = "hajek",
     sample_weight_v = NULL,
-    center_inv_v = FALSE
+    center_inv_v = FALSE,
+    infl_cl = NULL
 ) {
+  ## `infl_cl`: cluster labels. When given, the result carries the attribute "infl": for every cell the
+  ## influence of each cluster on its coefficient (see crv1_mean(return_infl = TRUE)).
   stopifnot(data.table::is.data.table(data))
   stopifnot(
     is.numeric(scorev),
@@ -6531,6 +6548,14 @@ global_means_crv1 <- function(
     cl = clv
   )
 
+  infl_cells <- list()
+  ## crv1_mean() on the cluster labels `infl_cl` when the influence is wanted.
+  moment_fun <- crv1_mean_fun
+  if (!is.null(infl_cl)) {
+    dt_all[, cl := infl_cl]
+    moment_fun <- function(...) crv1_mean_fun(..., return_infl = TRUE)
+  }
+
   if (length(by_cols) > 0L) {
     dt_all[, (by_cols) := data[, .SD, .SDcols = by_cols]]
   }
@@ -6559,13 +6584,13 @@ global_means_crv1 <- function(
   run_moment <- function(score, w, w_sandwich, cl, rank_adj,
                          rp_resid_treat, rp_resid_outcome, rp_tau, rp_v, rp_sw, rp_center) {
     if (isTRUE(use_centering) && all(rp_center, na.rm = FALSE)) {
-      crv1_mean_fun(
+      moment_fun(
         rp_resid_outcome, cl = cl, rank_adj = rank_adj,
         center = TRUE, resid_treat = rp_resid_treat, sample_weight = rp_sw,
         v = if (isTRUE(center_inv_v)) rp_v else NULL
       )
     } else if (isTRUE(can_recenter)) {
-      crv1_mean_fun(
+      moment_fun(
         score = score, w = w, cl = cl, rank_adj = rank_adj,
         w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL,
         recenter_propensity = rp_mode, recenter_binary = recenter_binary,
@@ -6573,7 +6598,7 @@ global_means_crv1 <- function(
         tau = rp_tau, v = rp_v
       )
     } else {
-      crv1_mean_fun(
+      moment_fun(
         score = score, w = w, cl = cl, rank_adj = rank_adj,
         w_sandwich = if (!is.null(wv_sandwich)) w_sandwich else NULL
       )
@@ -6602,6 +6627,7 @@ global_means_crv1 <- function(
       tau_cutoff = NA_real_,
       p.raw = p_from_t(o$t, o$df)
     )
+    if (!is.null(infl_cl)) infl_cells[[1L]] <- o$infl
 
   } else {
     global_dt <- dt_all[, {
@@ -6611,6 +6637,9 @@ global_means_crv1 <- function(
         score, w, w_sandwich, cl, rank_adj,
         rp_resid_treat, rp_resid_outcome, rp_tau, rp_v, rp_sw, rp_center
       )
+      if (!is.null(infl_cl)) {
+        infl_cells[[length(infl_cells) + 1L]] <<- data.table::data.table(data.table::as.data.table(.BY), o$infl)
+      }
 
       data.table::data.table(
         train = FALSE,
@@ -6631,6 +6660,7 @@ global_means_crv1 <- function(
     }
   }
 
+  if (!is.null(infl_cl)) data.table::setattr(global_dt, "infl", data.table::rbindlist(infl_cells))
   global_dt
 }
 
@@ -6658,7 +6688,8 @@ global_test <- function(
     recenter_propensity = FALSE,
     recenter_binary = FALSE,
     v = NULL,
-    center_inv_v = FALSE
+    center_inv_v = FALSE,
+    return_infl = FALSE
 ) {
   stopifnot(data.table::is.data.table(data))
   if (is.null(margins)) margins <- character()
@@ -6707,16 +6738,50 @@ global_test <- function(
     sample_weight_v = if (use_centering) {
       if (!is.null(sample_weight)) as.numeric(data[[sample_weight]]) else rep(1.0, n)
     } else NULL,
-    center_inv_v = center_inv_v
+    center_inv_v = center_inv_v,
+    ## Labels that mean the same unit in every block (the raw cluster values, or the original row).
+    infl_cl = if (return_infl) {
+      if (!is.null(cluster)) data[[cluster]] else seq_len(n)
+    }
   )
 
+  infl <- attr(global, "infl")
+  data.table::setattr(global, "infl", NULL)
   global[, relevant := 1L]
   global[, sample := NULL]
 
   list(
     results = global, grid = NULL, global = NULL,
-    Xmeans = NULL, Xmeans_all = NULL, XSD = NULL
+    Xmeans = NULL, Xmeans_all = NULL, XSD = NULL, infl = infl
   )
+}
+
+## Joint (two-sided) Wald test that the global coefficients of all instrument blocks are zero. `results` is the
+## global table with one row per block, `infl` the cluster influences by block. The covariance is
+## diag(se) R diag(se) with R the correlation of the influences across blocks (a cluster absent from a block
+## contributes 0), so its diagonal equals the reported squared standard errors. Returns NULL unless every block
+## has exactly one cell.
+joint_wald <- function(results, infl, blocks, labels) {
+  if (is.null(infl) || !"block" %in% names(results) || !"block" %in% names(infl)) return(NULL)
+  r <- results[match(blocks, results$block)]
+  if (nrow(results) != length(blocks) || anyNA(r$block) || any(!is.finite(r$coef)) ||
+      any(!is.finite(r$stderr) | r$stderr <= 0)) return(NULL)
+  cls <- unique(infl$cl)
+  m <- matrix(0, length(cls), length(blocks))
+  m[cbind(match(infl$cl, cls), match(infl$block, blocks))] <- infl$m
+  s <- crossprod(m)
+  if (any(diag(s) <= 0)) return(NULL)
+  R <- s / sqrt(outer(diag(s), diag(s)))
+  V <- outer(r$stderr, r$stderr) * R
+  dimnames(V) <- list(labels, labels)
+  b <- stats::setNames(r$coef, labels)
+  K <- length(b)
+  df2 <- min(r$df)
+  ## Singularity is judged on the correlation matrix, which does not depend on the instruments' scales.
+  Fstat <- if (rcond(R) > 1e-10) sum(b * solve(V, b)) / K else NA_real_
+  if (is.na(Fstat)) warning("Joint first stage: the covariance matrix of the instruments' coefficients is singular.", call. = FALSE)
+  list(coef = b, vcov = V, F = Fstat, df1 = K, df2 = df2,
+       p = stats::pf(Fstat, K, df2, lower.tail = FALSE), N = max(r$N), G = length(cls))
 }
 
 
@@ -7344,23 +7409,74 @@ add_terms_onesided <- function(f, ctrl) {
   stats::as.formula(call("~", add_terms_expr(f[[2L]], ctrl)), env = environment(f))
 }
 
-## `Y ~ X | FE | D ~ Z1 + Z2` -> `Y ~ X + ctrl | FE | D ~ newZ`
-rewrite_iv_formula <- function(fml, newZ, ctrl) {
+## Interacts every fixed effect with the block column: `a + b^c` -> `a^inst__ + b^c^inst__`. Every instrument
+## block then has its own fixed effects, so singletons, cells without instrument variation and the absorbed rank
+## are all determined block by block, as in separate calls.
+interact_fe_expr <- function(fe, by) {
+  if (is.call(fe) && identical(fe[[1L]], as.name("+")) && length(fe) == 3L) {
+    return(call("+", interact_fe_expr(fe[[2L]], by), interact_fe_expr(fe[[3L]], by)))
+  }
+  if (is.call(fe) && (identical(fe[[1L]], as.name("factor")) || identical(fe[[1L]], as.name("as.factor"))) &&
+      length(fe) == 2L) {
+    fe <- fe[[2L]]
+  }
+  if (is.call(fe) && !identical(fe[[1L]], as.name("^"))) {
+    stop("With several instruments each fixed effect must be a variable or an interaction `a^b` ",
+         "(varying slopes and other functions are not supported); got `", deparse1(fe), "`.", call. = FALSE)
+  }
+  if (identical(fe, 1) || identical(fe, 0)) return(fe)
+  str2lang(paste0(deparse1(fe), "^", by))
+}
+
+## `Y ~ X | FE | D ~ Z1 + Z2` -> `Y ~ X + ctrl | FE^fe_by | D ~ newZ`
+rewrite_iv_formula <- function(fml, newZ, ctrl, fe_by = NULL) {
   p <- parse_iv_formula(fml)
   parts <- p$rf_parts
   parts[[1L]] <- add_terms_expr(parts[[1L]], ctrl)
+  if (!is.null(fe_by) && length(parts) >= 2L) parts[[2L]] <- interact_fe_expr(parts[[2L]], fe_by)
   left_rhs <- rebuild_pipe(c(parts, list(p$iv[[2L]])))
   left <- if (p$has_lhs) call("~", p$lhs, left_rhs) else call("~", left_rhs)
   stats::as.formula(call("~", left, as.name(newZ)), env = p$env)
 }
 
+## Stops if an instrument takes a single value within every combination of the others (e.g. an interaction
+## of other instruments, or one of a complete set of dummies): with the others as controls it has no variation of
+## its own, and the tests would be run on nuisance estimation error. `codes` is a list with one vector per
+## instrument. Not checked with more than `max_levels` values, or when the combinations average fewer than
+## `min_cell` rows, where a constant value within a combination says nothing.
+check_redundant_instruments <- function(codes, Z, max_levels = 100L, min_cell = 5) {
+  dt <- data.table::as.data.table(stats::setNames(codes, paste0("z", seq_along(codes))))
+  dt <- dt[stats::complete.cases(dt)]
+  if (!nrow(dt) || any(vapply(dt, data.table::uniqueN, integer(1L)) > max_levels)) return(invisible(NULL))
+  redundant <- vapply(seq_along(codes), function(j) {
+    zj <- names(dt)[j]
+    cells <- dt[, list(nval = data.table::uniqueN(.SD[[1L]])), by = c(names(dt)[-j]), .SDcols = zj]
+    nrow(dt) / nrow(cells) >= min_cell && all(cells$nval == 1L)
+  }, logical(1L))
+  if (any(redundant)) {
+    stop("No variation in instrument(s) ", paste0("`", Z[redundant], "`", collapse = ", "),
+         " given the other instruments: each takes a single value within every combination of the others, so ",
+         "there is nothing to test once they are controlled for. List only instruments with variation of their ",
+         "own, not interactions or other functions of them (or set `Zcontrol = FALSE`).", call. = FALSE)
+  }
+  invisible(NULL)
+}
+
 ## Stacks one copy of `data` per instrument (block = instrument name). In block j the column `Zstack__`
-## holds instrument j, binned with its own spec and coded 0..k-1, and `Zc1__`... hold the other
-## instruments (raw) when `control`. The numbers of levels may differ: montest() builds `zmargin` per block.
-stack_instruments <- function(data, Z, control, specs, weight, cluster) {
+## holds instrument j, binned with its own spec and coded 0..k-1 (with `linear`: on its own scale, a
+## two-valued one coded 0/1), and `Zc1__`... hold the other instruments (raw) when `control`. The numbers of levels may differ: montest() builds `zmargin` per block.
+stack_instruments <- function(data, Z, control, specs, weight, cluster, linear = FALSE) {
   k <- length(Z)
   wv <- if (is.null(weight)) NA_character_ else weight
   codes <- lapply(seq_len(k), function(j) {
+    if (linear) {
+      x <- data[[Z[j]]]
+      if (!is.numeric(x) && !is.logical(x)) {
+        stop("`linearZ = TRUE` needs numeric instruments; `", Z[j], "` is not.", call. = FALSE)
+      }
+      r <- sort(unique(x[!is.na(x)]))
+      return(if (length(r) == 2L) match(x, r) - 1L else as.numeric(x))
+    }
     tmp <- data[, unique(c(Z[j], weight)), with = FALSE]
     b <- bin_col(tmp, Z[j], specs[[j]], wv, "..zb", "Zcut")[["..zb"]]
     r <- sort(unique(b[!is.na(b)]))
@@ -7370,6 +7486,7 @@ stack_instruments <- function(data, Z, control, specs, weight, cluster) {
   if (any(nlev < 2L)) {
     stop("Instrument `", Z[which(nlev < 2L)[1L]], "` has fewer than two values after binning.", call. = FALSE)
   }
+  if (control) check_redundant_instruments(codes, Z)
   unit <- "unit__"
   if (is.null(cluster)) {
     data <- data.table::copy(data)
@@ -7386,5 +7503,5 @@ stack_instruments <- function(data, Z, control, specs, weight, cluster) {
     d
   })
   list(data = data.table::rbindlist(parts, use.names = TRUE), cluster = cluster, ctrl = ctrl,
-       binning = stats::setNames(lapply(specs, bin_info), Z))
+       binning = if (!linear) stats::setNames(lapply(specs, bin_info), Z))
 }

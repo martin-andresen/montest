@@ -219,21 +219,39 @@ binarize D outside \code{montest()} for that. With \code{block}, D and Y may not
 (\code{"none"} or a count at least as large as the number of distinct values).}
 
 \item{Zcontrol}{Logical, default TRUE; used only with several instruments (\code{D ~ Z1 + Z2}). Each instrument
-is then tested as a separate block of one stacked problem (the block label is the instrument name) with the
-other instruments as additional covariates (in \code{fml}, \code{fml.Z}, \code{fml.Q}, \code{fml.C},
-\code{fml.varZ}, \code{fml.varS} when given), so the assumptions are stated for each instrument given the others.
-\code{Zcontrol = FALSE} tests each instrument without the others. \code{pool = "instrument"} (alias of
-\code{"block"}) pools over the instruments and \code{select = "instrument"} selects among them; by default
-each instrument is tested on its own and all tests are corrected as one family. The null is that every
-instrument is valid given its controls, so a rejection of a pooled test says that at least one fails, and
-conditioning on an instrument that is itself invalid can distort the test of another. Instruments may have
-different numbers of levels (\code{Zcut} may be a named list with one spec per instrument). Each is coded
-0, 1, ... and has its own margins \code{zmargin}; if any instrument has more than two levels, a two-valued one
-shows up with \code{zmargin = 1}. Pooling over \code{"instrument"} without \code{"zmargin"} pools the
-instruments within each margin number. Several
-instruments need Y, one of \code{"KR"} or \code{"MW"} per call, no fixed effects and no \code{block}.
-D and Y are binned once before stacking. The result gains \code{$instruments} (instruments, \code{control} and
-the binning of each).}
+  is then tested as a separate block of one stacked problem (the block label is the instrument name) with the
+  other instruments as additional covariates (in \code{fml}, \code{fml.Z}, \code{fml.Q}, \code{fml.C},
+  \code{fml.varZ}, \code{fml.varS} when given), so the assumptions are stated for each instrument given the others.
+  \code{Zcontrol = FALSE} tests each instrument without the others. \code{pool = "instrument"} (alias of
+  \code{"block"}) pools over the instruments and \code{select = "instrument"} selects among them; by default
+  each instrument is tested on its own and all tests are corrected as one family. The null is that every
+  instrument is valid given its controls, so a rejection of a pooled test says that at least one fails, and
+  conditioning on an instrument that is itself invalid can distort the test of another. Instruments may have
+  different numbers of levels (\code{Zcut} may be a named list with one spec per instrument).
+
+  What is tested with several instruments is \emph{vector monotonicity}, conditional on the covariates: each
+  instrument, in its coded order, weakly raises D for everyone at every value of the other instruments and of X.
+  Code every instrument in the positive direction first. This is neither partial monotonicity (where the
+  direction of one instrument may depend on the others) nor Imbens-Angrist monotonicity (one ordering of all
+  instrument vectors). List only instruments with variation of their own: do not add interactions or other
+  functions of instruments, which leave some cells untested; an instrument that is constant within every
+  combination of the others is an error. \code{Zcontrol = FALSE} compares the values of each instrument without
+  holding the others fixed, which the assumptions imply only if the instruments are independent given X, so
+  with dependent instruments it can reject a valid design. Margins are pooled by default, so a violation
+  confined to few margins can be averaged away; \code{pool = "none"} tests them separately.
+
+  Each instrument is coded
+  0, 1, ... and has its own margins \code{zmargin}; if any instrument has more than two levels, a two-valued one
+  shows up with \code{zmargin = 1}. Pooling over \code{"instrument"} without \code{"zmargin"} pools the
+  instruments within each margin number. A constant \code{fml.C = ~1} (no search, the global estimates) gets no
+  controls added and stays constant. Several instruments need one of \code{"simple"}, \code{"KR"} or \code{"MW"}
+  per call (Y only for \code{"KR"} and \code{"MW"}) and no \code{block}; \code{linearZ} and \code{linearD} work as
+  usual with \code{"simple"} (a two-valued instrument is coded 0/1, others keep their scale). Fixed effects are
+  interacted with the instrument block, so singletons, cells without instrument variation and the absorbed rank are
+  determined block by block (varying slopes are not supported). D and Y are binned once before stacking, on all
+  rows, so quantile cut points can differ slightly from those of a one-instrument call that drops rows. The result
+  gains \code{$instruments} (instruments, \code{control} and the binning of each) and, for the global
+  \code{"simple"} test, \code{$joint}.}
 
 \item{.z_by_block}{Internal; set by \code{montest()} when it stacks several instruments. Do not use.}
 
@@ -442,6 +460,15 @@ A named list:
   \item{\code{binning}}{For each binned variable (\code{Z}, \code{D}, and \code{Y} for \code{"KR"}), a list with the
     spec used and, for cut points, the intervals that the codes 0, 1, ... stand for.}
   \item{\code{global}}{Global mean test statistics over the same stratification.}
+  \item{\code{joint}}{Only with several instruments, \code{condition = "simple"}, no search (no covariates in
+    \code{fml.C} and nothing selected over), binary or linear D and Z and instruments not pooled; otherwise absent.
+    The joint first stage: a two-sided Wald test that all instruments' coefficients are zero, as a list with
+    \code{coef}, \code{vcov} (cluster-robust covariance across the instrument blocks; its diagonal is
+    \code{results$stderr^2}), \code{F}, \code{df1} (number of instruments), \code{df2}, \code{p}, \code{N},
+    \code{G} and \code{control}. With \code{Zcontrol = TRUE} the coefficients are partial (each given the other
+    instruments), with \code{FALSE} marginal. This is a relevance test, not the monotonicity test, which is in
+    \code{results} and \code{minp}. The F statistic is the ordinary robust Wald F, not the effective F of
+    Montiel Olea and Pflueger.}
   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
   \item{\code{Xmeans_all}}{Weighted covariate means in the full sample.}

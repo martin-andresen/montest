@@ -199,13 +199,31 @@
 #'   each instrument is tested on its own and all tests are corrected as one family. The null is that every
 #'   instrument is valid given its controls, so a rejection of a pooled test says that at least one fails, and
 #'   conditioning on an instrument that is itself invalid can distort the test of another. Instruments may have
-#'   different numbers of levels (\code{Zcut} may be a named list with one spec per instrument). Each is coded
+#'   different numbers of levels (\code{Zcut} may be a named list with one spec per instrument).
+#'
+#'   What is tested with several instruments is \emph{vector monotonicity}, conditional on the covariates: each
+#'   instrument, in its coded order, weakly raises D for everyone at every value of the other instruments and of X.
+#'   Code every instrument in the positive direction first. This is neither partial monotonicity (where the
+#'   direction of one instrument may depend on the others) nor Imbens-Angrist monotonicity (one ordering of all
+#'   instrument vectors). List only instruments with variation of their own: do not add interactions or other
+#'   functions of instruments, which leave some cells untested; an instrument that is constant within every
+#'   combination of the others is an error. \code{Zcontrol = FALSE} compares the values of each instrument without
+#'   holding the others fixed, which the assumptions imply only if the instruments are independent given X, so
+#'   with dependent instruments it can reject a valid design. Margins are pooled by default, so a violation
+#'   confined to few margins can be averaged away; \code{pool = "none"} tests them separately.
+#'
+#'   Each instrument is coded
 #'   0, 1, ... and has its own margins \code{zmargin}; if any instrument has more than two levels, a two-valued one
 #'   shows up with \code{zmargin = 1}. Pooling over \code{"instrument"} without \code{"zmargin"} pools the
-#'   instruments within each margin number. Several
-#'   instruments need Y, one of \code{"KR"} or \code{"MW"} per call, no fixed effects and no \code{block}.
-#'   D and Y are binned once before stacking. The result gains \code{$instruments} (instruments, \code{control} and
-#'   the binning of each).
+#'   instruments within each margin number. A constant \code{fml.C = ~1} (no search, the global estimates) gets no
+#'   controls added and stays constant. Several instruments need one of \code{"simple"}, \code{"KR"} or \code{"MW"}
+#'   per call (Y only for \code{"KR"} and \code{"MW"}) and no \code{block}; \code{linearZ} and \code{linearD} work as
+#'   usual with \code{"simple"} (a two-valued instrument is coded 0/1, others keep their scale). Fixed effects are
+#'   interacted with the instrument block, so singletons, cells without instrument variation and the absorbed rank are
+#'   determined block by block (varying slopes are not supported). D and Y are binned once before stacking, on all
+#'   rows, so quantile cut points can differ slightly from those of a one-instrument call that drops rows. The result
+#'   gains \code{$instruments} (instruments, \code{control} and the binning of each) and, for the global
+#'   \code{"simple"} test, \code{$joint}.
 #' @param .z_by_block Internal; set by \code{montest()} when it stacks several instruments. Do not use.
 #' @param gridtypeY,gridtypeD,gridtypeZ,Ysubsets,Dsubsets,Zsubsets Deprecated; use \code{Ycut}, \code{Dcut},
 #'   \code{Zcut}. \code{Dsubsets = K} with \code{gridtypeD = g} is \code{Dcut = "g:K"}. Passing one of them gives a
@@ -397,6 +415,15 @@
 #'   \item{\code{binning}}{For each binned variable (\code{Z}, \code{D}, and \code{Y} for \code{"KR"}), a list with the
 #'     spec used and, for cut points, the intervals that the codes 0, 1, ... stand for.}
 #'   \item{\code{global}}{Global mean test statistics over the same stratification.}
+#'   \item{\code{joint}}{Only with several instruments, \code{condition = "simple"}, no search (no covariates in
+#'     \code{fml.C} and nothing selected over), binary or linear D and Z and instruments not pooled; otherwise absent.
+#'     The joint first stage: a two-sided Wald test that all instruments' coefficients are zero, as a list with
+#'     \code{coef}, \code{vcov} (cluster-robust covariance across the instrument blocks; its diagonal is
+#'     \code{results$stderr^2}), \code{F}, \code{df1} (number of instruments), \code{df2}, \code{p}, \code{N},
+#'     \code{G} and \code{control}. With \code{Zcontrol = TRUE} the coefficients are partial (each given the other
+#'     instruments), with \code{FALSE} marginal. This is a relevance test, not the monotonicity test, which is in
+#'     \code{results} and \code{minp}. The F statistic is the ordinary robust Wald F, not the effective F of
+#'     Montiel Olea and Pflueger.}
 #'   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
 #'   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
 #'   \item{\code{Xmeans_all}}{Weighted covariate means in the full sample.}
@@ -490,12 +517,21 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     if (isTRUE(.z_by_block)) stop("Internal error: nested multi-instrument call.", call. = FALSE)
     Zs <- as.character(v_z$Z)
     if (!is.null(block)) stop("`block` cannot be combined with several instruments (each instrument is a block).", call. = FALSE)
-    if (isTRUE(linearZ)) stop("`linearZ = TRUE` cannot be combined with several instruments.", call. = FALSE)
-    if (length(v_z$FE)) stop("Several instruments are not supported together with fixed effects.", call. = FALSE)
-    if (is.null(v_z$Y)) stop("Several instruments need an outcome Y (condition = \"KR\" or \"MW\").", call. = FALSE)
-    if (!all(condition %in% c("KR", "MW")) && !is.null(condition)) {
-      stop("Several instruments are only supported for condition = \"KR\" or \"MW\".", call. = FALSE)
+    ## Same default as below: "simple" without an outcome, "KR" with one.
+    cond_z <- if (!is.null(condition)) condition else if (is.null(v_z$Y)) "simple" else "KR"
+    if (!all(cond_z %in% c("simple", "KR", "MW"))) {
+      stop("Several instruments are only supported for condition = \"simple\", \"KR\" or \"MW\".", call. = FALSE)
     }
+    if (length(unique(cond_z)) > 1L) {
+      stop("With several instruments run the conditions in separate calls (one of \"simple\", \"KR\", \"MW\").",
+           call. = FALSE)
+    }
+    cond_z <- cond_z[1L]
+    if (is.null(v_z$Y) && cond_z != "simple") {
+      stop("condition = \"", cond_z, "\" needs an outcome Y.", call. = FALSE)
+    }
+    lin_z <- isTRUE(linearZ) && cond_z == "simple"
+    lin_d <- isTRUE(linearD) && cond_z == "simple"
     if (is.list(Zcut) && !is.null(names(Zcut)) && !all(names(Zcut) %in% Zs)) {
       stop("Names of the list `Zcut` must be instrument names.", call. = FALSE)
     }
@@ -505,9 +541,6 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       resolve_bin_spec(cz, Zsubsets, gridtypeZ, zs_given, gz_given, "Zcut", "`Zsubsets`/`gridtypeZ`")
     })
     ## `block` needs D and Y as they are, so they are binned once here (the blocks share D and Y).
-    if (all(c("KR", "MW") %in% condition)) {
-      stop("With several instruments run condition = \"KR\" and \"MW\" in separate calls.", call. = FALSE)
-    }
     spec_Dz <- resolve_bin_spec(Dcut, Dsubsets, gridtypeD, !missing(Dsubsets), !missing(gridtypeD), "Dcut", "`Dsubsets`/`gridtypeD`")
     spec_Yz <- resolve_bin_spec(Ycut, Ysubsets, gridtypeY, !missing(Ysubsets), !missing(gridtypeY), "Ycut", "`Ysubsets`/`gridtypeY`")
     prebin <- function(var, spec, arg) {
@@ -516,20 +549,22 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
     data <- data.table::copy(data)
     Dv <- as.character(v_z$D)[1L]
-    if (data.table::uniqueN(data[[Dv]], na.rm = TRUE) > 2L || spec_Dz$type != "count") {
+    if (!lin_d && (data.table::uniqueN(data[[Dv]], na.rm = TRUE) > 2L || spec_Dz$type != "count")) {
       data.table::set(data, j = Dv, value = prebin(Dv, spec_Dz, "Dcut"))
     }
     Dsup0 <- sort(unique(stats::na.omit(data[[Dv]])))
     if (length(Dsup0) == 2L && !all(Dsup0 == c(0, 1))) data.table::set(data, j = Dv, value = as.integer(data[[Dv]] == Dsup0[2L]))
-    if (is.null(condition) || "KR" %in% condition) {
+    if (cond_z == "KR") {
       for (yy in as.character(v_z$Y)) data.table::set(data, j = yy, value = prebin(yy, spec_Yz, "Ycut"))
     }
-    stk <- stack_instruments(data, Zs, isTRUE(Zcontrol), specs_z, weight, cluster)
+    stk <- stack_instruments(data, Zs, isTRUE(Zcontrol), specs_z, weight, cluster, linear = lin_z)
     ctrl <- stk$ctrl
     mc2 <- mc
-    mc2$fml <- rewrite_iv_formula(fml, "Zstack__", ctrl)
+    mc2$fml <- rewrite_iv_formula(fml, "Zstack__", ctrl, fe_by = "inst__")
     for (nm in c("fml.Z", "fml.Q", "fml.varZ", "fml.C", "fml.varS")) {
-      if (!is.null(get(nm))) mc2[[nm]] <- add_terms_onesided(get(nm), ctrl)
+      f_nm <- get(nm)
+      ## A constant `fml.C = ~1` asks for no search (the global test) and stays constant.
+      if (!is.null(f_nm) && !(nm == "fml.C" && identical(f_nm[[2L]], 1))) mc2[[nm]] <- add_terms_onesided(f_nm, ctrl)
     }
     mc2$data <- stk$data
     mc2$block <- "inst__"
@@ -546,6 +581,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     res$call <- mc
     res$instruments <- list(instruments = Zs, control = isTRUE(Zcontrol), binning = stk$binning)
     res$binning$Z <- NULL
+    if (!is.null(res$joint)) {
+      ## Instruments in the order of the formula.
+      o <- match(Zs, names(res$joint$coef))
+      res$joint$coef <- res$joint$coef[o]
+      res$joint$vcov <- res$joint$vcov[o, o]
+      res$joint$control <- isTRUE(Zcontrol)
+    }
     return(res)
   }
 
@@ -825,7 +867,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     if (!is.character(block) || length(block) != 1L || !(block %in% colnames(data))) {
       stop("Argument block must be the name of a single column in data.", call. = FALSE)
     }
-    if (!(identical(condition, "KR") || identical(condition, "MW"))) {
+    if (!(identical(condition, "KR") || identical(condition, "MW") ||
+          (isTRUE(.z_by_block) && identical(condition, "simple")))) {
       stop("`block` is only supported for condition = \"KR\" or \"MW\".", call. = FALSE)
     }
     if (is.null(cluster)) {
@@ -2213,21 +2256,37 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## helper for simple / AHS: builds exactly one representation of D/Z,
   ## selected by linearD/linearZ (no more mixing multiple representations
   ## of the same condition-type within one call).
+  ## Z thresholds of one problem: with several instruments every block has its own.
+  zm_of <- function(b = NULL) {
+    if (is.null(b) || !isTRUE(.z_by_block)) return(Zsup[-1L])
+    sort(unique(stats::na.omit(data[block == b][["zmargin"]])))
+  }
+  ## Applies the cell constructor `f(b)` once, or once per block with a `block` column.
+  per_block <- function(f) {
+    if (!has_block) return(f(NULL))
+    data.table::rbindlist(lapply(blk_vals, function(b) {
+      t_b <- f(b)
+      if (ncol(t_b) == 0L) data.table::data.table(block = b) else t_b[, block := b]
+    }), use.names = TRUE, fill = TRUE)
+  }
+
   make_linear_blocks <- function(cond_name) {
     if (!linearD && !linearZ) {
       ## ordinary margins: binarized Z and binarized D
       if (has_FE) {
         ## os_res is not computed under FE (see the one-sided-noncompliance
         ## block above) -- test every margin directly instead of filtering.
-        tmp <- if (K > 2L && J > 2L) {
-          data.table::CJ(zmargin = Zsup[-1L], dval = Dsup[-1L])
-        } else if (K > 2L) {
-          data.table::data.table(zmargin = Zsup[-1L])
-        } else if (J > 2L) {
-          data.table::data.table(dval = Dsup[-1L])
-        } else {
-          data.table::data.table()
-        }
+        tmp <- per_block(function(b) {
+          if (K > 2L && J > 2L) {
+            data.table::CJ(zmargin = zm_of(b), dval = Dsup[-1L])
+          } else if (K > 2L) {
+            data.table::data.table(zmargin = zm_of(b))
+          } else if (J > 2L) {
+            data.table::data.table(dval = Dsup[-1L])
+          } else {
+            data.table::data.table()
+          }
+        })
 
       } else {
         if (!exists("os_res")) {
@@ -2237,7 +2296,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
         tmp <- os_res$threshold[one_sided == FALSE]
 
-        keep <- intersect(c("zmargin", "dmargin"), names(tmp))
+        keep <- intersect(c("zmargin", "dmargin", "block"), names(tmp))
         tmp <- tmp[, ..keep]
 
         if ("dmargin" %in% names(tmp)) {
@@ -2261,29 +2320,25 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
     } else if (linearD && !linearZ) {
       ## linear in D, margin in Z
-      tmp <- if (K > 2L) {
-        data.table::data.table(zmargin = Zsup[-1L])
-      } else {
-        data.table::data.table()
-      }
+      tmp <- per_block(function(b) {
+        if (K > 2L) data.table::data.table(zmargin = zm_of(b)) else data.table::data.table()
+      })
 
       tmp[, condition := cond_name]
       tmp[, linear := "D"]
 
     } else if (!linearD && linearZ) {
       ## linear in Z, margin in D
-      tmp <- if (J > 2L) {
-        data.table::data.table(dval = Dsup[-1L])
-      } else {
-        data.table::data.table()
-      }
+      tmp <- per_block(function(b) {
+        if (J > 2L) data.table::data.table(dval = Dsup[-1L]) else data.table::data.table()
+      })
 
       tmp[, condition := cond_name]
       tmp[, linear := "Z"]
 
     } else {
       ## linear in both Z and D
-      tmp <- data.table::data.table()
+      tmp <- per_block(function(b) data.table::data.table())
 
       tmp[, condition := cond_name]
       tmp[, linear := "DZ"]
@@ -2417,12 +2472,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     if (has_FE) {
       ## os_res is not computed under FE (see the one-sided-noncompliance
       ## block above) -- test every margin directly instead of filtering.
-      mk_tmp <- function(Ds) {
-        if (K > 2L) data.table::CJ(zmargin = Zsup[-1L], dval = Ds) else data.table::data.table(dval = Ds)
+      mk_tmp <- function(Ds, b = NULL) {
+        if (K > 2L) data.table::CJ(zmargin = zm_of(b), dval = Ds) else data.table::data.table(dval = Ds)
       }
       tmp <- if (has_block) {
         data.table::rbindlist(lapply(blk_vals, function(b) {
-          mk_tmp(sort(unique(data[block == b][[Dbincol]])))[, block := b]
+          mk_tmp(sort(unique(data[block == b][[Dbincol]])), b)[, block := b]
         }))
       } else {
         mk_tmp(Dsup)
@@ -3617,7 +3672,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
   }
 
-  if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg)
+  if (!local) res=global_test(data,cluster=cluster,weight="w_eff",scores="scores",margins=margins,pool=poolmargins,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,return_infl=want_joint)
   if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,infoz=infoz_arg,infod=infod_arg,minvar=minvar,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
   if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,infoz=infoz_arg,infod=infod_arg,minvar=minvar,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
@@ -3626,6 +3681,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   list(res = res, margin_index = margin_index, margins = margins, time = time)
   } ## end run_block()
+
+  ## Joint first stage across instruments: only the global "simple" test of an instrument stack in which the
+  ## instruments are not pooled (it needs one coefficient per instrument).
+  ## D and Z must be linear or binary: pooled margin cells are not first-stage coefficients.
+  want_joint <- isTRUE(.z_by_block) && !local && identical(condition, "simple") && !"block" %in% pool &&
+    (linearZ || K <= 2L) && (linearD || J <= 2L)
 
   ################ RUN: stacked (once) or block by block #####################
   if (stack) {
@@ -3712,7 +3773,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
           for (cc in setdiff(names(consts), names(tbl))) tbl[, (cc) := consts[[cc]]]
           tbl
         }
-        for (nm in c("results", "grid", "global", "Xmeans", "Xmeans_all", "XSD", "shares", "train_cells", "leaf_candidates")) {
+        for (nm in c("results", "grid", "global", "infl", "Xmeans", "Xmeans_all", "XSD", "shares", "train_cells", "leaf_candidates")) {
           if (!is.null(res_b[[nm]])) res_b[[nm]] <- attach_consts(res_b[[nm]])
         }
         if (!is.null(res_b$train_cells)) {
@@ -3741,6 +3802,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     res <- list(
       results = bind_all("results"),
       grid = bind_all("grid"),
+      infl = bind_all("infl"),
       global = bind_all("global"),
       Xmeans = bind_all("Xmeans"),
       Xmeans_all = bind_all("Xmeans_all"),
@@ -3836,6 +3898,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       }
     }
 
+
+    if (want_joint) {
+      res$joint <- joint_wald(res$results, res$infl, blk_vals,
+                              if (!is.null(block_labels)) block_labels[blk_vals] else as.character(blk_vals))
+    }
+    res$infl <- NULL
 
   time=rbind(time,"Correct for multiple hypothesis testing"=proc.time())
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]
