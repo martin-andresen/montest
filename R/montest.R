@@ -418,11 +418,17 @@
 #'   \item{\code{joint}}{Only with several instruments, \code{condition = "simple"}, no search (no covariates in
 #'     \code{fml.C} and nothing selected over), binary or linear D and Z and instruments not pooled; otherwise absent.
 #'     The joint first stage: a two-sided Wald test that all instruments' coefficients are zero, as a list with
-#'     \code{coef}, \code{vcov} (cluster-robust covariance across the instrument blocks; its diagonal is
-#'     \code{results$stderr^2}), \code{F}, \code{df1} (number of instruments), \code{df2}, \code{p}, \code{N},
-#'     \code{G} and \code{control}. With \code{Zcontrol = TRUE} the coefficients are partial (each given the other
-#'     instruments), with \code{FALSE} marginal. This is a relevance test, not the monotonicity test, which is in
-#'     \code{results} and \code{minp}. The F statistic is the ordinary robust Wald F, not the effective F of
+#'     \code{coef}, \code{vcov} (cluster-robust), \code{F}, \code{df1} (number of instruments), \code{df2},
+#'     \code{p}, \code{N}, \code{G} and \code{control}. With \code{Zcontrol = TRUE} the coefficients are those of
+#'     \code{results} (each instrument's, with the other instruments partialled out together with the covariates, by
+#'     the same nuisance learner), \code{vcov} is their covariance across the blocks and its diagonal is
+#'     \code{results$stderr^2}. With \code{Zcontrol = FALSE} only the covariates and fixed effects are partialled
+#'     out and \code{coef} comes from one regression of the D residual on all instrument residuals, the analogue of
+#'     the 2SLS first stage with flexible covariates; \code{results} then holds the marginal one-instrument
+#'     estimates, which differ from \code{coef}. With parametric linear nuisances both give the 2SLS first stage
+#'     (unless blocks drop different rows); with forests and correlated instruments \code{Zcontrol = FALSE} loses
+#'     less power. This is a relevance test, not the monotonicity test, which is in \code{results} and
+#'     \code{minp}. The F statistic is the ordinary robust Wald F, not the effective F of
 #'     Montiel Olea and Pflueger.}
 #'   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
 #'   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}
@@ -569,9 +575,14 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     mc2$data <- stk$data
     mc2$block <- "inst__"
     mc2$cluster <- stk$cluster
-    mc2$Zcut <- "none"; mc2$Dcut <- "none"; mc2$Ycut <- "none"
-    for (nm in intersect(c("Dsubsets", "gridtypeD", "Ysubsets", "gridtypeY"), names(mc2))) mc2[[nm]] <- NULL
-    for (nm in intersect(c("Zsubsets", "gridtypeZ", "Zcontrol"), names(mc2))) mc2[[nm]] <- NULL
+    mc2$Zcut <- "none"; mc2$Ycut <- "none"
+    for (nm in intersect(c("Ysubsets", "gridtypeY"), names(mc2))) mc2[[nm]] <- NULL
+    ## A linear D keeps its own binning spec: it is only binned for the one-sided noncompliance screen.
+    if (!lin_d) {
+      mc2$Dcut <- "none"
+      for (nm in intersect(c("Dsubsets", "gridtypeD"), names(mc2))) mc2[[nm]] <- NULL
+    }
+    for (nm in intersect(c("Zsubsets", "gridtypeZ"), names(mc2))) mc2[[nm]] <- NULL
     mc2$.z_by_block <- TRUE
     for (nm in c("pool", "select")) {
       val <- get(nm)
@@ -1239,7 +1250,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     Y, D, Z,
     weight,
     cluster,
-    if (has_block) "block"
+    if (has_block) "block",
+    if (isTRUE(.z_by_block)) "unit__"
   ))
   allvars <- allvars[!is.na(allvars)]
 
@@ -1424,7 +1436,8 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     ## Cut points always recode, a count only changes data with more than that many distinct values.
     changes_data <- function(spec, v) switch(spec$type, none = FALSE, cuts = TRUE,
                                              count = data.table::uniqueN(data[[v]], na.rm = TRUE) > spec$n)
-    if (changes_data(spec_D, D) ||
+    ## A linear D (only with an instrument stack, "simple") enters on its own scale, so its bins do not matter.
+    if ((!linearD && changes_data(spec_D, D)) ||
         ("KR" %in% condition && !is.null(Y) && any(vapply(Y, function(yy) changes_data(spec_Y, yy), logical(1L))))) {
       stop("With `block`, D and Y must not need binning: use Dcut/Ycut = \"none\" (or a bin count of at least the ",
            "number of distinct values of D/Y in the stacked data).", call. = FALSE)
@@ -3676,6 +3689,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (local && "forest" == testtype) res=forest_test(data,cluster=cluster,weight="w_eff",scores_test=if ("scores_test" %in% names(data)) "scores_test" else NULL,sort_pred=pred_arg,sort_pred_o=pred_o_arg,minsize=minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,infoz=infoz_arg,infod=infod_arg,minvar=minvar,x_names=X_forest,pool=poolmargins,select=selectmargins,gridpoints=gridpoints,margins=margins,screen=screen,alpha=alpha,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,fe_rank_conservative = fe_rank_conservative,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,v=v_arg,center_inv_v=center_inv_v_arg,defer_selection=defer_selection)
   if (local && "CART" == testtype) res=CART_test(data, x_names=X_forest,margins=margins,weight="w_eff",cp = cp,maxrankcp = maxrankcp,alpha = alpha,prune = prune,  minsize = minsize,arm=arm_arg,arm_weight=armw_arg,miness=miness,infoz=infoz_arg,infod=infod_arg,minvar=minvar,screen=screen,cluster=cluster,select=selectmargins,rpart_options=Rparameters,fe_expr=FE_expr,fe_rank_adj=fe_rank_adj,x_rank_vars=x_rank_vars,center=center_arg,resid_treat=resid_treat_arg,resid_outcome=resid_outcome_arg,sample_weight=weight,recenter_propensity=recenter_propensity_arg,recenter_binary=recenter_binary_arg,tau=tau_arg,v=v_arg,defer_selection=defer_selection)
 
+  ## Residuals per unit and block for the joint first stage without instrument controls (see joint_ols()).
+  if (want_joint && !isTRUE(Zcontrol)) {
+    res$resid <- data.table::data.table(
+      block = data$block, unit = data$unit__, cl = data[[cluster]], u = data$Q - data$Q.hat,
+      v = data$.resid_treat, w = if (is.null(weight)) 1 else as.numeric(data[[weight]]))
+  }
+
   time=rbind(time,"Find promising subset and test"=proc.time())
   if (!local) rownames(time)[nrow(time)] <- "Construct test results"
 
@@ -3773,7 +3793,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
           for (cc in setdiff(names(consts), names(tbl))) tbl[, (cc) := consts[[cc]]]
           tbl
         }
-        for (nm in c("results", "grid", "global", "infl", "Xmeans", "Xmeans_all", "XSD", "shares", "train_cells", "leaf_candidates")) {
+        for (nm in c("results", "grid", "global", "infl", "resid", "Xmeans", "Xmeans_all", "XSD", "shares", "train_cells", "leaf_candidates")) {
           if (!is.null(res_b[[nm]])) res_b[[nm]] <- attach_consts(res_b[[nm]])
         }
         if (!is.null(res_b$train_cells)) {
@@ -3803,6 +3823,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       results = bind_all("results"),
       grid = bind_all("grid"),
       infl = bind_all("infl"),
+      resid = bind_all("resid"),
       global = bind_all("global"),
       Xmeans = bind_all("Xmeans"),
       Xmeans_all = bind_all("Xmeans_all"),
@@ -3900,10 +3921,17 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
 
     if (want_joint) {
-      res$joint <- joint_wald(res$results, res$infl, blk_vals,
-                              if (!is.null(block_labels)) block_labels[blk_vals] else as.character(blk_vals))
+      labs_j <- if (!is.null(block_labels)) block_labels[blk_vals] else as.character(blk_vals)
+      ## With the other instruments as controls the blocks' coefficients are the partial ones, and only their
+      ## covariance is needed. Without controls they are marginal, and the instruments enter one joint regression.
+      res$joint <- if (isTRUE(Zcontrol)) {
+        joint_wald(res$results, res$infl, blk_vals, labs_j)
+      } else {
+        joint_ols(res$results, res$resid, blk_vals, labs_j)
+      }
     }
     res$infl <- NULL
+    res$resid <- NULL
 
   time=rbind(time,"Correct for multiple hypothesis testing"=proc.time())
   time = time[-1, , drop = FALSE] - time[-nrow(time), , drop = FALSE]

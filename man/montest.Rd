@@ -463,11 +463,17 @@ A named list:
   \item{\code{joint}}{Only with several instruments, \code{condition = "simple"}, no search (no covariates in
     \code{fml.C} and nothing selected over), binary or linear D and Z and instruments not pooled; otherwise absent.
     The joint first stage: a two-sided Wald test that all instruments' coefficients are zero, as a list with
-    \code{coef}, \code{vcov} (cluster-robust covariance across the instrument blocks; its diagonal is
-    \code{results$stderr^2}), \code{F}, \code{df1} (number of instruments), \code{df2}, \code{p}, \code{N},
-    \code{G} and \code{control}. With \code{Zcontrol = TRUE} the coefficients are partial (each given the other
-    instruments), with \code{FALSE} marginal. This is a relevance test, not the monotonicity test, which is in
-    \code{results} and \code{minp}. The F statistic is the ordinary robust Wald F, not the effective F of
+    \code{coef}, \code{vcov} (cluster-robust), \code{F}, \code{df1} (number of instruments), \code{df2},
+    \code{p}, \code{N}, \code{G} and \code{control}. With \code{Zcontrol = TRUE} the coefficients are those of
+    \code{results} (each instrument's, with the other instruments partialled out together with the covariates, by
+    the same nuisance learner), \code{vcov} is their covariance across the blocks and its diagonal is
+    \code{results$stderr^2}. With \code{Zcontrol = FALSE} only the covariates and fixed effects are partialled
+    out and \code{coef} comes from one regression of the D residual on all instrument residuals, the analogue of
+    the 2SLS first stage with flexible covariates; \code{results} then holds the marginal one-instrument
+    estimates, which differ from \code{coef}. With parametric linear nuisances both give the 2SLS first stage
+    (unless blocks drop different rows); with forests and correlated instruments \code{Zcontrol = FALSE} loses
+    less power. This is a relevance test, not the monotonicity test, which is in \code{results} and
+    \code{minp}. The F statistic is the ordinary robust Wald F, not the effective F of
     Montiel Olea and Pflueger.}
   \item{\code{grid}}{Stored cutoff grid evaluated by the forest test.}
   \item{\code{Xmeans}}{Weighted covariate means in the selected testing subset.}

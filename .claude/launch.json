@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "review-app",
+      "runtimeExecutable": "/usr/local/bin/Rscript",
+      "runtimeArgs": [
+        "-e",
+        "shiny::runApp('/Users/martiea/Library/CloudStorage/Dropbox/Prosjekter/working/testing IV monotonicity/review_app', port = 4321, launch.browser = FALSE)"
+      ],
+      "port": 4321
+    }
+  ]
+}

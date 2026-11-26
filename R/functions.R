@@ -6785,6 +6785,51 @@ joint_wald <- function(results, infl, blocks, labels) {
 }
 
 
+## Joint first stage with `Zcontrol = FALSE`: every block holds the residuals of one instrument and of D after the
+## covariates and fixed effects only, so (Frisch-Waugh-Lovell) the first-stage coefficients are those of ONE
+## weighted regression (with intercept) of the D residual on all instrument residuals. `resid` has one row per unit
+## and block (columns block, unit, cl, u, v, w). A unit that a block dropped (fixed effect singleton or no
+## variation in that instrument) has residual 0 for that instrument; the D residual is averaged over the blocks that
+## hold the unit. Cluster-robust Wald test that all coefficients are zero, with the same small-sample factor as the
+## one-instrument estimates (the rank of `results` plus the K - 1 further regressors). NULL if a block has no cell.
+joint_ols <- function(results, resid, blocks, labels) {
+  if (is.null(resid) || !"block" %in% names(results) || nrow(results) != length(blocks) ||
+      anyNA(match(blocks, results$block))) return(NULL)
+  K <- length(blocks)
+  resid <- resid[is.finite(u) & is.finite(v) & is.finite(w) & w >= 0 & !is.na(cl)]
+  units <- unique(resid$unit)
+  i <- match(resid$unit, units)
+  n <- length(units)
+  V <- matrix(0, n, K)
+  V[cbind(i, match(resid$block, blocks))] <- resid$v
+  first <- match(seq_len(n), i)
+  w <- resid$w[first]
+  cl <- resid$cl[first]
+  u <- as.vector(rowsum(resid$u, i)) / tabulate(i, n)
+  V <- sweep(V, 2L, colSums(V * w) / sum(w))
+  u <- u - sum(u * w) / sum(w)
+  A <- crossprod(V, V * w)
+  if (any(diag(A) <= 0) || rcond(stats::cov2cor(A)) <= 1e-10) {
+    warning("Joint first stage: the instrument residuals are collinear.", call. = FALSE)
+    return(NULL)
+  }
+  Ai <- solve(A)
+  b <- as.vector(Ai %*% crossprod(V, w * u))
+  e <- u - as.vector(V %*% b)
+  S <- rowsum(V * (w * e), cl)
+  G <- nrow(S)
+  r <- max((results$N - 1) * (1 - results$df / (results$G - 1)))
+  df <- (G - 1) * (n - 1 - (r + K - 1)) / (n - 1)
+  if (G < 2L || !is.finite(df) || df <= 0) return(NULL)
+  Vb <- (G / df) * Ai %*% crossprod(S) %*% Ai
+  dimnames(Vb) <- list(labels, labels)
+  b <- stats::setNames(b, labels)
+  Fstat <- if (rcond(stats::cov2cor(Vb)) > 1e-10) sum(b * solve(Vb, b)) / K else NA_real_
+  if (is.na(Fstat)) warning("Joint first stage: the covariance matrix of the instruments' coefficients is singular.", call. = FALSE)
+  list(coef = b, vcov = Vb, F = Fstat, df1 = K, df2 = df,
+       p = stats::pf(Fstat, K, df, lower.tail = FALSE), N = n, G = G)
+}
+
 
 #######ONE SIDED NONCOMPLIANCE HELPERS #######
 test_one_sided_noncompliance <- function(
@@ -7487,12 +7532,10 @@ stack_instruments <- function(data, Z, control, specs, weight, cluster, linear =
     stop("Instrument `", Z[which(nlev < 2L)[1L]], "` has fewer than two values after binning.", call. = FALSE)
   }
   if (control) check_redundant_instruments(codes, Z)
-  unit <- "unit__"
-  if (is.null(cluster)) {
-    data <- data.table::copy(data)
-    data[, (unit) := .I]
-    cluster <- unit
-  }
+  ## `unit__` identifies a unit across the blocks (also the cluster when none is given).
+  data <- data.table::copy(data)
+  data[, unit__ := .I]
+  if (is.null(cluster)) cluster <- "unit__"
   ctrl <- if (control && k > 1L) paste0("Zc", seq_len(k - 1L), "__") else character()
   parts <- lapply(seq_len(k), function(j) {
     d <- data.table::copy(data)
