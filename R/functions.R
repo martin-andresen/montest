@@ -3984,11 +3984,13 @@ fe_rank <- function(data,
 
       if (p$kind == "slope_bundled") {
         cat_terms[[length(cat_terms) + 1L]] <- list(label = grp, values = grp_vals)
-        degenerate <- dsub[, .(const = data.table::uniqueN(get(xv)) <= 1L), by = grp]$const
+        ## `.deg`, not a plain name: a result column named like the grouping variable (e.g. the usual
+        ## `const[x]`) would be shadowed by the group values.
+        degenerate <- dsub[, .(.deg = data.table::uniqueN(get(xv)) <= 1L), by = grp]$.deg
         n_degenerate <- sum(degenerate)
         label <- sprintf("%s[%s] (slope, bundled intercept)", grp, xv)
       } else {
-        degenerate <- dsub[, .(allzero = all(get(xv) == 0)), by = grp]$allzero
+        degenerate <- dsub[, .(.deg = all(get(xv) == 0)), by = grp]$.deg
         n_degenerate <- sum(degenerate)
         label <- sprintf("%s[[%s]] (slope only)", grp, xv)
       }
@@ -4065,27 +4067,48 @@ add_running_fe_rank <- function(DT,
   by <- unique(as.character(by %||% character()))
   by <- by[by %in% names(DT)]
 
-  fe_vars <- unique(all.vars(fe_expr))
-  fe_vars <- fe_vars[fe_vars %in% names(DT)]
-
-  if (!length(fe_vars)) {
-    DT[, (out) := 0L]
-    return(invisible(DT))
-  }
-
   if (!is.null(cluster_vals) && length(cluster_vals) != nrow(DT)) {
     stop("add_running_fe_rank: `cluster_vals` must have the same length as `DT`.", call. = FALSE)
   }
 
-  if (!is.null(cluster_vals)) {
-    nested <- vapply(fe_vars, function(ff) {
-      chk <- data.table::data.table(a = DT[[ff]], b = cluster_vals)
-      data.table::uniqueN(chk) == data.table::uniqueN(DT[[ff]])
-    }, logical(1))
-    fe_vars <- fe_vars[!nested]
+  ## Term by term, because the variable of a varying slope (`f[x]`, `f[x1, x2]`, `f[[x]]`) is not a fixed
+  ## effect: counting its distinct values would charge about one parameter per row. As in fe_rank(), `f[x]`
+  ## absorbs the intercept of f (counted once, however often f appears) and one slope per level of f;
+  ## `f[[x]]` only the slopes. Other terms count every variable in them.
+  split_plus <- function(e) {
+    if (is.call(e) && length(e) == 3L && identical(e[[1L]], as.name("+"))) {
+      c(split_plus(e[[2L]]), split_plus(e[[3L]]))
+    } else list(e)
   }
+  rhs <- if (inherits(fe_expr, "formula")) fe_expr[[length(fe_expr)]] else fe_expr
+  fe_vars <- character(0)
+  slopes <- list()
+  for (term in split_plus(rhs)) {
+    only <- is.call(term) && identical(term[[1L]], as.name("[["))
+    if (is.call(term) && length(term) >= 3L && (only || identical(term[[1L]], as.name("["))) &&
+        all(vapply(as.list(term)[-1L], is.symbol, logical(1)))) {
+      group <- as.character(term[[2L]])
+      if (!only) fe_vars <- c(fe_vars, group)
+      for (x in as.list(term)[-(1:2)]) {
+        slopes[[length(slopes) + 1L]] <- list(group = group, x = as.character(x), only = only)
+      }
+    } else {
+      fe_vars <- c(fe_vars, all.vars(term))
+    }
+  }
+  fe_vars <- unique(fe_vars)
+  fe_vars <- fe_vars[fe_vars %in% names(DT)]
+  slopes <- Filter(function(s) all(c(s$group, s$x) %in% names(DT)), unique(slopes))
 
-  if (!length(fe_vars)) {
+  nested_in_cluster <- function(ff) {
+    if (is.null(cluster_vals)) return(FALSE)
+    chk <- data.table::data.table(a = DT[[ff]], b = cluster_vals)
+    data.table::uniqueN(chk) == data.table::uniqueN(DT[[ff]])
+  }
+  fe_vars <- fe_vars[!vapply(fe_vars, nested_in_cluster, logical(1))]
+  slopes <- Filter(function(s) !nested_in_cluster(s$group), slopes)
+
+  if (!length(fe_vars) && !length(slopes)) {
     DT[, (out) := 0L]
     return(invisible(DT))
   }
@@ -4117,7 +4140,9 @@ add_running_fe_rank <- function(DT,
     rank_cols <- c(rank_cols, cc)
   }
 
-  if (conservative) {
+  if (!length(rank_cols)) {
+    DT[, (out) := 0L]
+  } else if (conservative) {
     DT[, (out) := rowSums(.SD), .SDcols = rank_cols]
   } else {
     DT[
@@ -4127,7 +4152,23 @@ add_running_fe_rank <- function(DT,
     ]
   }
 
-  DT[, (rank_cols) := NULL]
+  if (length(rank_cols)) DT[, (rank_cols) := NULL]
+
+  ## Slopes: a level of f costs one parameter from the first row that identifies its slope (x takes a second
+  ## value in the level; without the intercept, x is nonzero).
+  for (s in slopes) {
+    cc <- ".__slope_seen__"
+    DT[, (cc) := {
+      x <- .SD[[1L]]
+      first <- which(if (s$only) x != 0 else x != x[!is.na(x)][1L])[1L]
+      seen <- integer(.N)
+      if (!is.na(first)) seen[first] <- 1L
+      seen
+    }, by = c(unique(c(by, s$group))), .SDcols = s$x]
+    if (length(by)) DT[, (cc) := cumsum(get(cc)), by = by] else DT[, (cc) := cumsum(get(cc))]
+    data.table::set(DT, j = out, value = DT[[out]] + DT[[cc]])
+    DT[, (cc) := NULL]
+  }
 
   invisible(DT)
 }
