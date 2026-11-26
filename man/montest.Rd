@@ -35,6 +35,8 @@ montest(
   Zcut = NULL,
   Dcut = NULL,
   Ycut = NULL,
+  Zcontrol = TRUE,
+  .z_by_block = FALSE,
   Y.res = TRUE,
   testtype = "forest",
   fe_rank_conservative = TRUE,
@@ -215,6 +217,25 @@ the binned variable). Conditions that need a binary treatment (\code{"AHS"}) or 
 check the variable before binning, so cutting a three-valued D to two values does not make \code{"AHS"} run:
 binarize D outside \code{montest()} for that. With \code{block}, D and Y may not need binning
 (\code{"none"} or a count at least as large as the number of distinct values).}
+
+\item{Zcontrol}{Logical, default TRUE; used only with several instruments (\code{D ~ Z1 + Z2}). Each instrument
+is then tested as a separate block of one stacked problem (the block label is the instrument name) with the
+other instruments as additional covariates (in \code{fml}, \code{fml.Z}, \code{fml.Q}, \code{fml.C},
+\code{fml.varZ}, \code{fml.varS} when given), so the assumptions are stated for each instrument given the others.
+\code{Zcontrol = FALSE} tests each instrument without the others. \code{pool = "instrument"} (alias of
+\code{"block"}) pools over the instruments and \code{select = "instrument"} selects among them; by default
+each instrument is tested on its own and all tests are corrected as one family. The null is that every
+instrument is valid given its controls, so a rejection of a pooled test says that at least one fails, and
+conditioning on an instrument that is itself invalid can distort the test of another. Instruments may have
+different numbers of levels (\code{Zcut} may be a named list with one spec per instrument). Each is coded
+0, 1, ... and has its own margins \code{zmargin}; if any instrument has more than two levels, a two-valued one
+shows up with \code{zmargin = 1}. Pooling over \code{"instrument"} without \code{"zmargin"} pools the
+instruments within each margin number. Several
+instruments need Y, one of \code{"KR"} or \code{"MW"} per call, no fixed effects and no \code{block}.
+D and Y are binned once before stacking. The result gains \code{$instruments} (instruments, \code{control} and
+the binning of each).}
+
+\item{.z_by_block}{Internal; set by \code{montest()} when it stacks several instruments. Do not use.}
 
 \item{Y.res}{Logical; if \code{TRUE}, outcomes are residualized from X before tests that use
 outcome on the right hand side \code{MW,AHS}.}

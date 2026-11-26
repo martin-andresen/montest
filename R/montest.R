@@ -190,6 +190,23 @@
 #'   check the variable before binning, so cutting a three-valued D to two values does not make \code{"AHS"} run:
 #'   binarize D outside \code{montest()} for that. With \code{block}, D and Y may not need binning
 #'   (\code{"none"} or a count at least as large as the number of distinct values).
+#' @param Zcontrol Logical, default TRUE; used only with several instruments (\code{D ~ Z1 + Z2}). Each instrument
+#'   is then tested as a separate block of one stacked problem (the block label is the instrument name) with the
+#'   other instruments as additional covariates (in \code{fml}, \code{fml.Z}, \code{fml.Q}, \code{fml.C},
+#'   \code{fml.varZ}, \code{fml.varS} when given), so the assumptions are stated for each instrument given the others.
+#'   \code{Zcontrol = FALSE} tests each instrument without the others. \code{pool = "instrument"} (alias of
+#'   \code{"block"}) pools over the instruments and \code{select = "instrument"} selects among them; by default
+#'   each instrument is tested on its own and all tests are corrected as one family. The null is that every
+#'   instrument is valid given its controls, so a rejection of a pooled test says that at least one fails, and
+#'   conditioning on an instrument that is itself invalid can distort the test of another. Instruments may have
+#'   different numbers of levels (\code{Zcut} may be a named list with one spec per instrument). Each is coded
+#'   0, 1, ... and has its own margins \code{zmargin}; if any instrument has more than two levels, a two-valued one
+#'   shows up with \code{zmargin = 1}. Pooling over \code{"instrument"} without \code{"zmargin"} pools the
+#'   instruments within each margin number. Several
+#'   instruments need Y, one of \code{"KR"} or \code{"MW"} per call, no fixed effects and no \code{block}.
+#'   D and Y are binned once before stacking. The result gains \code{$instruments} (instruments, \code{control} and
+#'   the binning of each).
+#' @param .z_by_block Internal; set by \code{montest()} when it stacks several instruments. Do not use.
 #' @param gridtypeY,gridtypeD,gridtypeZ,Ysubsets,Dsubsets,Zsubsets Deprecated; use \code{Ycut}, \code{Dcut},
 #'   \code{Zcut}. \code{Dsubsets = K} with \code{gridtypeD = g} is \code{Dcut = "g:K"}. Passing one of them gives a
 #'   warning (once per session), and passing it together with the new argument is an error.
@@ -420,7 +437,7 @@
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  stabilize.scores="hajek",aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
-                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Zcut=NULL,Dcut=NULL,Ycut=NULL,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
+                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Zcut=NULL,Dcut=NULL,Ycut=NULL,Zcontrol=TRUE,.z_by_block=FALSE,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),minvar=0.05,overlap.check=c("error","warn","off"),overlap.rho=c(0.01,0.05),overlap.sep=0.99,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,kr_sums=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
@@ -466,6 +483,71 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   ################### 1 CHECK INPUT #####################
   data <- data.table::as.data.table(data.table::copy(data))
+
+  ## ---- Several instruments (`D ~ Z1 + Z2`): one block per instrument, the others as controls ----
+  v_z <- validate_iv(fml, data)
+  if (length(v_z$Z) > 1L) {
+    if (isTRUE(.z_by_block)) stop("Internal error: nested multi-instrument call.", call. = FALSE)
+    Zs <- as.character(v_z$Z)
+    if (!is.null(block)) stop("`block` cannot be combined with several instruments (each instrument is a block).", call. = FALSE)
+    if (isTRUE(linearZ)) stop("`linearZ = TRUE` cannot be combined with several instruments.", call. = FALSE)
+    if (length(v_z$FE)) stop("Several instruments are not supported together with fixed effects.", call. = FALSE)
+    if (is.null(v_z$Y)) stop("Several instruments need an outcome Y (condition = \"KR\" or \"MW\").", call. = FALSE)
+    if (!all(condition %in% c("KR", "MW")) && !is.null(condition)) {
+      stop("Several instruments are only supported for condition = \"KR\" or \"MW\".", call. = FALSE)
+    }
+    if (is.list(Zcut) && !is.null(names(Zcut)) && !all(names(Zcut) %in% Zs)) {
+      stop("Names of the list `Zcut` must be instrument names.", call. = FALSE)
+    }
+    zs_given <- !missing(Zsubsets); gz_given <- !missing(gridtypeZ)
+    specs_z <- lapply(Zs, function(z) {
+      cz <- if (is.list(Zcut)) Zcut[[z]] else Zcut
+      resolve_bin_spec(cz, Zsubsets, gridtypeZ, zs_given, gz_given, "Zcut", "`Zsubsets`/`gridtypeZ`")
+    })
+    ## `block` needs D and Y as they are, so they are binned once here (the blocks share D and Y).
+    if (all(c("KR", "MW") %in% condition)) {
+      stop("With several instruments run condition = \"KR\" and \"MW\" in separate calls.", call. = FALSE)
+    }
+    spec_Dz <- resolve_bin_spec(Dcut, Dsubsets, gridtypeD, !missing(Dsubsets), !missing(gridtypeD), "Dcut", "`Dsubsets`/`gridtypeD`")
+    spec_Yz <- resolve_bin_spec(Ycut, Ysubsets, gridtypeY, !missing(Ysubsets), !missing(gridtypeY), "Ycut", "`Ysubsets`/`gridtypeY`")
+    prebin <- function(var, spec, arg) {
+      tmp <- data[, unique(c(var, weight)), with = FALSE]
+      bin_col(tmp, var, spec, if (is.null(weight)) NA_character_ else weight, "..pb", arg)[["..pb"]]
+    }
+    data <- data.table::copy(data)
+    Dv <- as.character(v_z$D)[1L]
+    if (data.table::uniqueN(data[[Dv]], na.rm = TRUE) > 2L || spec_Dz$type != "count") {
+      data.table::set(data, j = Dv, value = prebin(Dv, spec_Dz, "Dcut"))
+    }
+    Dsup0 <- sort(unique(stats::na.omit(data[[Dv]])))
+    if (length(Dsup0) == 2L && !all(Dsup0 == c(0, 1))) data.table::set(data, j = Dv, value = as.integer(data[[Dv]] == Dsup0[2L]))
+    if (is.null(condition) || "KR" %in% condition) {
+      for (yy in as.character(v_z$Y)) data.table::set(data, j = yy, value = prebin(yy, spec_Yz, "Ycut"))
+    }
+    stk <- stack_instruments(data, Zs, isTRUE(Zcontrol), specs_z, weight, cluster)
+    ctrl <- stk$ctrl
+    mc2 <- mc
+    mc2$fml <- rewrite_iv_formula(fml, "Zstack__", ctrl)
+    for (nm in c("fml.Z", "fml.Q", "fml.varZ", "fml.C", "fml.varS")) {
+      if (!is.null(get(nm))) mc2[[nm]] <- add_terms_onesided(get(nm), ctrl)
+    }
+    mc2$data <- stk$data
+    mc2$block <- "inst__"
+    mc2$cluster <- stk$cluster
+    mc2$Zcut <- "none"; mc2$Dcut <- "none"; mc2$Ycut <- "none"
+    for (nm in intersect(c("Dsubsets", "gridtypeD", "Ysubsets", "gridtypeY"), names(mc2))) mc2[[nm]] <- NULL
+    for (nm in intersect(c("Zsubsets", "gridtypeZ", "Zcontrol"), names(mc2))) mc2[[nm]] <- NULL
+    mc2$.z_by_block <- TRUE
+    for (nm in c("pool", "select")) {
+      val <- get(nm)
+      if (!is.null(val)) mc2[[nm]] <- sub("^instrument$", "block", val)
+    }
+    res <- eval(mc2, parent.frame())
+    res$call <- mc
+    res$instruments <- list(instruments = Zs, control = isTRUE(Zcontrol), binning = stk$binning)
+    res$binning$Z <- NULL
+    return(res)
+  }
 
   ## Columns whose names coincide with names the package's own code uses inside data.table calls
   ## are renamed to dot-prefixed aliases for the duration of the call (and mapped back in the
@@ -1233,7 +1315,12 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     invisible(NULL)
   }
   if (!identical(overlap.check, "off")) {
-    handle_separation(overlap_separation(data, Z, sep_cand, weight = weight, tol = overlap.sep))
+    if (isTRUE(.z_by_block)) {
+      ## Instrument stack: Z is a different variable in every block.
+      for (b in blk_vals) handle_separation(overlap_separation(data[block == b], Z, sep_cand, weight = weight, tol = overlap.sep))
+    } else {
+      handle_separation(overlap_separation(data, Z, sep_cand, weight = weight, tol = overlap.sep))
+    }
   }
 
 
@@ -1447,25 +1534,29 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       stop("Need at least two non-missing Z values to construct zmargin.")
     }
 
-    minZ <- zvals[1L]
-    maxZ <- zvals[length(zvals)]
+    ## Instrument stack: every block is a different instrument with its own support, so its margins are built
+    ## from its own values. A two-valued instrument gets the single margin at its upper value, i.e. itself.
+    zsets <- if (isTRUE(.z_by_block)) {
+      lapply(split(data[[Zbincol]], data$block), function(x) sort(unique(x[!is.na(x)])))
+    }
 
     zmap <- data[, {
+      zv <- if (is.null(zsets)) zvals else zsets[[as.character(.BY$block)]]
       z0 <- get(Zbincol)
-      k0 <- match(z0, zvals)
+      k0 <- match(z0, zv)
 
       if (is.na(z0) || is.na(k0)) {
         zm <- NA_real_
-      } else if (z0 == minZ) {
-        zm <- zvals[2L]
-      } else if (z0 == maxZ) {
-        zm <- zvals[length(zvals)]
+      } else if (k0 == 1L) {
+        zm <- zv[2L]
+      } else if (k0 == length(zv)) {
+        zm <- zv[length(zv)]
       } else {
-        zm <- c(z0, zvals[k0 + 1L])
+        zm <- c(z0, zv[k0 + 1L])
       }
 
       .(rowid = .I, zmargin = zm)
-    }, by = id_]
+    }, by = c("id_", if (isTRUE(.z_by_block)) "block")]
 
     data <- data[zmap$rowid]
     data[, zmargin := zmap$zmargin]
@@ -1558,12 +1649,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     ## and Z are still fully residualized on the whole FE for identification;
     ## only the forest's *split features* see the raw FE. Lets the search
     ## localize a violation to specific FE levels.
+    zby <- c(margins, if (isTRUE(.z_by_block)) "block")
     X_forest_info <- make_X_residualized_from_FE(
       DT            = data,
       x_expr        = X_expr_forest,
       fe_expr       = FE_expr,
       prefix        = "__xf",
-      by            = margins,
+      by            = zby,
       weight        = weight,
       fixest_opts   = Rparameters,
       fe_search_raw = TRUE
@@ -1633,7 +1725,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## prediction is formed. Requires the blocks to be row-aligned copies of each
   ## other as far as Z, X, sample, cluster and weight are concerned.
   rows_est <- NULL
-  if (has_block && length(blk_vals) > 1L) {
+  ## Instrument stack (see below): Z differs between the blocks, so Z-side nuisances are fitted per block.
+  zby <- c(margins, if (isTRUE(.z_by_block)) "block")
+  if (has_block && length(blk_vals) > 1L && !isTRUE(.z_by_block)) {
     data[, unit_pos__ := seq_len(.N), by = c("block", "zmargin")]
     chk_cols <- unique(c("zmargin", "unit_pos__", Z, "sample", cluster, weight, X_forest))
     chk_cols <- chk_cols[chk_cols %in% names(data)]
@@ -1666,7 +1760,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     x_expr = X_expr_Z,
     fe_expr = FE_expr,
     out_hat = zhat,
-    by = margins,
+    by = zby,
     sample_var = "sample",
     weight = weight,
     cluster = cluster,
@@ -1698,14 +1792,26 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   if (!identical(overlap.check, "off") && is.null(ovl$sep)) {
     grp_sep <- if ("zmargin" %in% names(data)) unique(stats::na.omit(data$zmargin)) else NULL
     for (g in grp_sep) {
-      handle_separation(overlap_separation(data[which(data$zmargin == g)], Z, sep_cand, weight = weight, tol = overlap.sep))
+      for (b in (if (isTRUE(.z_by_block)) blk_vals else NA)) {
+        rows_g <- if (is.na(b)) which(data$zmargin == g) else which(data$zmargin == g & data$block == b)
+        if (length(rows_g) == 0L) next  ## an instrument with fewer levels than others
+        handle_separation(overlap_separation(data[rows_g], Z, sep_cand, weight = weight, tol = overlap.sep))
+        if (!is.null(ovl$sep)) break
+      }
       if (!is.null(ovl$sep)) break
     }
   }
 
   ## ---- Overlap check 2: how much FE-adjusted variation in Z is left after the nuisance? See `overlap.check`.
   if (!identical(overlap.check, "off")) {
-    ovr <- overlap_residual_share(data, Z, zhat, weight = weight, fe_expr = if (has_FE) FE_expr else NULL)
+    ovr <- if (isTRUE(.z_by_block)) {
+      data.table::rbindlist(lapply(blk_vals, function(b) {
+        o <- overlap_residual_share(data[block == b], Z, zhat, weight = weight, fe_expr = if (has_FE) FE_expr else NULL)
+        if (!is.null(o)) o[, margin := paste0(if (is.null(block_labels)) b else block_labels[b], ":", margin)]
+        o
+      }), use.names = TRUE, fill = TRUE)
+    } else overlap_residual_share(data, Z, zhat, weight = weight, fe_expr = if (has_FE) FE_expr else NULL)
+    if (!is.null(ovr) && nrow(ovr) == 0L) ovr <- NULL
     if (!is.null(ovr)) {
       ovl$rho[[length(ovl$rho) + 1L]] <- ovr
       worst <- ovr[which.min(rho_X)]
@@ -1799,7 +1905,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       x_expr = X_expr_varZ,
       fe_expr = FE_expr,
       out_hat = zvarhat,
-      by = margins,
+      by = zby,
       sample_var = "sample",
       weight = weight,
       cluster = cluster,

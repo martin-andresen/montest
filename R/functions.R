@@ -7327,3 +7327,64 @@ overlap_residual_share <- function(data, Z, zhat, weight = NULL, fe_expr = NULL,
   out <- data.table::rbindlist(out)
   if (nrow(out) == 0L) NULL else out
 }
+
+
+################ Multiple instruments: stack one block per instrument ################
+
+## Adds the terms `ctrl` (character names) to the expression `x` (NULL or 1 counts as empty).
+add_terms_expr <- function(x, ctrl) {
+  if (!length(ctrl)) return(x)
+  sm <- Reduce(function(a, b) call("+", a, b), lapply(ctrl, as.name))
+  if (is.null(x) || identical(x, 1) || identical(x, quote(1))) sm else call("+", x, sm)
+}
+
+## One-sided formula `~ x + ctrl` (or NULL if f is NULL).
+add_terms_onesided <- function(f, ctrl) {
+  if (is.null(f) || !length(ctrl)) return(f)
+  stats::as.formula(call("~", add_terms_expr(f[[2L]], ctrl)), env = environment(f))
+}
+
+## `Y ~ X | FE | D ~ Z1 + Z2` -> `Y ~ X + ctrl | FE | D ~ newZ`
+rewrite_iv_formula <- function(fml, newZ, ctrl) {
+  p <- parse_iv_formula(fml)
+  parts <- p$rf_parts
+  parts[[1L]] <- add_terms_expr(parts[[1L]], ctrl)
+  left_rhs <- rebuild_pipe(c(parts, list(p$iv[[2L]])))
+  left <- if (p$has_lhs) call("~", p$lhs, left_rhs) else call("~", left_rhs)
+  stats::as.formula(call("~", left, as.name(newZ)), env = p$env)
+}
+
+## Stacks one copy of `data` per instrument (block = instrument name). In block j the column `Zstack__`
+## holds instrument j, binned with its own spec and coded 0..k-1, and `Zc1__`... hold the other
+## instruments (raw) when `control`. The numbers of levels may differ: montest() builds `zmargin` per block.
+stack_instruments <- function(data, Z, control, specs, weight, cluster) {
+  k <- length(Z)
+  wv <- if (is.null(weight)) NA_character_ else weight
+  codes <- lapply(seq_len(k), function(j) {
+    tmp <- data[, unique(c(Z[j], weight)), with = FALSE]
+    b <- bin_col(tmp, Z[j], specs[[j]], wv, "..zb", "Zcut")[["..zb"]]
+    r <- sort(unique(b[!is.na(b)]))
+    match(b, r) - 1L
+  })
+  nlev <- vapply(codes, function(x) length(unique(x[!is.na(x)])), integer(1L))
+  if (any(nlev < 2L)) {
+    stop("Instrument `", Z[which(nlev < 2L)[1L]], "` has fewer than two values after binning.", call. = FALSE)
+  }
+  unit <- "unit__"
+  if (is.null(cluster)) {
+    data <- data.table::copy(data)
+    data[, (unit) := .I]
+    cluster <- unit
+  }
+  ctrl <- if (control && k > 1L) paste0("Zc", seq_len(k - 1L), "__") else character()
+  parts <- lapply(seq_len(k), function(j) {
+    d <- data.table::copy(data)
+    data.table::set(d, j = "Zstack__", value = codes[[j]])
+    others <- setdiff(seq_len(k), j)
+    for (m in seq_along(ctrl)) data.table::set(d, j = ctrl[m], value = data[[Z[others[m]]]])
+    data.table::set(d, j = "inst__", value = Z[j])
+    d
+  })
+  list(data = data.table::rbindlist(parts, use.names = TRUE), cluster = cluster, ctrl = ctrl,
+       binning = stats::setNames(lapply(specs, bin_info), Z))
+}
