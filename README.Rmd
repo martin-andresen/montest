@@ -11,6 +11,8 @@ install.packages("devtools")
 devtools::install_github("martin-andresen/montest")
 ```
 
+**Version 1.0.0.** The version number does not identify the exact code; the GitHub commit ID does. Find it in `montest_version()$sha`, in `$version$sha` of the results of `montest()`, `seqtest()` and the `*_seeds()` functions, or in the `RemoteSha` field of `packageDescription("montest")`. The commit ID is recorded when installing from GitHub as above, not when installing from a local folder. Look up a commit at `https://github.com/martin-andresen/montest/commit/<ID>`.
+
 ## Overview
 
 `montest` searches for violations of monotonicity and LATE assumptions in subsets of the data and for various margins of the instrument, treatment (and outcome) using sample splitting and machine learning methods (e.g. generalized random forests and CART).

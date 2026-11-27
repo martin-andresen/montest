@@ -457,6 +457,7 @@ A named list:
 \describe{
   \item{\code{results}}{A Matrix of train and test results by sample and margin cell.}
   \item{\code{margins}}{A Matrix of margins of condition, zmargin, dval, yval, equation that characterizes the cells used for testing.}
+  \item{\code{version}}{The montest code that produced the result, see \code{\link{montest_version}}.}
   \item{\code{binning}}{For each binned variable (\code{Z}, \code{D}, and \code{Y} for \code{"KR"}), a list with the
     spec used and, for cut points, the intervals that the codes 0, 1, ... stand for.}
   \item{\code{global}}{Global mean test statistics over the same stratification.}
@@ -484,6 +485,8 @@ A named list:
   \item{\code{minp}}{Minimum adjusted p-values and the Cauchy combination p-value when
   multiple hypotheses are tested.}
    \item{\code{time}}{A matrix of elapsed user, system, and total time by stage.}
+  \item{\code{options}}{The value of every argument except \code{data}, after defaults are resolved. Formulas are
+    stored as text, so that the object does not carry the environment they were written in.}
   \item{\code{obs}}{A vector containing the number of observations \code{N} and, when
   clustering is used, the number of clusters \code{G}.}
   \item{\code{log}}{Everything the call emitted: a data.frame with columns \code{type} (\code{"warning"},

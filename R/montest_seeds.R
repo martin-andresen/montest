@@ -53,6 +53,8 @@
 #'   \item{log}{Warnings and errors of all runs: \code{seed}, \code{type}, \code{text}.}
 #'   \item{fits}{With \code{keep_fits}, the \code{montest()} output by seed, otherwise \code{NULL}.}
 #'   \item{seeds, alpha, n_failed, call}{The seeds, the level, the number of failed seeds and the call.}
+#'   \item{version}{The montest code in the session that returned the object, see \code{\link{montest_version}}.
+#'     Runs resumed from \code{file} were made with the same functions, but possibly at another commit.}
 #'
 #' @references Rüger, B. (1978). Das maximale Signifikanzniveau des Tests: "Lehne H0 ab, wenn k unter n gegebenen
 #'   Tests zur Ablehnung führen". \emph{Metrika} 25, 171-178.
@@ -214,7 +216,8 @@ mts_run <- function(fun, run_seed, fml, data, dots, allowed, seeds, file, keep_f
     seeds = seeds,
     alpha = alpha,
     n_failed = n_failed,
-    call = call
+    call = call,
+    version = montest_version()
   )
   if (fun == "seqtest") {
     by_condition <- do.call(rbind, lapply(runs, function(r) r$by_condition))
@@ -425,11 +428,11 @@ mts_md5 <- function(x) {
   unname(tools::md5sum(f))
 }
 
-## The functions and constants of the package, apart from those of the seed wrappers.
-mts_code <- function() {
+## The functions and constants of the package, by default apart from those of the seed wrappers.
+mts_code <- function(skip = "^(montest_seeds$|seqtest_seeds$|print[.]montest_seeds$|mts_|[.]__|[.]packageName$)") {
   ns <- asNamespace("montest")
   nm <- sort(ls(ns, all.names = TRUE), method = "radix")
-  nm <- nm[!grepl("^(montest_seeds$|seqtest_seeds$|print[.]montest_seeds$|mts_|[.]__|[.]packageName$)", nm)]
+  nm <- nm[!grepl(skip, nm)]
   objects <- mget(nm, envir = ns)
   objects <- objects[!vapply(objects, is.environment, logical(1L))]
   lapply(objects, function(f) {

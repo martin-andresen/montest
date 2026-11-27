@@ -101,7 +101,7 @@
 #'   \code{montest} object per condition (named by condition, each with its own
 #'   \code{minp}), plus a top-level \code{minp} (a single named vector) in which the test-sample
 #'   p-values of all cells of all conditions are corrected as one family (Holm, Hochberg, BH, BY and Cauchy
-#'   combination), \code{condition} and \code{call}. Pooling or selection across conditions
+#'   combination), \code{condition}, \code{call} and \code{version} (see \code{\link{montest_version}}). Pooling or selection across conditions
 #'   (\code{pool}/\code{select = "condition"}) is not available; each condition is fit separately.
 #'
 #' @seealso montest
@@ -370,7 +370,8 @@ seqtest <- function(fml, data, condition = NULL, D1cut = NULL, D2cut = NULL, D2T
   )
   names(minp)[2:5] <- paste0("p.", c("holm", "hochberg", "BH", "BY"))
 
-  structure(c(fits, list(minp = minp, condition = condition, call = mc)), class = "seqtest")
+  structure(c(fits, list(minp = minp, condition = condition, call = mc, version = montest_version())),
+            class = "seqtest")
 }
 
 #' @export

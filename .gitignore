@@ -59,8 +59,9 @@ sims/farbmachersims.R
 .Rhistory
 /sims
 /tests
-# all markdown files except README.md and LICENSE.md
+# all markdown files except README.md, LICENSE.md and NEWS.md
 *.md
 !README.md
 !LICENSE.md
+!NEWS.md
 /dev

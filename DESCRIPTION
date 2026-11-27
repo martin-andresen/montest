@@ -1,7 +1,11 @@
 Package: montest
 Type: Package
 Title: Testing Monotonicity and LATE Assumptions Using Machine Learning
-Version: 0.1.0
+Version: 1.0.0
+Note: The version number does not identify the exact code; the GitHub
+    commit ID does. See montest_version()$sha, the $version element of
+    montest() results, or the RemoteSha field of the installed
+    DESCRIPTION.
 Authors@R: 
     person("Martin Eckhoff", "Andresen",
            email = "m.e.andresen@econ.uio.no",

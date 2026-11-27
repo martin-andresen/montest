@@ -20,9 +20,9 @@ seqtest_seeds(fml, data, ..., seeds = 1:51, file = NULL, keep_fits = FALSE)
 
 \item{file}{Optional path of an rds file in which to save the runs, see "Storage and resume".}
 
-\item{keep_fits}{Logical: also keep the full \code{montest()} output of every seed (default \code{FALSE}). The
-environments of the formulas in it are replaced by the global environment, so that the data are not saved
-along with them. With \code{file}, the whole file is rewritten after every seed.}
+\item{keep_fits}{Logical: also keep the full output of every seed (default \code{FALSE}). So that the data are
+not saved along with it, the environments of its formulas are replaced by the global environment and the calls
+stored in it are replaced or removed. With \code{file}, the whole file is rewritten after every seed.}
 }
 \value{
 An object of class \code{"montest_seeds"} with the elements described in \code{\link{montest_seeds}},

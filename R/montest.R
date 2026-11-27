@@ -412,6 +412,7 @@
 #' \describe{
 #'   \item{\code{results}}{A Matrix of train and test results by sample and margin cell.}
 #'   \item{\code{margins}}{A Matrix of margins of condition, zmargin, dval, yval, equation that characterizes the cells used for testing.}
+#'   \item{\code{version}}{The montest code that produced the result, see \code{\link{montest_version}}.}
 #'   \item{\code{binning}}{For each binned variable (\code{Z}, \code{D}, and \code{Y} for \code{"KR"}), a list with the
 #'     spec used and, for cut points, the intervals that the codes 0, 1, ... stand for.}
 #'   \item{\code{global}}{Global mean test statistics over the same stratification.}
@@ -439,6 +440,8 @@
 #'   \item{\code{minp}}{Minimum adjusted p-values and the Cauchy combination p-value when
 #'   multiple hypotheses are tested.}
 #'    \item{\code{time}}{A matrix of elapsed user, system, and total time by stage.}
+#'   \item{\code{options}}{The value of every argument except \code{data}, after defaults are resolved. Formulas are
+#'     stored as text, so that the object does not carry the environment they were written in.}
 #'   \item{\code{obs}}{A vector containing the number of observations \code{N} and, when
 #'   clustering is used, the number of clusters \code{G}.}
 #'   \item{\code{log}}{Everything the call emitted: a data.frame with columns \code{type} (\code{"warning"},
@@ -617,7 +620,9 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   args_orig <- list(fml = fml, fml.Z = fml.Z, fml.Q = fml.Q, fml.varZ = fml.varZ,
                     fml.C = fml.C, fml.varS = fml.varS,
                     weight = weight, cluster = cluster, block = block)
-  alias_map <- alias_collisions(names(data))
+  ## In the stacked call for several instruments, `unit__` is the package's own column (see stack_instruments()).
+  reserved <- if (isTRUE(.z_by_block)) setdiff(.mt_reserved, "unit__") else .mt_reserved
+  alias_map <- alias_collisions(names(data), reserved)
   if (length(alias_map)) {
     data.table::setnames(data, names(alias_map), unname(alias_map))
     fml <- rename_formula(fml, alias_map)
@@ -3963,6 +3968,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     }
     if (!is.null(Ylookup)) data.table::setnames(Ylookup, restore_aliases(names(Ylookup), alias_map))
   }
+  options <- formulas_as_text(options)
 
   ## Named blocks: relabel the integer block codes in every output table.
   if (has_block && !is.null(block_labels)) {
@@ -3978,6 +3984,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   out <- c(res, list(
     call = mc,
+    version = montest_version(),
     options = options,
     time = time,
     obs = obs,

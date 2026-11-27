@@ -20,9 +20,9 @@ Observations with missing values in any variables used by the call are dropped.}
 
 \item{file}{Optional path of an rds file in which to save the runs, see "Storage and resume".}
 
-\item{keep_fits}{Logical: also keep the full \code{montest()} output of every seed (default \code{FALSE}). The
-environments of the formulas in it are replaced by the global environment, so that the data are not saved
-along with them. With \code{file}, the whole file is rewritten after every seed.}
+\item{keep_fits}{Logical: also keep the full output of every seed (default \code{FALSE}). So that the data are
+not saved along with it, the environments of its formulas are replaced by the global environment and the calls
+stored in it are replaced or removed. With \code{file}, the whole file is rewritten after every seed.}
 }
 \value{
 An object of class \code{"montest_seeds"}: a list with
@@ -34,6 +34,8 @@ An object of class \code{"montest_seeds"}: a list with
   \item{log}{Warnings and errors of all runs: \code{seed}, \code{type}, \code{text}.}
   \item{fits}{With \code{keep_fits}, the \code{montest()} output by seed, otherwise \code{NULL}.}
   \item{seeds, alpha, n_failed, call}{The seeds, the level, the number of failed seeds and the call.}
+  \item{version}{The montest code in the session that returned the object, see \code{\link{montest_version}}.
+    Runs resumed from \code{file} were made with the same functions, but possibly at another commit.}
 }
 \description{
 The results of \code{\link{montest}} depend on \code{seed} through the sample split and the forests.

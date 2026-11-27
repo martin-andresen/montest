@@ -7323,6 +7323,14 @@ rename_symbols <- function(e, map) {
   e
 }
 
+## A formula keeps the environment it was written in, which would be saved along with a returned object, data and
+## all. For montest()'s `options`: every formula, also one inside a list, as its text.
+formulas_as_text <- function(x) {
+  if (inherits(x, "formula")) return(deparse1(x))
+  if (is.list(x) && !is.object(x)) x[] <- lapply(x, formulas_as_text)
+  x
+}
+
 rename_formula <- function(f, map) {
   if (is.null(f) || !length(map) || !inherits(f, "formula")) return(f)
   env <- environment(f)
