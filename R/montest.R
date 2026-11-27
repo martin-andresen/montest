@@ -24,7 +24,8 @@
 #'   regression forest, whatever \code{parametric} says (a linear model for a squared residual
 #'   can go negative and misspecification enters the score through a denominator); any fixed
 #'   effects are still partialled out linearly (\code{feols}) before the forest.
-#' @param fml.C Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml.
+#' @param fml.C Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml. With fixed effects, see \code{C.features} for how they enter the search.
+#' @param C.features With fixed effects, what the causal forest and the subgroup search split on: \code{"raw"} (default), the covariates as they are, so that cutoffs and \code{Xmeans} are in the units of the data; \code{"residualized"}, the covariates residualized on the fixed effects (position within the fixed-effect cells), except terms built from fixed-effect variables only and covariates the fixed effects absorb (e.g. a state characteristic with state fixed effects), which enter as they are; \code{"both"}, each covariate raw and, unless absorbed, also residualized (named \code{<name>.res}). It affects only which subsets are searched: the nuisances of Z, Q and the score variance use residualized covariates in every case. Without fixed effects the three are the same.
 #' @param fml.varS Optional: A one-sided formula for the covariates of the score-variance model used when \code{priority = TRUE}. Defaults to \code{fml.C}.
 #' @param fml.Q Optional: A one-sided formula used for the nuisance of the pseudo-outcome. Defaults to the same as the the general formula in fml
 #' The formula may be one-sided and omit Y if testing only the simple first stage condition. Note that the exact functional form does not matter in the default case when \code{parametric=FALSE} because the command uses semiparametric methods.
@@ -478,7 +479,7 @@
 montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.varS=NULL,condition=NULL,inner.folds=NULL,crossfit=NULL,
                  stabilize.scores="hajek",aipw.clip="auto",drop_singletons=TRUE,drop_novar_Z=TRUE,weight=NULL,cluster=NULL,seed=10101,minsize=50L,miness=10,
                  gridtypeY="equisized",gridtypeD="equisized",gridtypeZ="equisized",stratify=TRUE,joint=TRUE,
-                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Zcut=NULL,Dcut=NULL,Ycut=NULL,Zcontrol=TRUE,.z_by_block=FALSE,Y.res=TRUE,testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
+                 Ysubsets = 4L, Dsubsets = 4L,Zsubsets=4L,Zcut=NULL,Dcut=NULL,Ycut=NULL,Zcontrol=TRUE,.z_by_block=FALSE,Y.res=TRUE,C.features=c("raw","residualized","both"),testtype="forest",fe_rank_conservative=TRUE,fe_rank_adj=TRUE,
                  gridpoints=NULL,min_n=1L,pool=NULL,select=NULL,shrink=0,priority=TRUE,priority.floor=0.01,priority.var=c("model","scores"),pvalue=c("t","normal"),minvar=0.05,overlap.check=c("error","warn","off"),overlap.rho=c(0.01,0.05),overlap.sep=0.99,linearD=FALSE,linearZ=FALSE,target=NULL,
                  doubly.robust=NULL,local=NULL,stack=TRUE,memcheck=TRUE,block=NULL,kr_sums=NULL,mw_sets=c("datadriven","endpoints"),mw_cutoff=0,progress=interactive(),
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
@@ -780,6 +781,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   stopifnot(is.numeric(priority.floor), length(priority.floor) == 1L,
             is.finite(priority.floor), priority.floor > 0, priority.floor <= 1)
   priority.var <- match.arg(priority.var)
+  C.features <- match.arg(C.features)
   pvalue <- match.arg(pvalue)
   stopifnot(is.numeric(minvar), length(minvar) == 1L, is.finite(minvar), minvar >= 0, minvar < 1)
   overlap.check <- match.arg(overlap.check)
@@ -1722,13 +1724,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
 
   if (has_X_expr_forest) {
 
-    ## fe_search_raw = TRUE: any term in the main X part built purely from
-    ## FE variables (e.g. `factor(FE1)` when `FE1` is also in the FE slot) is
-    ## kept RAW as a categorical split feature for the heterogeneity search,
-    ## instead of being residualized on its own FE (which zeroes it). Y, D
-    ## and Z are still fully residualized on the whole FE for identification;
-    ## only the forest's *split features* see the raw FE. Lets the search
-    ## localize a violation to specific FE levels.
+    ## With fixed effects, `C.features` decides whether the search splits on the
+    ## covariates as they are, on their FE residuals, or on both. Identification
+    ## is the same: Y, D and Z are residualized on the whole FE; only the
+    ## forest's *split features* differ.
     zby <- c(margins, if (isTRUE(.z_by_block)) "block")
     X_forest_info <- make_X_residualized_from_FE(
       DT            = data,
@@ -1738,7 +1737,7 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
       by            = zby,
       weight        = weight,
       fixest_opts   = Rparameters,
-      fe_search_raw = TRUE
+      features      = C.features
     )
 
     X_forest <- X_forest_info$x_names
@@ -1772,22 +1771,22 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   ## fitted, never SEs), but there's no need to assume that here when it can
   ## just be checked.
   ## ...but only when the forest feature set is the plain FE-residualized X.
-  ## If the search kept raw FE columns (fe_search_raw above), those must NOT
-  ## leak into the nuisance forests -- the FE is already handled there by the
-  ## FE-mean construction -- so the nuisances rebuild their own clean X.
-  forest_has_raw_fe <- !is.null(X_forest_info) &&
-    isTRUE(X_forest_info$n_raw_fe > 0L)
+  ## If the search has raw columns next to fixed effects (see `C.features`),
+  ## those must NOT leak into the nuisance forests -- the FE is already handled
+  ## there by the FE-mean construction -- so the nuisances build their own X.
+  forest_has_raw <- !is.null(X_forest_info) &&
+    isTRUE(X_forest_info$n_raw > 0L)
 
   X_names_reuse_for_Z <- if (
     !isTRUE(parametric) &&
-      !forest_has_raw_fe &&
+      !forest_has_raw &&
       identical(X_expr_Z, X_expr_forest) &&
       identical(Rparameters, Zparameters)
   ) X_forest_info$x_names else NULL
 
   X_names_reuse_for_Q <- if (
     !isTRUE(parametric) &&
-      !forest_has_raw_fe &&
+      !forest_has_raw &&
       identical(X_expr_Q, X_expr_forest) &&
       identical(Rparameters, Qparameters)
   ) X_forest_info$x_names else NULL
@@ -1858,6 +1857,13 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     progress_title = if (length(margins) > 0L) step_bar(lbl_Z, always = TRUE)
   )
   if (!is.null(rows_est)) copy_from_ref(zhat)
+
+  ## Same covariates for Q.hat as for Z.hat: reuse the columns just built (not with an instrument
+  ## stack, where Z's are residualized within each block).
+  if (is.null(X_names_reuse_for_Q) && !isTRUE(parametric) && !isTRUE(.z_by_block) &&
+      identical(X_expr_Q, X_expr_Z) && identical(Zparameters, Qparameters)) {
+    X_names_reuse_for_Q <- Z_hat_info$x_names
+  }
 
 
 
@@ -3613,8 +3619,11 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     data[, (pr_target) := NA_real_]
     data[pr_rows, (pr_target) := (scores - pred)^2]
     X_expr_pr <- if (is.null(X_expr_varS)) X_expr_forest else X_expr_varS
-    ## Same covariates as the causal forest (the default): reuse its columns.
-    X_names_pr <- if (is.null(X_expr_varS) || identical(X_expr_varS, X_expr_forest)) X_forest else NULL
+    ## Same covariates as the causal forest (the default) and no fixed effects, or a search on
+    ## residualized covariates: reuse its columns. Otherwise the variance model residualizes its own,
+    ## whatever `C.features` says, since its target is partialled out on the fixed effects.
+    X_names_pr <- if ((is.null(X_expr_varS) || identical(X_expr_varS, X_expr_forest)) &&
+                      (!has_FE || C.features == "residualized")) X_forest else NULL
     S_opts <- if (length(Sparameters)) Sparameters else Cparameters
     ## One forest per half: out-of-bag `pr_v` for its own rows, `pr_vo` for the other half's rows.
     if (length(pr_rows)) estimate_conditional_mean(

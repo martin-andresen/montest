@@ -2331,6 +2331,14 @@ feols_partial_out <- function(DT,
 
       fit <- do.call(fixest::feols, args)
 
+      ## With every regressor absorbed by the fixed effects (e.g. only a covariate that is constant
+      ## within them) fixest returns a fit without coefficients or fitted values: the fit is then
+      ## that of the fixed effects alone.
+      if (has_fe && rhs_txt != "1" && is.null(fit$coefficients)) {
+        args$fml <- stats::as.formula(paste0(alias_lhs, " ~ 1 | ", deparse1(fe_expr)))
+        fit <- do.call(fixest::feols, args)
+      }
+
       if (keep %in% c("resid", "both")) {
         DT[ii_j, (out$resid[j]) := as.numeric(stats::residuals(fit))]
       }
@@ -2526,7 +2534,7 @@ estimate_conditional_mean <- function(DT,
   ## the OPPOSITE outer sample half (what crossfit "across" gives), from the same single forest
   ## per half that yields the out-of-bag `out_hat`. Forest path with covariates, out-of-bag only.
   if (!is.null(out_hat_o)) {
-    if (isTRUE(parametric) || !has_X) {
+    if (isTRUE(parametric) || !(has_X || (has_X_expr && has_FE))) {
       stop("`out_hat_o` requires parametric = FALSE and covariates.", call. = FALSE)
     }
   }
@@ -2536,7 +2544,7 @@ estimate_conditional_mean <- function(DT,
     ## montest documents that X may contain the same variable(s) as FE
     ## (heterogeneity search on an FE dimension, e.g. an "ordered" FE offered
     ## to fml.C/fml.Q) -- make_X_residualized_from_FE() handles this for the
-    ## parametric = FALSE / forest path (fe_search_raw), but a linear fit has
+    ## parametric = FALSE / forest path (raw search features), but a linear fit has
     ## no analogous role for such a term: a covariate identical to (or built
     ## only from) an FE variable is exactly collinear with that FE's own
     ## dummies, has a structurally unidentified coefficient, and feols() can
@@ -2686,14 +2694,17 @@ estimate_conditional_mean <- function(DT,
     if (isTRUE(partial_out_y_fe)) {
       DT[i, (out_hat) := .SD[[y_fehat]] + .SD[[y_sp_hat]],
          .SDcols = c(y_fehat, y_sp_hat)]
-      if (!is.null(out_hat_o)) {
+      if (!is.null(out_hat_o) && has_X) {
         DT[i, (out_hat_o) := .SD[[y_fehat]] + .SD[[y_sp_hat_o]],
            .SDcols = c(y_fehat, y_sp_hat_o)]
       }
     } else {
       DT[i, (out_hat) := .SD[[y_sp_hat]], .SDcols = y_sp_hat]
-      if (!is.null(out_hat_o)) DT[i, (out_hat_o) := .SD[[y_sp_hat_o]], .SDcols = y_sp_hat_o]
+      if (!is.null(out_hat_o) && has_X) DT[i, (out_hat_o) := .SD[[y_sp_hat_o]], .SDcols = y_sp_hat_o]
     }
+    ## No covariate left after the fixed effects absorbed them all: the fit is that of the fixed
+    ## effects, the same for both sample halves.
+    if (!is.null(out_hat_o) && !has_X) DT[i, (out_hat_o) := .SD[[out_hat]], .SDcols = out_hat]
   }
 
   if (isTRUE(return_residual)) {
@@ -2729,6 +2740,46 @@ count_model_columns <- function(data, x_exprs, env = parent.frame()) {
              integer(1L)))
 }
 
+## TRUE if the fixed effects absorb the column `col` on the rows `idx`, i.e. its residual `resid` on
+## them is numerical noise: a covariate that is constant within a fixed effect (a state characteristic
+## with state effects) or a sum of such parts. The residual of such a column is not exactly zero, and
+## a forest, which only uses the ordering of a feature, would split on the noise. Constancy within one
+## fixed-effect term is checked exactly. Sums over several terms and varying slopes show up as a small
+## residual, which is recomputed with a tight convergence tolerance because fixest's default can
+## leave a residual of order 1e-5 of the column's variation when the fixed effects are weakly
+## connected.
+fe_absorbs <- function(DT, col, resid, idx, fe_expr, weight = NULL, fixest_opts = list()) {
+  if (!is.null(weight)) idx <- idx[which(DT[[weight]][idx] > 0)]
+  x <- DT[[col]][idx]
+  r <- DT[[resid]][idx]
+  ok <- is.finite(x) & is.finite(r)
+  idx <- idx[ok]; x <- x[ok]; r <- r[ok]
+  if (!length(x) || all(x == x[1L])) return(TRUE)
+
+  fe_terms <- list()
+  rest <- fe_expr
+  while (is.call(rest) && identical(rest[[1L]], as.name("+")) && length(rest) == 3L) {
+    fe_terms <- c(fe_terms, rest[[3L]])
+    rest <- rest[[2L]]
+  }
+  for (tm in c(fe_terms, rest)) {
+    ## Only plain variables and `^` interactions: a function of a variable may group more coarsely.
+    if (!all(all.names(tm) %in% c("^", all.vars(tm)))) next
+    fe_vars <- all.vars(tm)
+    grp <- data.table::frankv(DT[idx, fe_vars, with = FALSE], ties.method = "dense")
+    if (all(x == x[match(grp, grp)])) return(TRUE)
+  }
+
+  total <- sum((x - mean(x))^2)
+  if (!(sum(r^2) < 1e-6 * total)) return(FALSE)
+  tight <- data.table::copy(DT[idx, unique(c(col, all.vars(fe_expr), weight)), with = FALSE])
+  po <- feols_partial_out(
+    DT = tight, y = col, fe_expr = fe_expr, weight = weight, prefix = "__absorbed", keep = "resid",
+    fixest_opts = utils::modifyList(fixest_opts, list(fixef.tol = 1e-11, fixef.iter = 100000L))
+  )
+  sum(tight[[po$resid]]^2, na.rm = TRUE) < 1e-12 * total
+}
+
 make_X_residualized_from_FE <- function(DT,
                                         x_expr,
                                         fe_expr = NULL,
@@ -2736,12 +2787,13 @@ make_X_residualized_from_FE <- function(DT,
                                         by = NULL,
                                         weight = NULL,
                                         fixest_opts = list(),
-                                        fe_search_raw = FALSE) {
+                                        features = c("nuisance", "raw", "residualized", "both")) {
   stopifnot(data.table::is.data.table(DT))
+  features <- match.arg(features)
 
   empty_ret <- function() list(
     x_names = NULL, raw_names = NULL, resid_names = NULL,
-    clean_names = NULL, has_FE = !is.null(fe_expr), n_raw_fe = 0L
+    clean_names = NULL, has_FE = !is.null(fe_expr), n_raw = 0L
   )
 
   if (is.null(x_expr) || identical(x_expr, quote(1))) return(empty_ret())
@@ -2802,19 +2854,30 @@ make_X_residualized_from_FE <- function(DT,
       resid_names = raw_names,
       clean_names = clean_names,
       has_FE = FALSE,
-      n_raw_fe = 0L
+      n_raw = 0L
+    ))
+  }
+
+  ## The raw columns as they are, for a heterogeneity search on the covariates' own values.
+  if (features == "raw") {
+    return(list(
+      x_names = raw_names,
+      raw_names = raw_names,
+      resid_names = raw_names,
+      clean_names = clean_names,
+      has_FE = TRUE,
+      n_raw = length(raw_names)
     ))
   }
 
   ## Which columns come from a term whose variables are ALL fixed effects?
   ## Residualizing an FE indicator (or the FE itself) on its own FE gives
-  ## exactly zero, so such a column is a useless forest feature. With
-  ## `fe_search_raw = TRUE` (the heterogeneity-search caller) we instead keep
-  ## it RAW: the causal forest can then split on FE level while Y, D and Z
-  ## are still fully residualized on the whole FE elsewhere for
-  ## identification. Nuisance-estimation callers leave `fe_search_raw =
-  ## FALSE` -- their forests should not see the raw FE (already handled by
-  ## the FE-mean construction) -- and such columns are simply dropped.
+  ## exactly zero, so such a column cannot be residualized. A search
+  ## (`features` other than "nuisance") keeps it raw: the causal forest can
+  ## then split on FE level while Y, D and Z are still fully residualized on
+  ## the whole FE elsewhere for identification. Nuisance forests should not
+  ## see the raw FE (already handled by the FE-mean construction), and the
+  ## column is dropped for them.
   fe_vars <- all.vars(fe_expr)
   is_fe_col <- vapply(col_term, function(ti) {
     if (is.na(ti) || ti < 1L || ti > length(term_labels)) return(FALSE)
@@ -2822,56 +2885,78 @@ make_X_residualized_from_FE <- function(DT,
     length(tv) > 0L && all(tv %in% fe_vars)
   }, logical(1L))
 
-  keep_raw <- isTRUE(fe_search_raw) & is_fe_col
-  drop_col <- (!isTRUE(fe_search_raw)) & is_fe_col
-
-  ## 3. Residualize the non-FE columns; keep the FE columns raw (or drop).
-  resid_names <- paste0(prefix, "_res_", clean_names)
+  ## 3. Residualize the non-FE columns. With "both" the search gets every
+  ## column raw as well, and the residualized one is labelled `<name>.res`.
+  res_labels <- if (features == "both") {
+    utils::tail(make.unique(c(clean_names, paste0(clean_names, ".res"))), length(clean_names))
+  } else {
+    clean_names
+  }
+  resid_names <- paste0(prefix, "_res_", res_labels)
   x_names <- character(0)
+  x_labels <- character(0)
+  groups <- if (!length(by)) list(seq_len(nrow(DT))) else DT[, .(idx = list(.I)), by = by]$idx
 
   for (jj in seq_along(raw_names)) {
-    if (drop_col[jj]) next
-    if (keep_raw[jj]) {
+    if (features == "both") {
       x_names <- c(x_names, raw_names[jj])
-      next
+      x_labels <- c(x_labels, clean_names[jj])
     }
 
-    out_j <- resid_names[jj]
-    po <- feols_partial_out(
-      DT = DT,
-      y = raw_names[jj],
-      rhs_expr = quote(1),
-      fe_expr = fe_expr,
-      by = by,
-      weight = weight,
-      prefix = out_j,
-      keep = "resid",
-      fixest_opts = fixest_opts
-    )
-    if (!identical(po$resid, out_j)) {
-      DT[, (out_j) := get(po$resid)]
+    absorbed <- is_fe_col[jj]
+    if (!absorbed) {
+      out_j <- resid_names[jj]
+      po <- feols_partial_out(
+        DT = DT,
+        y = raw_names[jj],
+        rhs_expr = quote(1),
+        fe_expr = fe_expr,
+        by = by,
+        weight = weight,
+        prefix = out_j,
+        keep = "resid",
+        fixest_opts = fixest_opts
+      )
+      if (!identical(po$resid, out_j)) {
+        DT[, (out_j) := get(po$resid)]
+      }
+
+      ## A column the fixed effects absorb is treated like a column built from
+      ## fixed effects only. If they absorb it in some `by` groups only, its
+      ## residual there is set to exactly zero.
+      in_group <- vapply(groups, function(ii) {
+        fe_absorbs(DT, raw_names[jj], out_j, ii, fe_expr, weight, fixest_opts)
+      }, logical(1L))
+      absorbed <- all(in_group)
+      if (absorbed) {
+        DT[, (out_j) := NULL]
+      } else {
+        if (any(in_group)) data.table::set(DT, i = unlist(groups[in_group]), j = out_j, value = 0)
+        x_names <- c(x_names, out_j)
+        x_labels <- c(x_labels, res_labels[jj])
+      }
     }
-    x_names <- c(x_names, out_j)
+
+    if (absorbed && features == "residualized") {
+      x_names <- c(x_names, raw_names[jj])
+      x_labels <- c(x_labels, clean_names[jj])
+    }
   }
 
-  ## Drop the raw model-matrix columns that were residualized or dropped;
-  ## keep the raw FE columns we are using as search features.
-  drop_raw <- raw_names[!keep_raw]
+  ## Drop the raw model-matrix columns that are not used as features.
+  drop_raw <- setdiff(raw_names, x_names)
   drop_raw <- drop_raw[drop_raw %in% names(DT)]
   if (length(drop_raw)) DT[, (drop_raw) := NULL]
 
-  ## x_names is the subset actually used (resid for non-FE columns, raw for
-  ## kept FE columns, nothing for dropped FE columns); align clean_names to
-  ## it 1-1 for the rename-back in montest().
-  clean_used <- clean_names[!drop_col]
-
+  ## `clean_names` is aligned 1-1 with x_names, for the rename-back in
+  ## montest().
   list(
     x_names = x_names,
     raw_names = raw_names,
     resid_names = resid_names,
-    clean_names = clean_used,
+    clean_names = x_labels,
     has_FE = TRUE,
-    n_raw_fe = sum(keep_raw)
+    n_raw = sum(x_names %in% raw_names)
   )
 }
 
@@ -6413,8 +6498,9 @@ forest_test <- function(
     ## data columns, and to distinguish raw vs. FE-residualized versions of
     ## the same covariate) that is meaningless to a reader of the output --
     ## strip it for display, leaving just the original covariate name. A
-    ## given x_names vector only ever contains one of raw/res per covariate
-    ## (never both), so this can't introduce duplicate display names.
+    ## covariate that enters both raw and residualized has `.res` in the name
+    ## of the residualized column, so this can't introduce duplicate display
+    ## names.
     x_names_display <- sub("^__xf_(raw|res)_", "", x_names)
 
     wmeans_dt <- function(df, w, by_cols) {

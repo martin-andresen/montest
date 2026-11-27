@@ -38,6 +38,7 @@ montest(
   Zcontrol = TRUE,
   .z_by_block = FALSE,
   Y.res = TRUE,
+  C.features = c("raw", "residualized", "both"),
   testtype = "forest",
   fe_rank_conservative = TRUE,
   fe_rank_adj = TRUE,
@@ -101,7 +102,9 @@ regression forest, whatever \code{parametric} says (a linear model for a squared
 can go negative and misspecification enters the score through a denominator); any fixed
 effects are still partialled out linearly (\code{feols}) before the forest.}
 
-\item{fml.C}{Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml.}
+\item{fml.C}{Optional: A one-sided formula for the covariates of the causal forest and the subgroup search. Defaults to the X part of the general formula in fml. With fixed effects, see \code{C.features} for how they enter the search.}
+
+\item{C.features}{With fixed effects, what the causal forest and the subgroup search split on: \code{"raw"} (default), the covariates as they are, so that cutoffs and \code{Xmeans} are in the units of the data; \code{"residualized"}, the covariates residualized on the fixed effects (position within the fixed-effect cells), except terms built from fixed-effect variables only and covariates the fixed effects absorb (e.g. a state characteristic with state fixed effects), which enter as they are; \code{"both"}, each covariate raw and, unless absorbed, also residualized (named \code{<name>.res}). It affects only which subsets are searched: the nuisances of Z, Q and the score variance use residualized covariates in every case. Without fixed effects the three are the same.}
 
 \item{fml.varS}{Optional: A one-sided formula for the covariates of the score-variance model used when \code{priority = TRUE}. Defaults to \code{fml.C}.}
 
