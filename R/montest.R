@@ -3889,26 +3889,25 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
     time <- rbind(t0, sweep(cum, 2L, t0[nrow(t0), ], "+"))
   }
 
-  ## Xmeans/Xmeans_all/XSD (when present) are keyed on the internal
-  ## `__xf_raw_*`/`__xf_res_*` forest-feature columns from
-  ## make_X_residualized_from_FE() -- FE-residualized whenever `fml` has an
-  ## FE part -- rather than the original covariate names. Rename them back
-  ## to the clean (model-matrix) covariate names for output, so downstream
-  ## consumers like montestplot() show the real names. Guard against a
-  ## clean name colliding with the pool/select vocabulary or with another
-  ## covariate's cleaned name, either of which would make the rename
-  ## ambiguous to name-based lookups; such columns keep their internal name.
+  ## Xmeans/Xmeans_all/XSD (when present) name their columns after the model-matrix
+  ## columns of the forest features (`clean_names`; forest_test() has already stripped
+  ## the `__xf_raw_`/`__xf_res_` prefixes). These carry the internal alias of a
+  ## covariate whose name the package reserves (see alias_collisions()): map them back,
+  ## so consumers like montestplot() show the caller's names. Guard against a restored
+  ## name colliding with the pool/select vocabulary or with another covariate's name,
+  ## either of which would make name-based lookups ambiguous; such columns keep their
+  ## internal name.
   if (!is.null(X_forest_info) && !is.null(X_forest_info$x_names)) {
     reserved <- c("zmargin", "dval", "yval", "condition", "equation", "sample", "block")
-    old_nm <- X_forest_info$x_names
-    new_nm <- restore_aliases(X_forest_info$clean_names, alias_map)
+    old_nm <- X_forest_info$clean_names
+    new_nm <- restore_aliases(old_nm, alias_map)
     bad <- new_nm %in% reserved | duplicated(new_nm) | duplicated(new_nm, fromLast = TRUE)
     if (any(bad)) {
       warning(
         "Could not restore original covariate name(s) for: ",
         paste(unique(new_nm[bad]), collapse = ", "),
         " (collides with a pool/select dimension name or another covariate's ",
-        "cleaned name); keeping the internal column name in Xmeans/Xmeans_all/XSD instead.",
+        "name); keeping the internal column name in Xmeans/Xmeans_all/XSD instead.",
         call. = FALSE
       )
       old_nm <- old_nm[!bad]
