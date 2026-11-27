@@ -441,6 +441,11 @@
 #'    \item{\code{time}}{A matrix of elapsed user, system, and total time by stage.}
 #'   \item{\code{obs}}{A vector containing the number of observations \code{N} and, when
 #'   clustering is used, the number of clusters \code{G}.}
+#'   \item{\code{log}}{Everything the call emitted: a data.frame with columns \code{type} (\code{"warning"},
+#'     \code{"message"}, \code{"output"} for printed text, or \code{"error"}) and \code{text}, one row per condition
+#'     or chunk of output, in order; no rows if nothing was emitted. Warnings and messages are also signalled as
+#'     usual. If the call fails there is no return value, and the same data.frame, ending with the error, is
+#'     attached to the error condition: \code{tryCatch(montest(...), error = function(e) e$log)}.}
 #' }
 #'
 
@@ -476,6 +481,10 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
                  cp=0,maxrankcp=10L,Rparameters=list(),alpha=0.05,prune=TRUE,screen="power",parametric=FALSE,
                  Zparameters=list(),Yparameters=list(),Qparameters=list(),Cparameters=list(),Sparameters=list()
 ){
+
+  ## Run the call once more under capture_log(), which records its output in the `log` element.
+  if (!isTRUE(.mt_log_state$entering)) return(capture_log(sys.call(), parent.frame()))
+  .mt_log_state$entering <- FALSE
 
   ## Captured first, before any argument gets reassigned/resolved below, so
   ## it reflects exactly what the caller typed (standard R idiom, as in

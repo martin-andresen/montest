@@ -486,6 +486,11 @@ A named list:
    \item{\code{time}}{A matrix of elapsed user, system, and total time by stage.}
   \item{\code{obs}}{A vector containing the number of observations \code{N} and, when
   clustering is used, the number of clusters \code{G}.}
+  \item{\code{log}}{Everything the call emitted: a data.frame with columns \code{type} (\code{"warning"},
+    \code{"message"}, \code{"output"} for printed text, or \code{"error"}) and \code{text}, one row per condition
+    or chunk of output, in order; no rows if nothing was emitted. Warnings and messages are also signalled as
+    usual. If the call fails there is no return value, and the same data.frame, ending with the error, is
+    attached to the error condition: \code{tryCatch(montest(...), error = function(e) e$log)}.}
 }
 }
 \description{
