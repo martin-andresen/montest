@@ -2718,6 +2718,17 @@ estimate_conditional_mean <- function(DT,
   )
 }
 
+## data.table gives a table a fixed number of spare column slots (option datatable.alloccol, 1024). A function that
+## adds a column to a table with none left works on a new table, and its caller never sees the column. The nuisance
+## steps add model-matrix and residualized covariate columns to montest()'s table from inside other functions, so
+## montest() reserves slots according to the width of the covariate formulas. Returns the number of columns the
+## right-hand sides in the list `x_exprs` expand to.
+count_model_columns <- function(data, x_exprs, env = parent.frame()) {
+  x_exprs <- unique(Filter(function(x) !is.null(x) && !identical(x, quote(1)), x_exprs))
+  sum(vapply(x_exprs, function(x) ncol(stats::model.matrix(stats::as.formula(call("~", x), env = env), data = data)),
+             integer(1L)))
+}
+
 make_X_residualized_from_FE <- function(DT,
                                         x_expr,
                                         fe_expr = NULL,

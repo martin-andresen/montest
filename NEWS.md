@@ -1,5 +1,6 @@
 1# montest (development version)
 
+* Fixed: with a few hundred covariate columns (typically with fixed effects) `montest()` stopped with `object '__xf_res_..._resid' not found` or `Missing columns: ...`: `data.table` ran out of spare column slots and the new columns were lost. Slots are now reserved according to the width of the covariate formulas.
 * Changed: with several instruments `montest()` stops if `data` already has a column it creates itself when stacking (`unit__`, `inst__`, `Zstack__`, and with `Zcontrol = TRUE` `Zc1__`, ...). Such a column was overwritten, so that e.g. `cluster = "unit__"` would silently have been replaced by row numbers.
 
 # montest 1.0.0

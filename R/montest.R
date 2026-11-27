@@ -1710,6 +1710,16 @@ montest=function(fml,data,fml.Z=NULL,fml.Q=NULL,fml.varZ=NULL,fml.C=NULL,fml.var
   X_forest <- NULL
   X_forest_info <- NULL
 
+  ## Spare column slots for the covariate columns added below, see count_model_columns(). Every nuisance step adds at
+  ## most twice the columns of its formula, and there are fewer than five such steps per formula.
+  n_x_cols <- count_model_columns(data, list(X_expr_forest, X_expr_Z, X_expr_Q, X_expr_varZ, X_expr_varS))
+  spare_cols <- 1024L + 10L * n_x_cols
+  if (spare_cols > getOption("datatable.alloccol", 1024L) && 10L * n_x_cols > 512L) {
+    old_alloc_opt <- options(datatable.alloccol = spare_cols)
+    on.exit(options(old_alloc_opt), add = TRUE)
+    data.table::setalloccol(data, spare_cols)
+  }
+
   if (has_X_expr_forest) {
 
     ## fe_search_raw = TRUE: any term in the main X part built purely from
