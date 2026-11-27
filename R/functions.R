@@ -7581,11 +7581,16 @@ stack_instruments <- function(data, Z, control, specs, weight, cluster, linear =
     stop("Instrument `", Z[which(nlev < 2L)[1L]], "` has fewer than two values after binning.", call. = FALSE)
   }
   if (control) check_redundant_instruments(codes, Z)
+  ctrl <- if (control && k > 1L) paste0("Zc", seq_len(k - 1L), "__") else character()
+  taken <- intersect(c("unit__", "Zstack__", ctrl, "inst__"), names(data))
+  if (length(taken)) {
+    stop("With several instruments montest() creates the column(s) ", paste0("`", taken, "`", collapse = ", "),
+         " itself and would overwrite yours. Please rename them in `data`.", call. = FALSE)
+  }
   ## `unit__` identifies a unit across the blocks (also the cluster when none is given).
   data <- data.table::copy(data)
   data[, unit__ := .I]
   if (is.null(cluster)) cluster <- "unit__"
-  ctrl <- if (control && k > 1L) paste0("Zc", seq_len(k - 1L), "__") else character()
   parts <- lapply(seq_len(k), function(j) {
     d <- data.table::copy(data)
     data.table::set(d, j = "Zstack__", value = codes[[j]])

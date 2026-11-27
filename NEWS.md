@@ -1,4 +1,8 @@
-1# montest 1.0.0
+1# montest (development version)
+
+* Changed: with several instruments `montest()` stops if `data` already has a column it creates itself when stacking (`unit__`, `inst__`, `Zstack__`, and with `Zcontrol = TRUE` `Zc1__`, ...). Such a column was overwritten, so that e.g. `cluster = "unit__"` would silently have been replaced by row numbers.
+
+# montest 1.0.0
 
 The version number marks releases; the GitHub commit ID identifies the exact code, see `?montest_version`.
 
